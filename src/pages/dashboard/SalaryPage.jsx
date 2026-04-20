@@ -1,81 +1,60 @@
 import React from 'react';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import Header from '@/components/Header';
 import Modal from '@/components/Modal';
 import { showToast } from '@/components/Toast';
 import { useAuth } from '@/context/AuthContext';
-import { supabase } from '@/lib/supabase';
+import { listComponents, saveComponent, deleteComponent } from '@/services/salaryService';
 import { fmt, calcSalary } from '@/lib/helpers';
 
 export default function SalaryStructurePage() {
   const { tenant } = useAuth();
   const [components, setComponents] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading]       = useState(true);
+  const [showModal, setShowModal]   = useState(false);
+  const [editComp, setEditComp]     = useState(null);
+  const [form, setForm]             = useState({ name: '', category: 'earning', calc_type: 'percent_ctc', percent: '', fixed: '' });
 
-  // Modal state
-  const [showModal, setShowModal] = useState(false);
-  const [editComp, setEditComp] = useState(null);
-  const [form, setForm] = useState({ name: '', category: 'earning', calc_type: 'percent_ctc', percent: '', fixed: '' });
-
-  useEffect(() => {
-    if (tenant) fetchComponents();
+  const fetchComponents = useCallback(async () => {
+    if (!tenant) return;
+    setLoading(true);
+    const { data, error } = await listComponents(tenant.id);
+    if (error) console.error(error);
+    setComponents(data);
+    setLoading(false);
   }, [tenant]);
 
-  const fetchComponents = async () => {
-    setLoading(true);
-    const { data, error } = await supabase
-      .from('salary_components')
-      .select('*')
-      .eq('tenant_id', tenant.id)
-      .order('created_at', { ascending: true });
-    if (error) console.error(error);
-    setComponents(data || []);
-    setLoading(false);
-  };
+  useEffect(() => { fetchComponents(); }, [fetchComponents]);
 
   const openModal = (category, comp = null) => {
     setEditComp(comp);
     setForm({
-      name: comp?.name || '',
-      category: comp?.category || category,
+      name:      comp?.name      || '',
+      category:  comp?.category  || category,
       calc_type: comp?.calc_type || 'percent_ctc',
-      percent: comp?.percent || '',
-      fixed: comp?.fixed || '',
+      percent:   comp?.percent   || '',
+      fixed:     comp?.fixed     || '',
     });
     setShowModal(true);
   };
 
-  const saveComponent = async () => {
+  const handleSave = async () => {
     if (!form.name.trim()) return showToast('Name is required', 'error');
-    const payload = {
-      tenant_id: tenant.id,
-      name: form.name.trim(),
-      category: form.category,
-      calc_type: form.calc_type,
-      percent: parseFloat(form.percent) || 0,
-      fixed: parseFloat(form.fixed) || 0,
-    };
-    if (editComp) {
-      const { error } = await supabase.from('salary_components').update(payload).eq('id', editComp.id);
-      if (error) return showToast('Update failed: ' + error.message, 'error');
-      showToast('Component updated', 'success');
-    } else {
-      const { error } = await supabase.from('salary_components').insert([payload]);
-      if (error) return showToast('Failed: ' + error.message, 'error');
-      showToast('Component added', 'success');
-    }
+    const { error } = await saveComponent(tenant.id, form, editComp?.id);
+    if (error) return showToast((editComp ? 'Update' : 'Add') + ' failed: ' + error.message, 'error');
+    showToast(editComp ? 'Component updated' : 'Component added', 'success');
     setShowModal(false);
     fetchComponents();
   };
 
-  const deleteComponent = async (id) => {
+  const handleDelete = async (id) => {
     if (!confirm('Delete this salary component?')) return;
-    await supabase.from('salary_components').delete().eq('id', id);
+    const { error } = await deleteComponent(id);
+    if (error) return showToast('Delete failed: ' + error.message, 'error');
     showToast('Deleted', 'success');
     fetchComponents();
   };
 
-  // Salary preview
   const previewSalary = calcSalary(30000, components, tenant?.work_days || 26, tenant?.work_days || 26);
 
   const renderTable = (category, label) => {
@@ -90,17 +69,13 @@ export default function SalaryStructurePage() {
         </div>
         <div className="table-wrap">
           <table>
-            <thead>
-              <tr>
-                <th>Component</th><th>Type</th><th>Value</th><th>Actions</th>
-              </tr>
-            </thead>
+            <thead><tr><th>Component</th><th>Type</th><th>Value</th><th>Actions</th></tr></thead>
             <tbody>
               {items.length === 0 ? (
                 <tr><td colSpan={4} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 24 }}>No components configured</td></tr>
               ) : items.map((c) => {
                 const typeLabel = c.calc_type === 'percent_ctc' ? '% of CTC' : c.calc_type === 'percent_basic' ? '% of Basic' : 'Fixed';
-                const valLabel = c.calc_type === 'fixed' ? fmt(c.fixed) : c.percent + '%';
+                const valLabel  = c.calc_type === 'fixed' ? fmt(c.fixed) : c.percent + '%';
                 return (
                   <tr key={c.id}>
                     <td><strong>{c.name}</strong></td>
@@ -108,7 +83,7 @@ export default function SalaryStructurePage() {
                     <td>{valLabel}</td>
                     <td>
                       <button className="btn btn-outline btn-icon btn-sm" onClick={() => openModal(category, c)}><i className="fas fa-edit" /></button>{' '}
-                      <button className="btn btn-outline btn-icon btn-sm" style={{ color: 'var(--danger)' }} onClick={() => deleteComponent(c.id)}><i className="fas fa-trash" /></button>
+                      <button className="btn btn-outline btn-icon btn-sm" style={{ color: 'var(--danger)' }} onClick={() => handleDelete(c.id)}><i className="fas fa-trash" /></button>
                     </td>
                   </tr>
                 );
@@ -125,7 +100,7 @@ export default function SalaryStructurePage() {
       <Header title="Salary Structure" breadcrumb="Configure earning and deduction components" />
       <div className="page-content">
         {loading ? (
-          <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)' }}><div className="spinner" style={{ margin: '0 auto 16px' }} />Loading components...</div>
+          <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)' }}><div className="spinner" style={{ margin: '0 auto 16px' }} />Loading components…</div>
         ) : (
           <>
             <div className="grid-2">
@@ -171,7 +146,7 @@ export default function SalaryStructurePage() {
       <Modal show={showModal} onClose={() => setShowModal(false)} title={editComp ? 'Edit Component' : 'Add Component'} width="420px"
         footer={<>
           <button className="btn btn-outline" onClick={() => setShowModal(false)}>Cancel</button>
-          <button className="btn btn-primary" onClick={saveComponent}><i className="fas fa-check" /> Save</button>
+          <button className="btn btn-primary" onClick={handleSave}><i className="fas fa-check" /> Save</button>
         </>}
       >
         <div className="form-group">

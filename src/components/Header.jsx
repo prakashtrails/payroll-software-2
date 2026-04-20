@@ -1,9 +1,6 @@
 import React from 'react';
-import { useAuth } from '@/context/AuthContext';
 
 export default function Header({ title, breadcrumb, actions }) {
-  const { tenant } = useAuth();
-
   return (
     <header className="header">
       <div className="header-left">

@@ -19,7 +19,7 @@ export default function LoginPage() {
       const dest = profile.role === 'employee' ? '/my-dashboard' : '/dashboard';
       navigate(dest, { replace: true });
     }
-  }, [user, profile, loading]);
+  }, [user, profile, loading, navigate]);
 
   // After signIn, profile loads async — redirect when it arrives
   useEffect(() => {
@@ -27,7 +27,7 @@ export default function LoginPage() {
       const dest = profile.role === 'employee' ? '/my-dashboard' : '/dashboard';
       navigate(dest, { replace: true });
     }
-  }, [profile, user, submitting]);
+  }, [profile, user, submitting, navigate]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();

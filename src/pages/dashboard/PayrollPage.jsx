@@ -5,8 +5,11 @@ import Modal from '@/components/Modal';
 import StatCard from '@/components/StatCard';
 import { showToast } from '@/components/Toast';
 import { useAuth } from '@/context/AuthContext';
-import { supabase } from '@/lib/supabase';
-import { fmt, monthLabel, monthKey, calcSalary, getInitials, getAvatarColor } from '@/lib/helpers';
+import { fetchPayroll, processPayroll, revertPayroll } from '@/services/payrollService';
+import { listActiveEmployees } from '@/services/employeeService';
+import { listComponents } from '@/services/salaryService';
+import { listActiveAdvances } from '@/services/advanceService';
+import { fmt, monthLabel, calcSalary, getInitials, getAvatarColor } from '@/lib/helpers';
 
 export default function RunPayrollPage() {
   const { tenant } = useAuth();
@@ -27,18 +30,16 @@ export default function RunPayrollPage() {
     if (!tenant) return;
     setLoading(true);
     try {
-      // Fetch all data in parallel — reduces load time from ~4x to ~1x latency
       const [empsRes, compsRes, advsRes, payrollRes] = await Promise.all([
-        supabase.from('profiles').select('*').eq('tenant_id', tenant.id).eq('status', 'Active').in('role', ['employee', 'manager']),
-        supabase.from('salary_components').select('*').eq('tenant_id', tenant.id),
-        supabase.from('advances').select('*').eq('tenant_id', tenant.id).eq('status', 'Active'),
-        supabase.from('payrolls').select('*, payslips(*)').eq('tenant_id', tenant.id).eq('month', payrollMonth + 1).eq('year', payrollYear).maybeSingle(),
+        listActiveEmployees(tenant.id),
+        listComponents(tenant.id),
+        listActiveAdvances(tenant.id),
+        fetchPayroll(tenant.id, payrollMonth, payrollYear),
       ]);
-
-      setEmployees(empsRes.data || []);
-      setComponents(compsRes.data || []);
-      setAdvances(advsRes.data || []);
-      setProcessed(payrollRes.data || null);
+      setEmployees(empsRes.data);
+      setComponents(compsRes.data);
+      setAdvances(advsRes.data);
+      setProcessed(payrollRes.data);
       setWorkDayOverrides({});
     } catch (err) {
       console.error(err);
@@ -59,77 +60,12 @@ export default function RunPayrollPage() {
   };
 
   // ---- PROCESS PAYROLL ----
-  const processPayroll = async () => {
+  const handleProcessPayroll = async () => {
     if (employees.length === 0) return showToast('No active employees to process', 'error');
     if (components.length === 0) return showToast('Configure salary components first', 'error');
-
     setProcessing(true);
     try {
-      // 1. Create payroll record
-      const { data: payroll, error: pErr } = await supabase
-        .from('payrolls')
-        .insert([{
-          tenant_id: tenant.id,
-          month: payrollMonth + 1,
-          year: payrollYear,
-          status: 'Processed'
-        }])
-        .select()
-        .single();
-
-      if (pErr) throw pErr;
-
-      // 2. Generate payslips for each employee
-      const slips = employees.map((emp) => {
-        const actualDays = workDayOverrides[emp.id] !== undefined
-          ? workDayOverrides[emp.id]
-          : workDays;
-        const sal = calcSalary(emp.ctc || 0, components, workDays, actualDays);
-
-        // Calculate advance deduction
-        let advDeduction = 0;
-        const empAdvances = advances.filter((a) => a.profile_id === emp.id);
-        empAdvances.forEach((a) => {
-          const ded = Math.min(a.emi, a.balance);
-          advDeduction += ded;
-        });
-
-        return {
-          payroll_id: payroll.id,
-          tenant_id: tenant.id,
-          profile_id: emp.id,
-          emp_name: `${emp.first_name} ${emp.last_name}`,
-          department: emp.department || '',
-          designation: emp.designation || '',
-          ctc: emp.ctc || 0,
-          work_days: actualDays,
-          total_work_days: workDays,
-          gross_earnings: sal.totalEarning,
-          total_deductions: sal.totalDeduction,
-          advance_deduction: advDeduction,
-          net_pay: sal.net - advDeduction,
-          breakdown: JSON.stringify({ earnings: sal.earnings, deductions: sal.deductions }),
-        };
-      });
-
-      const { error: sErr } = await supabase.from('payslips').insert(slips);
-      if (sErr) throw sErr;
-
-      // 3. Update advance balances
-      for (const emp of employees) {
-        const empAdvances = advances.filter((a) => a.profile_id === emp.id);
-        for (const adv of empAdvances) {
-          const ded = Math.min(adv.emi, adv.balance);
-          const newPaid = adv.paid + ded;
-          const newBalance = adv.balance - ded;
-          await supabase.from('advances').update({
-            paid: newPaid,
-            balance: newBalance,
-            status: newBalance <= 0 ? 'Completed' : 'Active',
-          }).eq('id', adv.id);
-        }
-      }
-
+      await processPayroll({ tenantId: tenant.id, month: payrollMonth, year: payrollYear, employees, components, advances, workDays, workDayOverrides });
       showToast(`Payroll processed for ${monthLabel(payrollMonth, payrollYear)}!`, 'success');
       fetchData();
     } catch (err) {
@@ -140,11 +76,10 @@ export default function RunPayrollPage() {
   };
 
   // ---- REVERT PAYROLL ----
-  const revertPayroll = async () => {
+  const handleRevertPayroll = async () => {
     if (!processed || !confirm('Revert this payroll? All payslips will be deleted.')) return;
     try {
-      await supabase.from('payslips').delete().eq('payroll_id', processed.id);
-      await supabase.from('payrolls').delete().eq('id', processed.id);
+      await revertPayroll(processed.id);
       showToast('Payroll reverted', 'warning');
       fetchData();
     } catch (err) {
@@ -187,9 +122,9 @@ export default function RunPayrollPage() {
           <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
             <button className="btn btn-outline" onClick={exportCSV}><i className="fas fa-file-csv" /> Export CSV</button>
             {processed ? (
-              <button className="btn btn-danger" onClick={revertPayroll}><i className="fas fa-undo" /> Revert Payroll</button>
+              <button className="btn btn-danger" onClick={handleRevertPayroll}><i className="fas fa-undo" /> Revert Payroll</button>
             ) : (
-              <button className="btn btn-primary" onClick={processPayroll} disabled={processing}>
+              <button className="btn btn-primary" onClick={handleProcessPayroll} disabled={processing}>
                 {processing ? <><div className="spinner" style={{ width: 16, height: 16, borderWidth: 2 }} /> Processing...</> : <><i className="fas fa-play" /> Process Payroll</>}
               </button>
             )}
@@ -308,7 +243,7 @@ export default function RunPayrollPage() {
 
 function PayslipDetail({ slip, companyName }) {
   let breakdown = { earnings: [], deductions: [] };
-  try { breakdown = typeof slip.breakdown === 'string' ? JSON.parse(slip.breakdown) : slip.breakdown; } catch (e) { /* ignore */ }
+  try { breakdown = typeof slip.breakdown === 'string' ? JSON.parse(slip.breakdown) : slip.breakdown; } catch (_e) { /* ignore */ }
 
   return (
     <div className="payslip">

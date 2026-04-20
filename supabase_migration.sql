@@ -1,0 +1,581 @@
+-- =============================================================
+-- PayrollPro — Full Database Migration
+-- Paste this entire file into the Supabase SQL Editor and run it.
+-- =============================================================
+
+-- Enable UUID generation
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+
+
+-- =============================================================
+-- 1. TABLES
+-- =============================================================
+
+-- Tenants (one per registered company)
+CREATE TABLE IF NOT EXISTS tenants (
+  id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  company_name    text NOT NULL,
+  domain          text,
+  work_days       int  NOT NULL DEFAULT 26,
+  pay_day         int  NOT NULL DEFAULT 1,
+  currency        text NOT NULL DEFAULT '₹',
+  shift_start     text NOT NULL DEFAULT '09:00',
+  shift_end       text NOT NULL DEFAULT '18:00',
+  late_threshold  int  NOT NULL DEFAULT 15,
+  created_at      timestamptz NOT NULL DEFAULT now()
+);
+
+-- Profiles (one per user — links auth.users → tenant)
+CREATE TABLE IF NOT EXISTS profiles (
+  id          uuid PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+  tenant_id   uuid REFERENCES tenants(id) ON DELETE CASCADE,
+  first_name  text NOT NULL DEFAULT '',
+  last_name   text NOT NULL DEFAULT '',
+  email       text NOT NULL DEFAULT '',
+  phone       text NOT NULL DEFAULT '',
+  department  text NOT NULL DEFAULT '',
+  designation text NOT NULL DEFAULT '',
+  join_date   date,
+  ctc         numeric NOT NULL DEFAULT 0,
+  bank_acc    text NOT NULL DEFAULT '',
+  pan         text NOT NULL DEFAULT '',
+  aadhar      text NOT NULL DEFAULT '',
+  role        text NOT NULL DEFAULT 'employee'
+                CHECK (role IN ('superadmin','admin','manager','employee')),
+  status      text NOT NULL DEFAULT 'Active'
+                CHECK (status IN ('Active','Inactive')),
+  created_at  timestamptz NOT NULL DEFAULT now()
+);
+
+-- Departments (per tenant)
+CREATE TABLE IF NOT EXISTS departments (
+  id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id   uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  name        text NOT NULL,
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (tenant_id, name)
+);
+
+-- Salary Components (earnings / deductions per tenant)
+CREATE TABLE IF NOT EXISTS salary_components (
+  id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id   uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  name        text NOT NULL,
+  category    text NOT NULL CHECK (category IN ('earning','deduction')),
+  calc_type   text NOT NULL CHECK (calc_type IN ('percent_ctc','percent_basic','fixed')),
+  percent     numeric NOT NULL DEFAULT 0,
+  fixed       numeric NOT NULL DEFAULT 0,
+  created_at  timestamptz NOT NULL DEFAULT now()
+);
+
+-- Attendance records (one per employee per day)
+CREATE TABLE IF NOT EXISTS attendance (
+  id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id    uuid NOT NULL REFERENCES tenants(id)  ON DELETE CASCADE,
+  profile_id   uuid NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  date         date NOT NULL,
+  status       text NOT NULL DEFAULT 'Present'
+                 CHECK (status IN ('Present','Absent','Late','Half Day','Leave')),
+  total_hours  numeric NOT NULL DEFAULT 0,
+  location     text NOT NULL DEFAULT 'Office',
+  created_at   timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (profile_id, date)
+);
+
+-- Punch-in / Punch-out events (many per attendance record)
+CREATE TABLE IF NOT EXISTS punches (
+  id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  attendance_id  uuid NOT NULL REFERENCES attendance(id) ON DELETE CASCADE,
+  punch_time     text NOT NULL,   -- "HH:MM" format
+  punch_type     text NOT NULL CHECK (punch_type IN ('in','out')),
+  created_at     timestamptz NOT NULL DEFAULT now()
+);
+
+-- Payroll runs (one per tenant per month)
+CREATE TABLE IF NOT EXISTS payrolls (
+  id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id   uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  month       int  NOT NULL CHECK (month BETWEEN 1 AND 12),
+  year        int  NOT NULL,
+  status      text NOT NULL DEFAULT 'Processed',
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (tenant_id, month, year)
+);
+
+-- Individual payslips (one per employee per payroll run)
+CREATE TABLE IF NOT EXISTS payslips (
+  id                uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  payroll_id        uuid NOT NULL REFERENCES payrolls(id) ON DELETE CASCADE,
+  tenant_id         uuid NOT NULL REFERENCES tenants(id)  ON DELETE CASCADE,
+  profile_id        uuid NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  emp_name          text NOT NULL DEFAULT '',
+  department        text NOT NULL DEFAULT '',
+  designation       text NOT NULL DEFAULT '',
+  ctc               numeric NOT NULL DEFAULT 0,
+  work_days         int NOT NULL DEFAULT 0,
+  total_work_days   int NOT NULL DEFAULT 26,
+  gross_earnings    numeric NOT NULL DEFAULT 0,
+  total_deductions  numeric NOT NULL DEFAULT 0,
+  advance_deduction numeric NOT NULL DEFAULT 0,
+  net_pay           numeric NOT NULL DEFAULT 0,
+  breakdown         jsonb,
+  created_at        timestamptz NOT NULL DEFAULT now()
+);
+
+-- Advances & Loans
+CREATE TABLE IF NOT EXISTS advances (
+  id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id   uuid NOT NULL REFERENCES tenants(id)  ON DELETE CASCADE,
+  profile_id  uuid NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  type        text NOT NULL DEFAULT 'Salary Advance',
+  amount      numeric NOT NULL DEFAULT 0,
+  emi         numeric NOT NULL DEFAULT 0,
+  paid        numeric NOT NULL DEFAULT 0,
+  balance     numeric NOT NULL DEFAULT 0,
+  status      text NOT NULL DEFAULT 'Active'
+                CHECK (status IN ('Active','Completed')),
+  remarks     text NOT NULL DEFAULT '',
+  created_at  timestamptz NOT NULL DEFAULT now()
+);
+
+
+-- =============================================================
+-- 2. ROW-LEVEL SECURITY (RLS)
+-- =============================================================
+
+ALTER TABLE tenants           ENABLE ROW LEVEL SECURITY;
+ALTER TABLE profiles          ENABLE ROW LEVEL SECURITY;
+ALTER TABLE departments       ENABLE ROW LEVEL SECURITY;
+ALTER TABLE salary_components ENABLE ROW LEVEL SECURITY;
+ALTER TABLE attendance        ENABLE ROW LEVEL SECURITY;
+ALTER TABLE punches           ENABLE ROW LEVEL SECURITY;
+ALTER TABLE payrolls          ENABLE ROW LEVEL SECURITY;
+ALTER TABLE payslips          ENABLE ROW LEVEL SECURITY;
+ALTER TABLE advances          ENABLE ROW LEVEL SECURITY;
+
+-- Helper: get the calling user's tenant_id
+CREATE OR REPLACE FUNCTION my_tenant_id()
+RETURNS uuid LANGUAGE sql STABLE SECURITY DEFINER AS $$
+  SELECT tenant_id FROM profiles WHERE id = auth.uid();
+$$;
+
+-- Helper: get the calling user's role
+CREATE OR REPLACE FUNCTION my_role()
+RETURNS text LANGUAGE sql STABLE SECURITY DEFINER AS $$
+  SELECT role FROM profiles WHERE id = auth.uid();
+$$;
+
+-- ---- tenants ----
+CREATE POLICY "tenant: superadmin sees all"
+  ON tenants FOR SELECT
+  USING (my_role() = 'superadmin');
+
+CREATE POLICY "tenant: members see own"
+  ON tenants FOR SELECT
+  USING (id = my_tenant_id());
+
+CREATE POLICY "tenant: admin can update own"
+  ON tenants FOR UPDATE
+  USING (id = my_tenant_id() AND my_role() IN ('admin','manager'));
+
+-- ---- profiles ----
+CREATE POLICY "profiles: admin/manager sees tenant"
+  ON profiles FOR SELECT
+  USING (
+    tenant_id = my_tenant_id()
+    OR my_role() = 'superadmin'
+  );
+
+CREATE POLICY "profiles: employee sees self"
+  ON profiles FOR SELECT
+  USING (id = auth.uid());
+
+CREATE POLICY "profiles: admin/manager can update tenant"
+  ON profiles FOR UPDATE
+  USING (tenant_id = my_tenant_id() AND my_role() IN ('admin','manager','superadmin'));
+
+CREATE POLICY "profiles: admin/manager can delete from tenant"
+  ON profiles FOR DELETE
+  USING (tenant_id = my_tenant_id() AND my_role() IN ('admin','manager','superadmin'));
+
+-- ---- departments ----
+CREATE POLICY "departments: tenant members can read"
+  ON departments FOR SELECT
+  USING (tenant_id = my_tenant_id());
+
+CREATE POLICY "departments: admin/manager can insert"
+  ON departments FOR INSERT
+  WITH CHECK (tenant_id = my_tenant_id() AND my_role() IN ('admin','manager'));
+
+CREATE POLICY "departments: admin/manager can delete"
+  ON departments FOR DELETE
+  USING (tenant_id = my_tenant_id() AND my_role() IN ('admin','manager'));
+
+-- ---- salary_components ----
+CREATE POLICY "salary_components: tenant members can read"
+  ON salary_components FOR SELECT
+  USING (tenant_id = my_tenant_id());
+
+CREATE POLICY "salary_components: admin/manager can write"
+  ON salary_components FOR ALL
+  USING (tenant_id = my_tenant_id() AND my_role() IN ('admin','manager'))
+  WITH CHECK (tenant_id = my_tenant_id() AND my_role() IN ('admin','manager'));
+
+-- ---- attendance ----
+CREATE POLICY "attendance: admin/manager sees tenant"
+  ON attendance FOR SELECT
+  USING (tenant_id = my_tenant_id() AND my_role() IN ('admin','manager','superadmin'));
+
+CREATE POLICY "attendance: employee sees own"
+  ON attendance FOR SELECT
+  USING (profile_id = auth.uid());
+
+CREATE POLICY "attendance: employee can insert own"
+  ON attendance FOR INSERT
+  WITH CHECK (profile_id = auth.uid() AND tenant_id = my_tenant_id());
+
+CREATE POLICY "attendance: employee can update own"
+  ON attendance FOR UPDATE
+  USING (profile_id = auth.uid());
+
+CREATE POLICY "attendance: admin can insert any"
+  ON attendance FOR INSERT
+  WITH CHECK (tenant_id = my_tenant_id() AND my_role() IN ('admin','manager'));
+
+CREATE POLICY "attendance: admin can update any"
+  ON attendance FOR UPDATE
+  USING (tenant_id = my_tenant_id() AND my_role() IN ('admin','manager'));
+
+-- ---- punches ----
+CREATE POLICY "punches: employee can read own"
+  ON punches FOR SELECT
+  USING (
+    attendance_id IN (
+      SELECT id FROM attendance WHERE profile_id = auth.uid()
+    )
+  );
+
+CREATE POLICY "punches: admin/manager can read tenant"
+  ON punches FOR SELECT
+  USING (
+    attendance_id IN (
+      SELECT id FROM attendance WHERE tenant_id = my_tenant_id()
+    )
+  );
+
+CREATE POLICY "punches: employee can insert own"
+  ON punches FOR INSERT
+  WITH CHECK (
+    attendance_id IN (
+      SELECT id FROM attendance WHERE profile_id = auth.uid()
+    )
+  );
+
+-- ---- payrolls ----
+CREATE POLICY "payrolls: tenant members can read"
+  ON payrolls FOR SELECT
+  USING (tenant_id = my_tenant_id());
+
+CREATE POLICY "payrolls: admin/manager can write"
+  ON payrolls FOR ALL
+  USING (tenant_id = my_tenant_id() AND my_role() IN ('admin','manager'))
+  WITH CHECK (tenant_id = my_tenant_id() AND my_role() IN ('admin','manager'));
+
+-- ---- payslips ----
+CREATE POLICY "payslips: admin/manager sees tenant"
+  ON payslips FOR SELECT
+  USING (tenant_id = my_tenant_id() AND my_role() IN ('admin','manager','superadmin'));
+
+CREATE POLICY "payslips: employee sees own"
+  ON payslips FOR SELECT
+  USING (profile_id = auth.uid());
+
+CREATE POLICY "payslips: admin/manager can write"
+  ON payslips FOR ALL
+  USING (tenant_id = my_tenant_id() AND my_role() IN ('admin','manager'))
+  WITH CHECK (tenant_id = my_tenant_id() AND my_role() IN ('admin','manager'));
+
+-- ---- advances ----
+CREATE POLICY "advances: admin/manager sees tenant"
+  ON advances FOR SELECT
+  USING (tenant_id = my_tenant_id() AND my_role() IN ('admin','manager','superadmin'));
+
+CREATE POLICY "advances: employee sees own"
+  ON advances FOR SELECT
+  USING (profile_id = auth.uid());
+
+CREATE POLICY "advances: admin/manager can write"
+  ON advances FOR ALL
+  USING (tenant_id = my_tenant_id() AND my_role() IN ('admin','manager'))
+  WITH CHECK (tenant_id = my_tenant_id() AND my_role() IN ('admin','manager'));
+
+
+-- =============================================================
+-- 3. RPC FUNCTIONS  (SECURITY DEFINER — bypass RLS safely)
+-- =============================================================
+
+-- Called by SignupPage after Supabase Auth signup.
+-- Creates the tenant + admin profile atomically.
+CREATE OR REPLACE FUNCTION create_workspace(
+  p_company_name  text,
+  p_first_name    text,
+  p_last_name     text
+)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_tenant_id uuid;
+  v_email     text;
+BEGIN
+  -- Get the email of the caller from auth.users
+  SELECT email INTO v_email FROM auth.users WHERE id = auth.uid();
+
+  -- Create tenant record
+  INSERT INTO tenants (company_name)
+  VALUES (p_company_name)
+  RETURNING id INTO v_tenant_id;
+
+  -- Create admin profile for the caller
+  INSERT INTO profiles (id, tenant_id, first_name, last_name, email, role, status)
+  VALUES (auth.uid(), v_tenant_id, p_first_name, p_last_name, COALESCE(v_email,''), 'admin', 'Active');
+END;
+$$;
+
+-- Called by EmployeesPage when a manager creates a new employee account.
+-- Inserts the employee profile under the calling manager's tenant.
+CREATE OR REPLACE FUNCTION insert_employee_profile(
+  p_user_id     uuid,
+  p_first_name  text,
+  p_last_name   text,
+  p_email       text,
+  p_phone       text,
+  p_department  text,
+  p_designation text,
+  p_ctc         numeric,
+  p_join_date   date,
+  p_bank_acc    text,
+  p_pan         text,
+  p_aadhar      text
+)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_tenant_id uuid;
+BEGIN
+  -- Verify the caller is an admin/manager and get their tenant
+  SELECT tenant_id INTO v_tenant_id
+  FROM profiles
+  WHERE id = auth.uid() AND role IN ('admin', 'manager');
+
+  IF v_tenant_id IS NULL THEN
+    RAISE EXCEPTION 'Only admins and managers can create employees';
+  END IF;
+
+  INSERT INTO profiles (
+    id, tenant_id,
+    first_name, last_name, email, phone,
+    department, designation, ctc, join_date,
+    bank_acc, pan, aadhar,
+    role, status
+  ) VALUES (
+    p_user_id, v_tenant_id,
+    p_first_name, p_last_name, p_email, COALESCE(p_phone,''),
+    COALESCE(p_department,''), COALESCE(p_designation,''),
+    COALESCE(p_ctc, 0), p_join_date,
+    COALESCE(p_bank_acc,''), COALESCE(p_pan,''), COALESCE(p_aadhar,''),
+    'employee', 'Active'
+  );
+END;
+$$;
+
+
+-- =============================================================
+-- 4. OPTIONAL: Seed a superadmin account
+-- Replace the email below with your own, then sign up with that
+-- email via the app — this will update the role to superadmin.
+-- =============================================================
+
+-- After you sign up with your email via /signup, run this once:
+-- UPDATE profiles SET role = 'superadmin' WHERE email = 'your@email.com';
+
+
+-- =============================================================
+-- 5. PERFORMANCE INDEXES
+-- Add these to keep queries fast at 50+ tenants / 100+ employees.
+-- =============================================================
+
+-- profiles
+CREATE INDEX IF NOT EXISTS idx_profiles_tenant_id         ON profiles(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_profiles_tenant_status     ON profiles(tenant_id, status);
+CREATE INDEX IF NOT EXISTS idx_profiles_tenant_role       ON profiles(tenant_id, role);
+CREATE INDEX IF NOT EXISTS idx_profiles_email             ON profiles(email);
+
+-- attendance — hot path: calendar view and team snapshot
+CREATE INDEX IF NOT EXISTS idx_attendance_profile_date    ON attendance(profile_id, date);
+CREATE INDEX IF NOT EXISTS idx_attendance_tenant_date     ON attendance(tenant_id, date);
+
+-- punches — always looked up by attendance_id
+CREATE INDEX IF NOT EXISTS idx_punches_attendance_id      ON punches(attendance_id);
+
+-- payrolls
+CREATE INDEX IF NOT EXISTS idx_payrolls_tenant_month      ON payrolls(tenant_id, month, year);
+
+-- payslips
+CREATE INDEX IF NOT EXISTS idx_payslips_payroll_id        ON payslips(payroll_id);
+CREATE INDEX IF NOT EXISTS idx_payslips_profile_id        ON payslips(profile_id);
+CREATE INDEX IF NOT EXISTS idx_payslips_tenant_id         ON payslips(tenant_id);
+
+-- advances
+CREATE INDEX IF NOT EXISTS idx_advances_tenant_status     ON advances(tenant_id, status);
+CREATE INDEX IF NOT EXISTS idx_advances_profile_id        ON advances(profile_id);
+
+-- salary_components + departments
+CREATE INDEX IF NOT EXISTS idx_salary_components_tenant   ON salary_components(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_departments_tenant         ON departments(tenant_id);
+-- Note: idx_tenants_join_code_unique is created in section 6 (join_code column added there)
+
+
+-- =============================================================
+-- 6. EMPLOYEE SELF-SIGNUP VIA ORG CODE
+-- Run this section AFTER section 1-5 above.
+-- =============================================================
+
+-- Add join_code column to tenants (6-char alphanumeric code shared with employees)
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS join_code text;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tenants_join_code_unique ON tenants(upper(join_code));
+
+-- Back-fill codes for any existing tenants that don't have one yet
+DO $$
+DECLARE
+  r     RECORD;
+  v_code text;
+BEGIN
+  FOR r IN SELECT id FROM tenants WHERE join_code IS NULL LOOP
+    LOOP
+      v_code := upper(substring(replace(gen_random_uuid()::text, '-', ''), 1, 6));
+      EXIT WHEN NOT EXISTS (SELECT 1 FROM tenants WHERE upper(join_code) = v_code);
+    END LOOP;
+    UPDATE tenants SET join_code = v_code WHERE id = r.id;
+  END LOOP;
+END $$;
+
+-- Drop the old 3-param void versions so they don't create overload ambiguity
+-- with the new 4-param versions below.
+DROP FUNCTION IF EXISTS create_workspace(text, text, text);
+DROP FUNCTION IF EXISTS employee_join_workspace(text, text, text);
+
+-- Updated create_workspace: generates join_code and RETURNS it so the signup
+-- page can display it immediately after workspace creation.
+-- p_user_id: pass the auth user's UUID explicitly. This is required when Supabase
+-- email confirmation is enabled (session is null after signUp → auth.uid() = null).
+CREATE OR REPLACE FUNCTION create_workspace(
+  p_company_name  text,
+  p_first_name    text,
+  p_last_name     text,
+  p_user_id       uuid DEFAULT NULL
+)
+RETURNS text          -- returns the join_code
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_tenant_id uuid;
+  v_uid       uuid := COALESCE(p_user_id, auth.uid());
+  v_email     text;
+  v_code      text;
+BEGIN
+  IF v_uid IS NULL THEN
+    RAISE EXCEPTION 'No authenticated user. Pass p_user_id explicitly.';
+  END IF;
+
+  SELECT email INTO v_email FROM auth.users WHERE id = v_uid;
+
+  -- Generate a unique 6-char code
+  LOOP
+    v_code := upper(substring(replace(gen_random_uuid()::text, '-', ''), 1, 6));
+    EXIT WHEN NOT EXISTS (SELECT 1 FROM tenants WHERE upper(join_code) = v_code);
+  END LOOP;
+
+  INSERT INTO tenants (company_name, join_code)
+  VALUES (p_company_name, v_code)
+  RETURNING id INTO v_tenant_id;
+
+  INSERT INTO profiles (id, tenant_id, first_name, last_name, email, role, status)
+  VALUES (v_uid, v_tenant_id, p_first_name, p_last_name, COALESCE(v_email,''), 'admin', 'Active');
+
+  RETURN v_code;
+END;
+$$;
+
+-- Lightweight lookup — returns only the company_name for a given code.
+-- Callable by unauthenticated (anon) users so the signup page can preview
+-- the company name before the employee creates their account.
+CREATE OR REPLACE FUNCTION lookup_org(p_org_code text)
+RETURNS text
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT company_name
+  FROM   tenants
+  WHERE  upper(join_code) = upper(trim(p_org_code))
+  LIMIT  1;
+$$;
+
+-- Employee joins an existing workspace by entering the org code.
+-- p_user_id: pass the auth user's UUID explicitly. Required when email
+-- confirmation is enabled (no session yet → auth.uid() = null).
+CREATE OR REPLACE FUNCTION employee_join_workspace(
+  p_org_code   text,
+  p_first_name text,
+  p_last_name  text,
+  p_user_id    uuid DEFAULT NULL
+)
+RETURNS text
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_tenant_id uuid;
+  v_uid       uuid := COALESCE(p_user_id, auth.uid());
+  v_email     text;
+BEGIN
+  IF v_uid IS NULL THEN
+    RAISE EXCEPTION 'No authenticated user. Pass p_user_id explicitly.';
+  END IF;
+
+  SELECT id INTO v_tenant_id
+  FROM   tenants
+  WHERE  upper(join_code) = upper(trim(p_org_code));
+
+  IF v_tenant_id IS NULL THEN
+    RAISE EXCEPTION 'Invalid organization code. Please check with your manager.';
+  END IF;
+
+  IF EXISTS (SELECT 1 FROM profiles WHERE id = v_uid) THEN
+    RAISE EXCEPTION 'An account already exists for this email. Please log in instead.';
+  END IF;
+
+  SELECT email INTO v_email FROM auth.users WHERE id = v_uid;
+
+  INSERT INTO profiles (id, tenant_id, first_name, last_name, email, role, status)
+  VALUES (v_uid, v_tenant_id, p_first_name, p_last_name, COALESCE(v_email,''), 'employee', 'Active');
+
+  RETURN 'ok';
+END;
+$$;
+
+-- Grant execute so anonymous users can call lookup_org (pre-login preview)
+-- and authenticated users can call the join/create functions.
+GRANT EXECUTE ON FUNCTION lookup_org(text)                             TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION employee_join_workspace(text,text,text,uuid) TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION create_workspace(text,text,text,uuid)        TO anon, authenticated;

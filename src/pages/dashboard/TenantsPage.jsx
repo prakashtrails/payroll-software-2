@@ -2,20 +2,17 @@ import React from 'react';
 import { useEffect, useState } from 'react';
 import Header from '@/components/Header';
 import StatCard from '@/components/StatCard';
-import { supabase } from '@/lib/supabase';
+import { listAllTenants } from '@/services/tenantService';
 
 export default function TenantsPage() {
   const [tenants, setTenants] = useState([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const fetchTenants = async () => {
-      // Super admin queries all tenants (would need special RLS bypass in production)
-      const { data } = await supabase.from('tenants').select('*').order('created_at', { ascending: false });
-      setTenants(data || []);
+    listAllTenants().then(({ data }) => {
+      setTenants(data);
       setLoading(false);
-    };
-    fetchTenants();
+    });
   }, []);
 
   return (
@@ -23,13 +20,13 @@ export default function TenantsPage() {
       <Header title="Tenant Management" breadcrumb="Platform administration" />
       <div className="page-content">
         <div className="stats-row" style={{ gridTemplateColumns: 'repeat(3, 1fr)' }}>
-          <StatCard icon="fa-building" iconColor="blue" value={tenants.length} label="Total Tenants" />
-          <StatCard icon="fa-check-circle" iconColor="green" value={tenants.length} label="Active" />
-          <StatCard icon="fa-clock" iconColor="orange" value={0} label="Pending Setup" />
+          <StatCard icon="fa-building"     iconColor="blue"   value={tenants.length} label="Total Tenants" />
+          <StatCard icon="fa-check-circle" iconColor="green"  value={tenants.length} label="Active" />
+          <StatCard icon="fa-clock"        iconColor="orange" value={0}              label="Pending Setup" />
         </div>
 
         {loading ? (
-          <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)' }}><div className="spinner" style={{ margin: '0 auto 16px' }} />Loading tenants...</div>
+          <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)' }}><div className="spinner" style={{ margin: '0 auto 16px' }} />Loading tenants…</div>
         ) : (
           <div className="card">
             <div className="card-header"><h3>Registered Businesses</h3></div>

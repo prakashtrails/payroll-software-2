@@ -1,0 +1,169 @@
+import { supabase } from '@/lib/supabase';
+import { todayStr, timeStr, diffHours } from '@/lib/helpers';
+
+/** Full month attendance (with punches) for one employee — used in calendar views. */
+export async function fetchMyMonthAttendance(profileId, year, month) {
+  const startDate = `${year}-${String(month + 1).padStart(2, '0')}-01`;
+  const endDay    = new Date(year, month + 1, 0).getDate();
+  const endDate   = `${year}-${String(month + 1).padStart(2, '0')}-${endDay}`;
+
+  const { data, error } = await supabase
+    .from('attendance')
+    .select('*, punches(*)')
+    .eq('profile_id', profileId)
+    .gte('date', startDate)
+    .lte('date', endDate)
+    .order('date');
+  return { data: data || [], error };
+}
+
+/** Clock in for today. Creates or reuses the attendance row, then inserts a punch-in. */
+export async function clockIn(tenantId, profileId, tenant) {
+  const today = todayStr();
+
+  // Reuse existing row if present
+  const { data: existing, error: fetchErr } = await supabase
+    .from('attendance')
+    .select('id')
+    .eq('profile_id', profileId)
+    .eq('date', today)
+    .maybeSingle();
+  if (fetchErr) throw fetchErr;
+
+  let attId;
+  if (existing) {
+    attId = existing.id;
+  } else {
+    const shiftStart  = tenant?.shift_start    || '09:00';
+    const lateMin     = tenant?.late_threshold || 15;
+    const [sh, sm]    = shiftStart.split(':').map(Number);
+    const now         = new Date();
+    const diffMin     = (now.getHours() * 60 + now.getMinutes()) - (sh * 60 + sm);
+    const status      = diffMin > lateMin ? 'Late' : 'Present';
+
+    const { data: newAtt, error: insErr } = await supabase
+      .from('attendance')
+      .insert([{ tenant_id: tenantId, profile_id: profileId, date: today, status, location: 'Office' }])
+      .select()
+      .single();
+    if (insErr) throw insErr;
+    attId = newAtt.id;
+  }
+
+  const { error: punchErr } = await supabase
+    .from('punches')
+    .insert([{ attendance_id: attId, punch_time: timeStr(new Date()), punch_type: 'in' }]);
+  if (punchErr) throw punchErr;
+}
+
+/** Clock out for today. Inserts punch-out and recalculates total_hours + status. */
+export async function clockOut(profileId) {
+  const today = todayStr();
+
+  const { data: att, error: fetchErr } = await supabase
+    .from('attendance')
+    .select('id')
+    .eq('profile_id', profileId)
+    .eq('date', today)
+    .single();
+  if (fetchErr) throw fetchErr;
+
+  const punchOutTime = timeStr(new Date());
+  const { error: punchErr } = await supabase
+    .from('punches')
+    .insert([{ attendance_id: att.id, punch_time: punchOutTime, punch_type: 'out' }]);
+  if (punchErr) throw punchErr;
+
+  const { data: allPunches, error: allErr } = await supabase
+    .from('punches')
+    .select('*')
+    .eq('attendance_id', att.id)
+    .order('punch_time');
+  if (allErr) throw allErr;
+
+  const ins  = allPunches.filter((p) => p.punch_type === 'in');
+  const outs = allPunches.filter((p) => p.punch_type === 'out');
+  let total  = 0;
+  for (let i = 0; i < ins.length; i++) {
+    if (outs[i]) total += diffHours(ins[i].punch_time, outs[i].punch_time);
+  }
+
+  const status = total < 4 ? 'Half Day' : 'Present';
+  await supabase
+    .from('attendance')
+    .update({ total_hours: Math.round(total * 100) / 100, status })
+    .eq('id', att.id);
+
+  return { total };
+}
+
+/** Team attendance snapshot for a specific date (admin view). */
+export async function fetchTeamAttendance(tenantId, date) {
+  const [empsRes, deptsRes, attRes] = await Promise.all([
+    supabase.from('profiles').select('*').eq('tenant_id', tenantId).eq('status', 'Active'),
+    supabase.from('departments').select('name').eq('tenant_id', tenantId),
+    supabase.from('attendance').select('*, punches(*)').eq('tenant_id', tenantId).eq('date', date),
+  ]);
+
+  return {
+    employees:   empsRes.data   || [],
+    departments: (deptsRes.data || []).map((d) => d.name),
+    records:     attRes.data    || [],
+    error:       empsRes.error || deptsRes.error || attRes.error,
+  };
+}
+
+/** Upsert a manual attendance entry (admin override). */
+export async function saveManualAttendance(tenantId, { profile_id, date, clockIn: ci, clockOut: co, status }) {
+  const hours = (ci && co) ? Math.round(diffHours(ci, co) * 100) / 100 : 0;
+
+  const { data: existing, error: fetchErr } = await supabase
+    .from('attendance')
+    .select('id')
+    .eq('profile_id', profile_id)
+    .eq('date', date)
+    .maybeSingle();
+  if (fetchErr) throw fetchErr;
+
+  let attId;
+  if (existing) {
+    await supabase.from('attendance')
+      .update({ status, total_hours: hours, location: 'Office (Manual)' })
+      .eq('id', existing.id);
+    await supabase.from('punches').delete().eq('attendance_id', existing.id);
+    attId = existing.id;
+  } else {
+    const { data: newAtt, error: insErr } = await supabase
+      .from('attendance')
+      .insert([{ tenant_id: tenantId, profile_id, date, status, total_hours: hours, location: 'Office (Manual)' }])
+      .select()
+      .single();
+    if (insErr) throw insErr;
+    attId = newAtt.id;
+  }
+
+  const punches = [];
+  if (ci) punches.push({ attendance_id: attId, punch_time: ci, punch_type: 'in' });
+  if (co) punches.push({ attendance_id: attId, punch_time: co, punch_type: 'out' });
+  if (punches.length) {
+    const { error: punchErr } = await supabase.from('punches').insert(punches);
+    if (punchErr) throw punchErr;
+  }
+}
+
+/** Attendance stats for the current month — for the employee self-service dashboard. */
+export async function fetchMyMonthStats(profileId, year, month) {
+  const startDate = `${year}-${String(month + 1).padStart(2, '0')}-01`;
+  const endDay    = new Date(year, month + 1, 0).getDate();
+  const endDate   = `${year}-${String(month + 1).padStart(2, '0')}-${endDay}`;
+
+  const { data, error } = await supabase
+    .from('attendance')
+    .select('status')
+    .eq('profile_id', profileId)
+    .gte('date', startDate)
+    .lte('date', endDate);
+
+  const presentDays = (data || []).filter((r) => r.status === 'Present' || r.status === 'Late').length;
+  return { presentDays, error };
+}

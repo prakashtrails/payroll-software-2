@@ -2,8 +2,9 @@ import React from 'react';
 import { useEffect, useState, useCallback } from 'react';
 import Header from '@/components/Header';
 import { useAuth } from '@/context/AuthContext';
-import { supabase } from '@/lib/supabase';
-import { fmt, monthLabel, getInitials, getAvatarColor } from '@/lib/helpers';
+import { fetchPayslipsByMonth } from '@/services/payrollService';
+import { listActiveEmployees } from '@/services/employeeService';
+import { fmt, monthLabel } from '@/lib/helpers';
 
 export default function PayslipsPage() {
   const { tenant } = useAuth();
@@ -17,25 +18,12 @@ export default function PayslipsPage() {
   const fetchPayslips = useCallback(async () => {
     if (!tenant) return;
     setLoading(true);
-
-    // Fetch payroll+payslips and employees in parallel
-    const [payrollRes, empsRes] = await Promise.all([
-      supabase
-        .from('payrolls')
-        .select('id, payslips(*)')
-        .eq('tenant_id', tenant.id)
-        .eq('month', month + 1)
-        .eq('year', year)
-        .maybeSingle(),
-      supabase
-        .from('profiles')
-        .select('id, first_name, last_name')
-        .eq('tenant_id', tenant.id)
-        .eq('status', 'Active'),
+    const [slipsRes, empsRes] = await Promise.all([
+      fetchPayslipsByMonth(tenant.id, month, year),
+      listActiveEmployees(tenant.id),
     ]);
-
-    setPayslips(payrollRes.data?.payslips || []);
-    setEmployees(empsRes.data || []);
+    setPayslips(slipsRes.data);
+    setEmployees(empsRes.data);
     setLoading(false);
   }, [tenant, month, year]);
 
@@ -52,7 +40,7 @@ export default function PayslipsPage() {
 
   const printPayslip = (slip) => {
     let breakdown = { earnings: [], deductions: [] };
-    try { breakdown = typeof slip.breakdown === 'string' ? JSON.parse(slip.breakdown) : slip.breakdown; } catch (e) { /**/ }
+    try { breakdown = typeof slip.breakdown === 'string' ? JSON.parse(slip.breakdown) : slip.breakdown; } catch (_e) { /**/ }
 
     const w = window.open('', '', 'width=700,height=600');
     w.document.write(`<html><head><title>Payslip</title>
@@ -112,7 +100,7 @@ export default function PayslipsPage() {
         ) : (
           filtered.map((slip) => {
             let breakdown = { earnings: [], deductions: [] };
-            try { breakdown = typeof slip.breakdown === 'string' ? JSON.parse(slip.breakdown) : slip.breakdown; } catch (e) { /**/ }
+            try { breakdown = typeof slip.breakdown === 'string' ? JSON.parse(slip.breakdown) : slip.breakdown; } catch (_e) { /**/ }
 
             return (
               <div className="card" key={slip.id}>

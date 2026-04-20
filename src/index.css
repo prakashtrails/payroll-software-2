@@ -1,4 +1,4 @@
-/* Inter font is loaded via next/font/google in layout.js for zero render-blocking */
+/* Inter font is loaded via Google Fonts CDN in index.html */
 
 /* ======================== DESIGN TOKENS ======================== */
 :root {
@@ -1236,4 +1236,53 @@ tr:hover td {
   .clock-widget { flex-direction: column; gap: 20px; text-align: center; }
   .clock-actions { justify-content: center; }
   .att-summary-bar { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* ======================== PAGINATION ======================== */
+.pagination {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 12px 20px;
+  border-top: 1px solid var(--border-light);
+  justify-content: flex-end;
+}
+.page-btn {
+  min-width: 34px;
+  height: 34px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+  transition: all .15s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.page-btn:hover:not(:disabled) {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+.page-btn.active {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+  font-weight: 600;
+}
+.page-btn:disabled {
+  opacity: .4;
+  cursor: not-allowed;
+}
+.page-dots {
+  padding: 0 4px;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 34px;
+}
+.page-count {
+  margin-left: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
 }

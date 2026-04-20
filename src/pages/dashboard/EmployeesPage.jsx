@@ -2,12 +2,17 @@ import React from 'react';
 import { useEffect, useState, useCallback } from 'react';
 import Header from '@/components/Header';
 import Modal from '@/components/Modal';
+import Pagination from '@/components/Pagination';
 import { showToast } from '@/components/Toast';
 import { useAuth } from '@/context/AuthContext';
-import { supabase } from '@/lib/supabase';
+import { useDebounce } from '@/hooks/useDebounce';
+import {
+  listEmployees, createEmployee, updateEmployee,
+  setEmployeeStatus, removeEmployee, EMPLOYEE_PAGE_SIZE,
+} from '@/services/employeeService';
+import { listDepartments } from '@/services/tenantService';
 import { fmt, getInitials, getAvatarColor } from '@/lib/helpers';
 
-// Temp password shown to manager after creating employee
 function TempPasswordModal({ show, onClose, empName, email, password }) {
   return (
     <Modal show={show} onClose={onClose} title="Employee Created!" width="440px"
@@ -40,66 +45,71 @@ function TempPasswordModal({ show, onClose, empName, email, password }) {
   );
 }
 
+const EMPTY_FORM = {
+  first_name: '', last_name: '', email: '', phone: '',
+  department: '', designation: '', join_date: '', ctc: '',
+  bank_acc: '', pan: '', aadhar: '',
+};
+
 export default function EmployeesPage() {
   const { tenant } = useAuth();
-  const [employees, setEmployees] = useState([]);
-  const [departments, setDepartments] = useState([]);
-  const [loading, setLoading] = useState(true);
+
+  // ---- filter state ----
+  const [search, setSearch]         = useState('');
   const [deptFilter, setDeptFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
-  const [search, setSearch] = useState('');
+  const debouncedSearch = useDebounce(search, 350);
+
+  // ---- pagination ----
+  const [page, setPage]       = useState(1);
+  const [totalCount, setTotalCount] = useState(0);
+  const totalPages = Math.max(1, Math.ceil(totalCount / EMPLOYEE_PAGE_SIZE));
+
+  // ---- data ----
+  const [employees, setEmployees]     = useState([]);
+  const [departments, setDepartments] = useState([]);
+  const [loading, setLoading]         = useState(true);
+
+  // ---- modal ----
   const [showModal, setShowModal] = useState(false);
-  const [editEmp, setEditEmp] = useState(null);
-  const [saving, setSaving] = useState(false);
-  const [tempCreds, setTempCreds] = useState(null); // { empName, email, password }
-  const [form, setForm] = useState({
-    first_name: '', last_name: '', email: '', phone: '',
-    department: '', designation: '', join_date: '', ctc: '',
-    bank_acc: '', pan: '', aadhar: '',
-  });
+  const [editEmp, setEditEmp]     = useState(null);
+  const [saving, setSaving]       = useState(false);
+  const [form, setForm]           = useState(EMPTY_FORM);
+  const [tempCreds, setTempCreds] = useState(null);
+
+  // Reset to page 1 whenever filters change
+  useEffect(() => { setPage(1); }, [debouncedSearch, deptFilter, statusFilter]);
 
   const fetchData = useCallback(async () => {
     if (!tenant) return;
     setLoading(true);
-
-    const [empsRes, deptsRes] = await Promise.all([
-      supabase.from('profiles').select('*').eq('tenant_id', tenant.id).neq('role', 'superadmin').order('first_name'),
-      supabase.from('departments').select('name').eq('tenant_id', tenant.id).order('name'),
+    const [empRes, deptRes] = await Promise.all([
+      listEmployees(tenant.id, { page, search: debouncedSearch, department: deptFilter, status: statusFilter }),
+      listDepartments(tenant.id),
     ]);
-
-    setEmployees(empsRes.data || []);
-    setDepartments((deptsRes.data || []).map((d) => d.name));
+    setEmployees(empRes.data);
+    setTotalCount(empRes.count);
+    setDepartments((deptRes.data || []).map((d) => d.name));
     setLoading(false);
-  }, [tenant]);
+  }, [tenant, page, debouncedSearch, deptFilter, statusFilter]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
-  // Filter
-  let filtered = employees;
-  if (deptFilter) filtered = filtered.filter((e) => e.department === deptFilter);
-  if (statusFilter) filtered = filtered.filter((e) => e.status === statusFilter);
-  if (search) {
-    const s = search.toLowerCase();
-    filtered = filtered.filter((e) =>
-      `${e.first_name} ${e.last_name} ${e.email} ${e.department}`.toLowerCase().includes(s)
-    );
-  }
-
   const openModal = (emp = null) => {
     setEditEmp(emp);
-    setForm({
-      first_name: emp?.first_name || '',
-      last_name: emp?.last_name || '',
-      email: emp?.email || '',
-      phone: emp?.phone || '',
-      department: emp?.department || '',
-      designation: emp?.designation || '',
-      join_date: emp?.join_date || '',
-      ctc: emp?.ctc || '',
-      bank_acc: emp?.bank_acc || '',
-      pan: emp?.pan || '',
-      aadhar: emp?.aadhar || '',
-    });
+    setForm(emp ? {
+      first_name: emp.first_name || '',
+      last_name:  emp.last_name  || '',
+      email:      emp.email      || '',
+      phone:      emp.phone      || '',
+      department: emp.department || '',
+      designation: emp.designation || '',
+      join_date:  emp.join_date  || '',
+      ctc:        emp.ctc        || '',
+      bank_acc:   emp.bank_acc   || '',
+      pan:        emp.pan        || '',
+      aadhar:     emp.aadhar     || '',
+    } : EMPTY_FORM);
     setShowModal(true);
   };
 
@@ -125,49 +135,16 @@ export default function EmployeesPage() {
     setSaving(true);
     try {
       if (editEmp) {
-        // UPDATE existing profile directly (manager updating their tenant's employee)
-        const { error } = await supabase.from('profiles').update(profileData).eq('id', editEmp.id);
+        const { error } = await updateEmployee(editEmp.id, profileData);
         if (error) throw new Error('Update failed: ' + error.message);
-        showToast('Employee updated successfully', 'success');
+        showToast('Employee updated', 'success');
         setShowModal(false);
-        fetchData();
       } else {
-        // CREATE: 1. Create auth user via signUp
-        const tempPassword = 'Pay@' + Math.random().toString(36).slice(2, 8).toUpperCase();
-        const { data: authData, error: authError } = await supabase.auth.signUp({
-          email: form.email,
-          password: tempPassword,
-        });
-
-        if (authError) throw new Error('Account creation failed: ' + authError.message);
-        if (!authData?.user) throw new Error('Failed to create login account.');
-
-        // 2. Call SECURITY DEFINER RPC to insert profile into manager's tenant
-        const { error: rpcError } = await supabase.rpc('insert_employee_profile', {
-          p_user_id:     authData.user.id,
-          p_first_name:  profileData.first_name,
-          p_last_name:   profileData.last_name,
-          p_email:       profileData.email,
-          p_phone:       profileData.phone,
-          p_department:  profileData.department,
-          p_designation: profileData.designation,
-          p_ctc:         profileData.ctc,
-          p_join_date:   profileData.join_date,
-          p_bank_acc:    profileData.bank_acc,
-          p_pan:         profileData.pan,
-          p_aadhar:      profileData.aadhar,
-        });
-
-        if (rpcError) throw new Error('Profile creation failed: ' + rpcError.message);
-
+        const { tempPassword } = await createEmployee(profileData);
         setShowModal(false);
-        setTempCreds({
-          empName:  `${profileData.first_name} ${profileData.last_name}`,
-          email:    profileData.email,
-          password: tempPassword,
-        });
-        fetchData();
+        setTempCreds({ empName: `${profileData.first_name} ${profileData.last_name}`, email: profileData.email, password: tempPassword });
       }
+      fetchData();
     } catch (err) {
       showToast(err.message || 'Something went wrong', 'error');
     } finally {
@@ -177,23 +154,24 @@ export default function EmployeesPage() {
 
   const toggleStatus = async (emp) => {
     const newStatus = emp.status === 'Active' ? 'Inactive' : 'Active';
-    await supabase.from('profiles').update({ status: newStatus }).eq('id', emp.id);
+    const { error } = await setEmployeeStatus(emp.id, newStatus);
+    if (error) return showToast('Failed to update status', 'error');
     showToast(`Employee ${newStatus === 'Active' ? 'activated' : 'deactivated'}`, 'info');
     fetchData();
   };
 
-  const deleteEmployee = async (emp) => {
+  const deleteEmp = async (emp) => {
     if (!confirm(`Delete ${emp.first_name} ${emp.last_name}? This cannot be undone.`)) return;
-    await supabase.from('profiles').delete().eq('id', emp.id);
+    const { error } = await removeEmployee(emp.id);
+    if (error) return showToast('Delete failed: ' + error.message, 'error');
     showToast('Employee deleted', 'success');
-    fetchData();
+    if (employees.length === 1 && page > 1) setPage(page - 1);
+    else fetchData();
   };
-
-  const activeCount = employees.filter((e) => e.status === 'Active').length;
 
   return (
     <>
-      <Header title="Employees" breadcrumb={`${activeCount} active employees`} />
+      <Header title="Employees" breadcrumb={`${totalCount} employees`} />
       <div className="page-content">
         <div className="filter-bar">
           <select className="form-select" value={deptFilter} onChange={(e) => setDeptFilter(e.target.value)}>
@@ -205,7 +183,13 @@ export default function EmployeesPage() {
             <option value="Active">Active</option>
             <option value="Inactive">Inactive</option>
           </select>
-          <input className="form-input" placeholder="🔍 Search..." value={search} onChange={(e) => setSearch(e.target.value)} style={{ minWidth: 200 }} />
+          <input
+            className="form-input"
+            placeholder="🔍 Search name, email, department…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            style={{ minWidth: 220 }}
+          />
           <div style={{ marginLeft: 'auto' }}>
             <button className="btn btn-primary" onClick={() => openModal()}>
               <i className="fas fa-plus" /> Add Employee
@@ -214,20 +198,29 @@ export default function EmployeesPage() {
         </div>
 
         {loading ? (
-          <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)' }}><div className="spinner" style={{ margin: '0 auto 16px' }} />Loading employees...</div>
+          <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)' }}>
+            <div className="spinner" style={{ margin: '0 auto 16px' }} />Loading employees…
+          </div>
         ) : (
           <div className="card">
             <div className="table-wrap">
               <table>
                 <thead>
                   <tr>
-                    <th>Employee</th><th>Department</th><th>Designation</th><th>Monthly CTC</th><th>Status</th><th>Actions</th>
+                    <th>Employee</th><th>Department</th><th>Designation</th>
+                    <th>Monthly CTC</th><th>Status</th><th>Actions</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {filtered.length === 0 ? (
-                    <tr><td colSpan={6} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 40 }}>No employees found. Click &quot;Add Employee&quot; to get started.</td></tr>
-                  ) : filtered.map((e) => (
+                  {employees.length === 0 ? (
+                    <tr>
+                      <td colSpan={6} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 40 }}>
+                        {debouncedSearch || deptFilter || statusFilter
+                          ? 'No employees match your filters.'
+                          : 'No employees yet. Click "Add Employee" to get started.'}
+                      </td>
+                    </tr>
+                  ) : employees.map((e) => (
                     <tr key={e.id}>
                       <td>
                         <div className="emp-cell">
@@ -247,23 +240,23 @@ export default function EmployeesPage() {
                       <td>
                         <button className="btn btn-outline btn-icon btn-sm" onClick={() => openModal(e)} title="Edit"><i className="fas fa-edit" /></button>{' '}
                         <button className="btn btn-outline btn-icon btn-sm" onClick={() => toggleStatus(e)} title="Toggle Status"><i className="fas fa-power-off" /></button>{' '}
-                        <button className="btn btn-outline btn-icon btn-sm" style={{ color: 'var(--danger)' }} onClick={() => deleteEmployee(e)} title="Delete"><i className="fas fa-trash" /></button>
+                        <button className="btn btn-outline btn-icon btn-sm" style={{ color: 'var(--danger)' }} onClick={() => deleteEmp(e)} title="Delete"><i className="fas fa-trash" /></button>
                       </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
+            <Pagination page={page} totalPages={totalPages} totalCount={totalCount} onPageChange={setPage} />
           </div>
         )}
       </div>
 
-      {/* Employee Modal */}
       <Modal show={showModal} onClose={() => setShowModal(false)} title={editEmp ? 'Edit Employee' : 'Add Employee'}
         footer={<>
           <button className="btn btn-outline" onClick={() => setShowModal(false)}>Cancel</button>
           <button className="btn btn-primary" onClick={saveEmployee} disabled={saving}>
-            {saving ? <><div className="spinner" style={{ width: 16, height: 16, borderWidth: 2 }} /> Saving...</> : <><i className="fas fa-check" /> Save</>}
+            {saving ? <><div className="spinner" style={{ width: 16, height: 16, borderWidth: 2 }} /> Saving…</> : <><i className="fas fa-check" /> Save</>}
           </button>
         </>}
       >
@@ -272,7 +265,11 @@ export default function EmployeesPage() {
           <div className="form-group"><label className="form-label">Last Name *</label><input className="form-input" value={form.last_name} onChange={(e) => setForm({ ...form, last_name: e.target.value })} /></div>
         </div>
         <div className="form-row">
-          <div className="form-group"><label className="form-label">Email {!editEmp && '*'}</label><input className="form-input" type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} disabled={!!editEmp} />{!editEmp && <div className="form-hint">Employee will use this to login</div>}</div>
+          <div className="form-group">
+            <label className="form-label">Email {!editEmp && '*'}</label>
+            <input className="form-input" type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} disabled={!!editEmp} />
+            {!editEmp && <div className="form-hint">Employee will use this to login</div>}
+          </div>
           <div className="form-group"><label className="form-label">Phone</label><input className="form-input" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} /></div>
         </div>
         <div className="form-row">
@@ -296,7 +293,6 @@ export default function EmployeesPage() {
         </div>
       </Modal>
 
-      {/* Temp credentials Modal */}
       <TempPasswordModal
         show={!!tempCreds}
         onClose={() => setTempCreds(null)}

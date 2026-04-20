@@ -22,6 +22,13 @@ export function AuthProvider({ children }) {
         console.error('fetchProfile error:', error.message);
         return null;
       }
+
+      // Guard against stale callbacks: if the active session already belongs to a
+      // different user (e.g., admin restored session after creating an employee via
+      // signUp()), discard this result rather than wiping out the correct state.
+      const { data: { session: current } } = await supabase.auth.getSession();
+      if (current?.user?.id !== userId) return null;
+
       if (data) {
         setProfile(data);
         setTenant(data.tenants);
@@ -87,24 +94,24 @@ export function AuthProvider({ children }) {
     };
   }, [fetchProfile]);
 
-  const signIn = async (email, password) => {
+  const signIn = useCallback(async (email, password) => {
     const { data, error } = await supabase.auth.signInWithPassword({ email, password });
     if (error) throw error;
     return data;
-  };
+  }, []);
 
-  const signUp = async (email, password) => {
+  const signUp = useCallback(async (email, password) => {
     const { data, error } = await supabase.auth.signUp({ email, password });
     if (error) throw error;
     return data;
-  };
+  }, []);
 
-  const signOut = async () => {
+  const signOut = useCallback(async () => {
     await supabase.auth.signOut();
     setUser(null);
     setProfile(null);
     setTenant(null);
-  };
+  }, []);
 
   const refreshProfile = useCallback(() => {
     if (user?.id) return fetchProfile(user.id);
@@ -115,7 +122,7 @@ export function AuthProvider({ children }) {
     user, profile, tenant, loading,
     signIn, signUp, signOut,
     fetchProfile, refreshProfile,
-  }), [user, profile, tenant, loading]); // Added dependencies to useMemo
+  }), [user, profile, tenant, loading, signIn, signUp, signOut, fetchProfile, refreshProfile]);
 
   return (
     <AuthContext.Provider value={value}>

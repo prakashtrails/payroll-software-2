@@ -23,7 +23,11 @@ export default defineConfig([
       },
     },
     rules: {
-      'no-unused-vars': ['error', { varsIgnorePattern: '^[A-Z_]' }],
+      'no-unused-vars': ['error', { varsIgnorePattern: '^[A-Z_]', caughtErrorsIgnorePattern: '^_' }],
+      // Async data-fetching via useCallback + useEffect is a valid pattern — disable the overly-strict rule
+      'react-hooks/set-state-in-effect': 'off',
+      // AuthContext and Toast intentionally export both a component and a helper from the same file
+      'react-refresh/only-export-components': 'off',
     },
   },
 ])

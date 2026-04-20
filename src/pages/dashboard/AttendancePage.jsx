@@ -4,7 +4,10 @@ import Header from '@/components/Header';
 import Modal from '@/components/Modal';
 import { showToast } from '@/components/Toast';
 import { useAuth } from '@/context/AuthContext';
-import { supabase } from '@/lib/supabase';
+import {
+  fetchMyMonthAttendance, clockIn as svcClockIn, clockOut as svcClockOut,
+  fetchTeamAttendance, saveManualAttendance,
+} from '@/services/attendanceService';
 import { todayStr, dateStr, timeStr, fmtTime12, diffHours, fmtDuration, monthLabel, getInitials, getAvatarColor } from '@/lib/helpers';
 
 export default function AttendancePage() {
@@ -34,27 +37,13 @@ export default function AttendancePage() {
   const [manualForm, setManualForm] = useState({ profile_id: '', date: todayStr(), clockIn: '09:00', clockOut: '18:00', status: 'Present' });
   const [employees, setEmployees] = useState([]);
 
-  // Fetch my attendance for calendar
   const fetchMyAttendance = useCallback(async () => {
     if (!profile || !tenant) return;
-    const startDate = `${attYear}-${String(attMonth + 1).padStart(2, '0')}-01`;
-    const endDay = new Date(attYear, attMonth + 1, 0).getDate();
-    const endDate = `${attYear}-${String(attMonth + 1).padStart(2, '0')}-${endDay}`;
-
-    const { data } = await supabase
-      .from('attendance')
-      .select('*, punches(*)')
-      .eq('profile_id', profile.id)
-      .gte('date', startDate)
-      .lte('date', endDate)
-      .order('date');
-
-    setMyRecords(data || []);
-
-    // Check today's record for clock state
-    const todayRec = (data || []).find((r) => r.date === todayStr());
+    const { data } = await fetchMyMonthAttendance(profile.id, attYear, attMonth);
+    setMyRecords(data);
+    const todayRec = data.find((r) => r.date === todayStr());
     if (todayRec) {
-      const ins = (todayRec.punches || []).filter((p) => p.punch_type === 'in').length;
+      const ins  = (todayRec.punches || []).filter((p) => p.punch_type === 'in').length;
       const outs = (todayRec.punches || []).filter((p) => p.punch_type === 'out').length;
       setIsClockedIn(ins > outs);
       setMyPunches(todayRec);
@@ -101,41 +90,10 @@ export default function AttendancePage() {
     return () => clearInterval(timerRef.current);
   }, [myPunches]);
 
-  // Clock In
   const clockIn = async () => {
     if (isClockedIn) return showToast('Already clocked in!', 'warning');
     try {
-      // Upsert attendance record for today
-      let attId;
-      const { data: existing } = await supabase
-        .from('attendance')
-        .select('id, status')
-        .eq('profile_id', profile.id)
-        .eq('date', todayStr())
-        .maybeSingle();
-
-      if (existing) {
-        attId = existing.id;
-      } else {
-        // Determine status based on shift start
-        const shiftStart = tenant?.shift_start || '09:00';
-        const lateMin = tenant?.late_threshold || 15;
-        const [sh, sm] = shiftStart.split(':').map(Number);
-        const now = new Date();
-        const diffMin = (now.getHours() * 60 + now.getMinutes()) - (sh * 60 + sm);
-        const status = diffMin > lateMin ? 'Late' : 'Present';
-
-        const { data: newAtt, error } = await supabase
-          .from('attendance')
-          .insert([{ tenant_id: tenant.id, profile_id: profile.id, date: todayStr(), status, location: 'Office' }])
-          .select()
-          .single();
-        if (error) throw error;
-        attId = newAtt.id;
-      }
-
-      // Insert punch
-      await supabase.from('punches').insert([{ attendance_id: attId, punch_time: timeStr(new Date()), punch_type: 'in' }]);
+      await svcClockIn(tenant.id, profile.id, tenant);
       showToast(`Clocked in at ${fmtTime12(timeStr(new Date()))}`, 'success');
       fetchMyAttendance();
     } catch (err) {
@@ -143,32 +101,10 @@ export default function AttendancePage() {
     }
   };
 
-  // Clock Out
   const clockOut = async () => {
     if (!isClockedIn) return showToast('Not clocked in!', 'warning');
     try {
-      const { data: att } = await supabase
-        .from('attendance')
-        .select('id')
-        .eq('profile_id', profile.id)
-        .eq('date', todayStr())
-        .single();
-
-      await supabase.from('punches').insert([{ attendance_id: att.id, punch_time: timeStr(new Date()), punch_type: 'out' }]);
-
-      // Calculate total hours
-      const { data: allPunches } = await supabase.from('punches').select('*').eq('attendance_id', att.id).order('punch_time');
-      const ins = allPunches.filter((p) => p.punch_type === 'in');
-      const outs = allPunches.filter((p) => p.punch_type === 'out');
-      let total = 0;
-      for (let i = 0; i < ins.length; i++) {
-        if (outs[i]) total += diffHours(ins[i].punch_time, outs[i].punch_time);
-      }
-
-      let status = 'Present';
-      if (total < 4) status = 'Half Day';
-
-      await supabase.from('attendance').update({ total_hours: Math.round(total * 100) / 100, status }).eq('id', att.id);
+      const { total } = await svcClockOut(profile.id);
       showToast(`Clocked out. Worked ${fmtDuration(total)}`, 'success');
       fetchMyAttendance();
     } catch (err) {
@@ -178,23 +114,15 @@ export default function AttendancePage() {
 
   const fetchTeamData = useCallback(async () => {
     if (!tenant) return;
-
-    // Fetch employees, departments, and attendance for selected date in parallel
-    const [empsRes, deptsRes, attRes] = await Promise.all([
-      supabase.from('profiles').select('*').eq('tenant_id', tenant.id).eq('status', 'Active'),
-      supabase.from('departments').select('name').eq('tenant_id', tenant.id),
-      supabase.from('attendance').select('*, punches(*)').eq('tenant_id', tenant.id).eq('date', teamDate),
-    ]);
-
-    const emps = empsRes.data || [];
+    const { employees: emps, departments: depts, records: attRecords } = await fetchTeamAttendance(tenant.id, teamDate);
     setEmployees(emps);
-    setDepartments((deptsRes.data || []).map((d) => d.name));
+    setDepartments(depts);
 
     let filtered = emps;
     if (teamDept) filtered = filtered.filter((e) => e.department === teamDept);
 
     const records = {};
-    (attRes.data || []).forEach((r) => { records[r.profile_id] = r; });
+    attRecords.forEach((r) => { records[r.profile_id] = r; });
 
     const rows = filtered.map((emp) => {
       const rec = records[emp.id];
@@ -222,38 +150,10 @@ export default function AttendancePage() {
 
   useEffect(() => { if (tab === 'team') fetchTeamData(); }, [tab, fetchTeamData]);
 
-  // Manual attendance
-  const saveManualAttendance = async () => {
+  const handleSaveManual = async () => {
     if (!manualForm.profile_id || !manualForm.date) return showToast('Employee and date required', 'error');
     try {
-      // Upsert attendance
-      const { data: existing } = await supabase
-        .from('attendance')
-        .select('id')
-        .eq('profile_id', manualForm.profile_id)
-        .eq('date', manualForm.date)
-        .maybeSingle();
-
-      let attId;
-      const hours = (manualForm.clockIn && manualForm.clockOut) ? Math.round(diffHours(manualForm.clockIn, manualForm.clockOut) * 100) / 100 : 0;
-      if (existing) {
-        await supabase.from('attendance').update({
-          status: manualForm.status, total_hours: hours, location: 'Office (Manual)'
-        }).eq('id', existing.id);
-        await supabase.from('punches').delete().eq('attendance_id', existing.id);
-        attId = existing.id;
-      } else {
-        const { data: newAtt } = await supabase
-          .from('attendance')
-          .insert([{ tenant_id: tenant.id, profile_id: manualForm.profile_id, date: manualForm.date, status: manualForm.status, total_hours: hours, location: 'Office (Manual)' }])
-          .select()
-          .single();
-        attId = newAtt.id;
-      }
-
-      if (manualForm.clockIn) await supabase.from('punches').insert([{ attendance_id: attId, punch_time: manualForm.clockIn, punch_type: 'in' }]);
-      if (manualForm.clockOut) await supabase.from('punches').insert([{ attendance_id: attId, punch_time: manualForm.clockOut, punch_type: 'out' }]);
-
+      await saveManualAttendance(tenant.id, { profile_id: manualForm.profile_id, date: manualForm.date, clockIn: manualForm.clockIn, clockOut: manualForm.clockOut, status: manualForm.status });
       showToast('Attendance marked', 'success');
       setShowManual(false);
       fetchTeamData();
@@ -493,7 +393,7 @@ export default function AttendancePage() {
       <Modal show={showManual} onClose={() => setShowManual(false)} title="Mark Attendance" width="480px"
         footer={<>
           <button className="btn btn-outline" onClick={() => setShowManual(false)}>Cancel</button>
-          <button className="btn btn-primary" onClick={saveManualAttendance}><i className="fas fa-check" /> Save</button>
+          <button className="btn btn-primary" onClick={handleSaveManual}><i className="fas fa-check" /> Save</button>
         </>}
       >
         <div className="form-group">

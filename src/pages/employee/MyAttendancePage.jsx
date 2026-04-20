@@ -3,7 +3,11 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import Header from '@/components/Header';
 import { showToast } from '@/components/Toast';
 import { useAuth } from '@/context/AuthContext';
-import { supabase } from '@/lib/supabase';
+import {
+  fetchMyMonthAttendance,
+  clockIn as svcClockIn,
+  clockOut as svcClockOut,
+} from '@/services/attendanceService';
 import { todayStr, dateStr, timeStr, fmtTime12, diffHours, fmtDuration, monthLabel } from '@/lib/helpers';
 
 export default function MyAttendancePage() {
@@ -21,22 +25,11 @@ export default function MyAttendancePage() {
 
   const fetchMyAttendance = useCallback(async () => {
     if (!profile || !tenant) return;
-    const startDate = `${attYear}-${String(attMonth + 1).padStart(2, '0')}-01`;
-    const endDay = new Date(attYear, attMonth + 1, 0).getDate();
-    const endDate = `${attYear}-${String(attMonth + 1).padStart(2, '0')}-${endDay}`;
-
-    const { data } = await supabase
-      .from('attendance')
-      .select('*, punches(*)')
-      .eq('profile_id', profile.id)
-      .gte('date', startDate)
-      .lte('date', endDate)
-      .order('date');
-
-    setMyRecords(data || []);
-    const todayRec = (data || []).find((r) => r.date === todayStr());
+    const { data } = await fetchMyMonthAttendance(profile.id, attYear, attMonth);
+    setMyRecords(data);
+    const todayRec = data.find((r) => r.date === todayStr());
     if (todayRec) {
-      const ins = (todayRec.punches || []).filter((p) => p.punch_type === 'in').length;
+      const ins  = (todayRec.punches || []).filter((p) => p.punch_type === 'in').length;
       const outs = (todayRec.punches || []).filter((p) => p.punch_type === 'out').length;
       setIsClockedIn(ins > outs);
       setMyPunches(todayRec);
@@ -84,21 +77,7 @@ export default function MyAttendancePage() {
   const clockIn = async () => {
     if (isClockedIn) return showToast('Already clocked in!', 'warning');
     try {
-      let attId;
-      const { data: existing } = await supabase.from('attendance').select('id').eq('profile_id', profile.id).eq('date', todayStr()).maybeSingle();
-      if (existing) { attId = existing.id; }
-      else {
-        const shiftStart = tenant?.shift_start || '09:00';
-        const lateMin = tenant?.late_threshold || 15;
-        const [sh, sm] = shiftStart.split(':').map(Number);
-        const now = new Date();
-        const diffMin = (now.getHours() * 60 + now.getMinutes()) - (sh * 60 + sm);
-        const status = diffMin > lateMin ? 'Late' : 'Present';
-        const { data: newAtt, error } = await supabase.from('attendance').insert([{ tenant_id: tenant.id, profile_id: profile.id, date: todayStr(), status, location: 'Office' }]).select().single();
-        if (error) throw error;
-        attId = newAtt.id;
-      }
-      await supabase.from('punches').insert([{ attendance_id: attId, punch_time: timeStr(new Date()), punch_type: 'in' }]);
+      await svcClockIn(tenant.id, profile.id, tenant);
       showToast(`Clocked in at ${fmtTime12(timeStr(new Date()))}`, 'success');
       fetchMyAttendance();
     } catch (err) { showToast('Clock in failed: ' + err.message, 'error'); }
@@ -107,16 +86,7 @@ export default function MyAttendancePage() {
   const clockOut = async () => {
     if (!isClockedIn) return showToast('Not clocked in!', 'warning');
     try {
-      const { data: att } = await supabase.from('attendance').select('id').eq('profile_id', profile.id).eq('date', todayStr()).single();
-      await supabase.from('punches').insert([{ attendance_id: att.id, punch_time: timeStr(new Date()), punch_type: 'out' }]);
-      const { data: allPunches } = await supabase.from('punches').select('*').eq('attendance_id', att.id).order('punch_time');
-      const ins = allPunches.filter((p) => p.punch_type === 'in');
-      const outs = allPunches.filter((p) => p.punch_type === 'out');
-      let total = 0;
-      for (let i = 0; i < ins.length; i++) { if (outs[i]) total += diffHours(ins[i].punch_time, outs[i].punch_time); }
-      let status = 'Present';
-      if (total < 4) status = 'Half Day';
-      await supabase.from('attendance').update({ total_hours: Math.round(total * 100) / 100, status }).eq('id', att.id);
+      const { total } = await svcClockOut(profile.id);
       showToast(`Clocked out. Worked ${fmtDuration(total)}`, 'success');
       fetchMyAttendance();
     } catch (err) { showToast('Clock out failed: ' + err.message, 'error'); }
