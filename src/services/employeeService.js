@@ -101,3 +101,12 @@ export async function createEmployee(profileData) {
 
   return { tempPassword };
 }
+
+/** Clears the must_change_password flag after employee sets their own password. */
+export async function clearMustChangePassword(userId) {
+  const { error } = await supabase
+    .from('profiles')
+    .update({ must_change_password: false })
+    .eq('id', userId);
+  return { error };
+}

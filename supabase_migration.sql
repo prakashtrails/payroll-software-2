@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS tenants (
   id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   company_name    text NOT NULL,
   domain          text,
+  join_code       text,
   work_days       int  NOT NULL DEFAULT 26,
   pay_day         int  NOT NULL DEFAULT 1,
   currency        text NOT NULL DEFAULT '₹',
@@ -24,28 +25,43 @@ CREATE TABLE IF NOT EXISTS tenants (
   late_threshold  int  NOT NULL DEFAULT 15,
   created_at      timestamptz NOT NULL DEFAULT now()
 );
+-- Add join_code to existing tenants tables that were created before this column existed
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS join_code text;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tenants_join_code_unique ON tenants(upper(join_code));
 
 -- Profiles (one per user — links auth.users → tenant)
 CREATE TABLE IF NOT EXISTS profiles (
-  id          uuid PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
-  tenant_id   uuid REFERENCES tenants(id) ON DELETE CASCADE,
-  first_name  text NOT NULL DEFAULT '',
-  last_name   text NOT NULL DEFAULT '',
-  email       text NOT NULL DEFAULT '',
-  phone       text NOT NULL DEFAULT '',
-  department  text NOT NULL DEFAULT '',
-  designation text NOT NULL DEFAULT '',
-  join_date   date,
-  ctc         numeric NOT NULL DEFAULT 0,
-  bank_acc    text NOT NULL DEFAULT '',
-  pan         text NOT NULL DEFAULT '',
-  aadhar      text NOT NULL DEFAULT '',
-  role        text NOT NULL DEFAULT 'employee'
-                CHECK (role IN ('superadmin','admin','manager','employee')),
-  status      text NOT NULL DEFAULT 'Active'
-                CHECK (status IN ('Active','Inactive')),
-  created_at  timestamptz NOT NULL DEFAULT now()
+  id                   uuid PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+  tenant_id            uuid REFERENCES tenants(id) ON DELETE CASCADE,
+  first_name           text NOT NULL DEFAULT '',
+  last_name            text NOT NULL DEFAULT '',
+  email                text NOT NULL DEFAULT '',
+  phone                text NOT NULL DEFAULT '',
+  department           text NOT NULL DEFAULT '',
+  designation          text NOT NULL DEFAULT '',
+  join_date            date,
+  ctc                  numeric NOT NULL DEFAULT 0,
+  bank_acc             text NOT NULL DEFAULT '',
+  pan                  text NOT NULL DEFAULT '',
+  aadhar               text NOT NULL DEFAULT '',
+  must_change_password boolean NOT NULL DEFAULT false,
+  role                 text NOT NULL DEFAULT 'employee'
+                         CHECK (role IN ('superadmin','admin','manager','employee')),
+  status               text NOT NULL DEFAULT 'Active'
+                         CHECK (status IN ('Active','Inactive')),
+  created_at           timestamptz NOT NULL DEFAULT now()
 );
+-- Add must_change_password to existing profiles tables created before this column existed
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS must_change_password boolean NOT NULL DEFAULT false;
+
+-- Fix role/status check constraints on existing tables (IF NOT EXISTS skips
+-- the CREATE TABLE above, so constraints on pre-existing tables need ALTER).
+ALTER TABLE profiles
+  DROP CONSTRAINT IF EXISTS profiles_role_check,
+  DROP CONSTRAINT IF EXISTS profiles_status_check;
+ALTER TABLE profiles
+  ADD CONSTRAINT profiles_role_check   CHECK (role   IN ('superadmin','admin','manager','employee')),
+  ADD CONSTRAINT profiles_status_check CHECK (status IN ('Active','Inactive'));
 
 -- Departments (per tenant)
 CREATE TABLE IF NOT EXISTS departments (
@@ -315,50 +331,68 @@ CREATE POLICY "advances: admin/manager can write"
 -- =============================================================
 
 -- Called by SignupPage after Supabase Auth signup.
--- Creates the tenant + admin profile atomically.
+-- Creates the tenant + admin profile atomically. Returns the org join_code.
+-- p_user_id: pass auth user UUID explicitly (required when email confirmation is
+-- enabled — signUp returns session:null so auth.uid() is null inside the RPC).
+DROP FUNCTION IF EXISTS create_workspace(text, text, text);
 CREATE OR REPLACE FUNCTION create_workspace(
   p_company_name  text,
   p_first_name    text,
-  p_last_name     text
+  p_last_name     text,
+  p_user_id       uuid DEFAULT NULL
 )
-RETURNS void
+RETURNS text
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = public
 AS $$
 DECLARE
   v_tenant_id uuid;
+  v_join_code text;
+  v_uid       uuid := COALESCE(p_user_id, auth.uid());
   v_email     text;
 BEGIN
-  -- Get the email of the caller from auth.users
-  SELECT email INTO v_email FROM auth.users WHERE id = auth.uid();
+  IF v_uid IS NULL THEN
+    RAISE EXCEPTION 'No authenticated user. Pass p_user_id explicitly.';
+  END IF;
 
-  -- Create tenant record
-  INSERT INTO tenants (company_name)
-  VALUES (p_company_name)
+  -- Generate a unique 6-char alphanumeric join code
+  LOOP
+    v_join_code := upper(substring(replace(gen_random_uuid()::text,'-','') FROM 1 FOR 6));
+    EXIT WHEN NOT EXISTS (SELECT 1 FROM tenants WHERE upper(join_code) = v_join_code);
+  END LOOP;
+
+  SELECT email INTO v_email FROM auth.users WHERE id = v_uid;
+
+  INSERT INTO tenants (company_name, join_code)
+  VALUES (p_company_name, v_join_code)
   RETURNING id INTO v_tenant_id;
 
-  -- Create admin profile for the caller
   INSERT INTO profiles (id, tenant_id, first_name, last_name, email, role, status)
-  VALUES (auth.uid(), v_tenant_id, p_first_name, p_last_name, COALESCE(v_email,''), 'admin', 'Active');
+  VALUES (v_uid, v_tenant_id, p_first_name, p_last_name, COALESCE(v_email,''), 'admin', 'Active');
+
+  RETURN v_join_code;
 END;
 $$;
 
 -- Called by EmployeesPage when a manager creates a new employee account.
 -- Inserts the employee profile under the calling manager's tenant.
+-- Sets must_change_password = true so the employee is forced to change their
+-- temporary password on first login.
+DROP FUNCTION IF EXISTS insert_employee_profile(uuid,text,text,text,text,text,text,numeric,date,text,text,text);
 CREATE OR REPLACE FUNCTION insert_employee_profile(
   p_user_id     uuid,
   p_first_name  text,
   p_last_name   text,
   p_email       text,
-  p_phone       text,
-  p_department  text,
-  p_designation text,
-  p_ctc         numeric,
-  p_join_date   date,
-  p_bank_acc    text,
-  p_pan         text,
-  p_aadhar      text
+  p_phone       text DEFAULT '',
+  p_department  text DEFAULT '',
+  p_designation text DEFAULT '',
+  p_ctc         numeric DEFAULT 0,
+  p_join_date   date DEFAULT NULL,
+  p_bank_acc    text DEFAULT '',
+  p_pan         text DEFAULT '',
+  p_aadhar      text DEFAULT ''
 )
 RETURNS void
 LANGUAGE plpgsql
@@ -382,17 +416,20 @@ BEGIN
     first_name, last_name, email, phone,
     department, designation, ctc, join_date,
     bank_acc, pan, aadhar,
-    role, status
+    role, status, must_change_password
   ) VALUES (
     p_user_id, v_tenant_id,
     p_first_name, p_last_name, p_email, COALESCE(p_phone,''),
     COALESCE(p_department,''), COALESCE(p_designation,''),
     COALESCE(p_ctc, 0), p_join_date,
     COALESCE(p_bank_acc,''), COALESCE(p_pan,''), COALESCE(p_aadhar,''),
-    'employee', 'Active'
+    'employee', 'Active', true
   );
 END;
 $$;
+
+GRANT EXECUTE ON FUNCTION create_workspace(text,text,text,uuid)                            TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION insert_employee_profile(uuid,text,text,text,text,text,text,numeric,date,text,text,text) TO authenticated;
 
 
 -- =============================================================
@@ -438,7 +475,7 @@ CREATE INDEX IF NOT EXISTS idx_advances_profile_id        ON advances(profile_id
 -- salary_components + departments
 CREATE INDEX IF NOT EXISTS idx_salary_components_tenant   ON salary_components(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_departments_tenant         ON departments(tenant_id);
--- Note: idx_tenants_join_code_unique is created in section 6 (join_code column added there)
+
 
 
 -- =============================================================
@@ -446,11 +483,7 @@ CREATE INDEX IF NOT EXISTS idx_departments_tenant         ON departments(tenant_
 -- Run this section AFTER section 1-5 above.
 -- =============================================================
 
--- Add join_code column to tenants (6-char alphanumeric code shared with employees)
-ALTER TABLE tenants ADD COLUMN IF NOT EXISTS join_code text;
-CREATE UNIQUE INDEX IF NOT EXISTS idx_tenants_join_code_unique ON tenants(upper(join_code));
-
--- Back-fill codes for any existing tenants that don't have one yet
+-- Back-fill join_code for any existing tenants that don't have one yet
 DO $$
 DECLARE
   r     RECORD;
@@ -465,54 +498,9 @@ BEGIN
   END LOOP;
 END $$;
 
--- Drop the old 3-param void versions so they don't create overload ambiguity
--- with the new 4-param versions below.
-DROP FUNCTION IF EXISTS create_workspace(text, text, text);
+-- DROP old 3-param versions if they somehow still exist (create_workspace is
+-- already defined above with 4 params; this is a safety net only).
 DROP FUNCTION IF EXISTS employee_join_workspace(text, text, text);
-
--- Updated create_workspace: generates join_code and RETURNS it so the signup
--- page can display it immediately after workspace creation.
--- p_user_id: pass the auth user's UUID explicitly. This is required when Supabase
--- email confirmation is enabled (session is null after signUp → auth.uid() = null).
-CREATE OR REPLACE FUNCTION create_workspace(
-  p_company_name  text,
-  p_first_name    text,
-  p_last_name     text,
-  p_user_id       uuid DEFAULT NULL
-)
-RETURNS text          -- returns the join_code
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public
-AS $$
-DECLARE
-  v_tenant_id uuid;
-  v_uid       uuid := COALESCE(p_user_id, auth.uid());
-  v_email     text;
-  v_code      text;
-BEGIN
-  IF v_uid IS NULL THEN
-    RAISE EXCEPTION 'No authenticated user. Pass p_user_id explicitly.';
-  END IF;
-
-  SELECT email INTO v_email FROM auth.users WHERE id = v_uid;
-
-  -- Generate a unique 6-char code
-  LOOP
-    v_code := upper(substring(replace(gen_random_uuid()::text, '-', ''), 1, 6));
-    EXIT WHEN NOT EXISTS (SELECT 1 FROM tenants WHERE upper(join_code) = v_code);
-  END LOOP;
-
-  INSERT INTO tenants (company_name, join_code)
-  VALUES (p_company_name, v_code)
-  RETURNING id INTO v_tenant_id;
-
-  INSERT INTO profiles (id, tenant_id, first_name, last_name, email, role, status)
-  VALUES (v_uid, v_tenant_id, p_first_name, p_last_name, COALESCE(v_email,''), 'admin', 'Active');
-
-  RETURN v_code;
-END;
-$$;
 
 -- Lightweight lookup — returns only the company_name for a given code.
 -- Callable by unauthenticated (anon) users so the signup page can preview
@@ -575,7 +563,14 @@ END;
 $$;
 
 -- Grant execute so anonymous users can call lookup_org (pre-login preview)
--- and authenticated users can call the join/create functions.
+-- and authenticated users can call the employee join function.
+-- (create_workspace and insert_employee_profile GRANTs are in section 1.)
 GRANT EXECUTE ON FUNCTION lookup_org(text)                             TO anon, authenticated;
 GRANT EXECUTE ON FUNCTION employee_join_workspace(text,text,text,uuid) TO anon, authenticated;
-GRANT EXECUTE ON FUNCTION create_workspace(text,text,text,uuid)        TO anon, authenticated;
+
+
+-- =============================================================
+-- 7. FORCED PASSWORD CHANGE ON FIRST LOGIN
+-- =============================================================
+-- must_change_password column and insert_employee_profile (with must_change_password=true)
+-- are both defined in section 1. Nothing additional needed here.
