@@ -573,4 +573,22 @@ GRANT EXECUTE ON FUNCTION employee_join_workspace(text,text,text,uuid) TO anon, 
 -- 7. FORCED PASSWORD CHANGE ON FIRST LOGIN
 -- =============================================================
 -- must_change_password column and insert_employee_profile (with must_change_password=true)
--- are both defined in section 1. Nothing additional needed here.
+-- are both defined in section 1.
+
+-- RPC so an employee can clear their own must_change_password flag.
+-- Direct table UPDATE is blocked by RLS (employees have no UPDATE policy),
+-- so this SECURITY DEFINER function bypasses RLS safely.
+CREATE OR REPLACE FUNCTION clear_must_change_password()
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  UPDATE profiles
+  SET    must_change_password = false
+  WHERE  id = auth.uid();
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION clear_must_change_password() TO authenticated;

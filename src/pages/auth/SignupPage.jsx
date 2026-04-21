@@ -317,6 +317,7 @@ export default function SignupPage() {
         <div className="auth-logo">
           <div className="logo-icon">P</div>
           <h1>PayrollPro</h1>
+          <span className="auth-tagline">Smart Payroll for Modern Teams</span>
         </div>
 
         {/* Mode toggle */}

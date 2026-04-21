@@ -51,9 +51,13 @@ export default function LoginPage() {
   if (loading) {
     return (
       <div className="auth-container">
-        <div className="auth-card" style={{ textAlign: 'center' }}>
+        <div className="auth-card" style={{ textAlign: 'center', padding: '48px 36px' }}>
+          <div className="auth-logo" style={{ marginBottom: 24 }}>
+            <div className="logo-icon">P</div>
+            <h1>PayrollPro</h1>
+          </div>
           <div className="spinner" style={{ margin: '0 auto 16px' }} />
-          <p style={{ color: 'var(--text-muted)', fontSize: 13 }}>Loading...</p>
+          <p style={{ color: 'var(--text-muted)', fontSize: 13 }}>Loading your workspace...</p>
         </div>
       </div>
     );
@@ -66,6 +70,7 @@ export default function LoginPage() {
         <div className="auth-logo">
           <div className="logo-icon">P</div>
           <h1>PayrollPro</h1>
+          <span className="auth-tagline">Smart Payroll for Modern Teams</span>
         </div>
 
         <div className="auth-title">
@@ -89,18 +94,23 @@ export default function LoginPage() {
         <form onSubmit={handleSubmit} noValidate>
           <div className="form-group">
             <label className="form-label">Email Address</label>
-            <input
-              className="form-input" type="email"
-              placeholder="you@company.com"
-              value={email} onChange={(e) => setEmail(e.target.value)}
-              autoFocus autoComplete="email"
-            />
+            <div style={{ position: 'relative' }}>
+              <input
+                className="form-input" type="email"
+                placeholder="you@company.com"
+                value={email} onChange={(e) => setEmail(e.target.value)}
+                autoFocus autoComplete="email"
+                style={{ paddingLeft: 38 }}
+              />
+              <i className="fas fa-envelope" style={{
+                position: 'absolute', left: 13, top: '50%', transform: 'translateY(-50%)',
+                color: 'var(--text-muted)', fontSize: 13, pointerEvents: 'none',
+              }} />
+            </div>
           </div>
 
           <div className="form-group">
-            <label className="form-label" style={{ display: 'flex', justifyContent: 'space-between' }}>
-              Password
-            </label>
+            <label className="form-label">Password</label>
             <div style={{ position: 'relative' }}>
               <input
                 className="form-input"
@@ -108,8 +118,12 @@ export default function LoginPage() {
                 placeholder="••••••••"
                 value={password} onChange={(e) => setPassword(e.target.value)}
                 autoComplete="current-password"
-                style={{ paddingRight: 42 }}
+                style={{ paddingLeft: 38, paddingRight: 42 }}
               />
+              <i className="fas fa-lock" style={{
+                position: 'absolute', left: 13, top: '50%', transform: 'translateY(-50%)',
+                color: 'var(--text-muted)', fontSize: 13, pointerEvents: 'none',
+              }} />
               <button
                 type="button"
                 onClick={() => setShowPassword(!showPassword)}
@@ -129,12 +143,12 @@ export default function LoginPage() {
             type="submit"
             className="btn btn-primary btn-lg btn-block"
             disabled={submitting}
-            style={{ marginTop: 8 }}
+            style={{ marginTop: 8, borderRadius: 12, fontSize: 14, letterSpacing: 0.2 }}
           >
             {submitting ? (
               <><div className="spinner" style={{ width: 18, height: 18, borderWidth: 2 }} /> Signing in...</>
             ) : (
-              <><i className="fas fa-sign-in-alt" /> Sign In</>
+              <><i className="fas fa-arrow-right-to-bracket" /> Sign In</>
             )}
           </button>
         </form>
@@ -144,6 +158,22 @@ export default function LoginPage() {
         <div className="auth-footer">
           Don&apos;t have an account?{' '}
           <Link to="/signup">Register your company</Link>
+        </div>
+
+        {/* Trust badges */}
+        <div className="auth-trust">
+          <div className="auth-trust-item">
+            <i className="fas fa-shield-halved" />
+            Secure & Encrypted
+          </div>
+          <div className="auth-trust-item">
+            <i className="fas fa-building" />
+            Multi-tenant
+          </div>
+          <div className="auth-trust-item">
+            <i className="fas fa-lock" />
+            RLS Protected
+          </div>
         </div>
       </div>
     </div>

@@ -102,11 +102,9 @@ export async function createEmployee(profileData) {
   return { tempPassword };
 }
 
-/** Clears the must_change_password flag after employee sets their own password. */
-export async function clearMustChangePassword(userId) {
-  const { error } = await supabase
-    .from('profiles')
-    .update({ must_change_password: false })
-    .eq('id', userId);
+/** Clears the must_change_password flag after employee sets their own password.
+ *  Uses a SECURITY DEFINER RPC because employees have no UPDATE policy on profiles. */
+export async function clearMustChangePassword() {
+  const { error } = await supabase.rpc('clear_must_change_password');
   return { error };
 }

@@ -8,7 +8,7 @@ import { clearMustChangePassword } from '@/services/employeeService';
 
 // ─── Force-password-change modal ─────────────────────────────────────────────
 
-function ForcePasswordChange({ userId, onDone }) {
+function ForcePasswordChange({ onDone }) {
   const [form, setForm]       = useState({ password: '', confirm: '' });
   const [showPw, setShowPw]   = useState(false);
   const [error, setError]     = useState('');
@@ -29,8 +29,8 @@ function ForcePasswordChange({ userId, onDone }) {
       const { error: authError } = await supabase.auth.updateUser({ password });
       if (authError) throw authError;
 
-      const { error: dbError } = await clearMustChangePassword(userId);
-      if (dbError) console.warn('clearMustChangePassword:', dbError.message);
+      const { error: dbError } = await clearMustChangePassword();
+      if (dbError) throw new Error('Could not save password change: ' + dbError.message);
 
       onDone();
     } catch (err) {
@@ -157,10 +157,7 @@ export default function DashboardLayout() {
       <ToastContainer />
 
       {profile?.must_change_password && (
-        <ForcePasswordChange
-          userId={profile.id}
-          onDone={handlePasswordSet}
-        />
+        <ForcePasswordChange onDone={handlePasswordSet} />
       )}
     </div>
   );
