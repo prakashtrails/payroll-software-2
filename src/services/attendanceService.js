@@ -65,8 +65,9 @@ export async function clockOut(profileId) {
     .select('id')
     .eq('profile_id', profileId)
     .eq('date', today)
-    .single();
+    .maybeSingle();
   if (fetchErr) throw fetchErr;
+  if (!att) throw new Error('No clock-in found for today. Please clock in first.');
 
   const punchOutTime = timeStr(new Date());
   const { error: punchErr } = await supabase

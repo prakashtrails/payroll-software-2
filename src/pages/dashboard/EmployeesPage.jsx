@@ -48,7 +48,7 @@ function TempPasswordModal({ show, onClose, empName, email, password }) {
 const EMPTY_FORM = {
   first_name: '', last_name: '', email: '', phone: '',
   department: '', designation: '', join_date: '', ctc: '',
-  bank_acc: '', pan: '', aadhar: '',
+  bank_acc: '', pan: '', aadhar: '', role: 'employee',
 };
 
 export default function EmployeesPage() {
@@ -98,17 +98,18 @@ export default function EmployeesPage() {
   const openModal = (emp = null) => {
     setEditEmp(emp);
     setForm(emp ? {
-      first_name: emp.first_name || '',
-      last_name:  emp.last_name  || '',
-      email:      emp.email      || '',
-      phone:      emp.phone      || '',
-      department: emp.department || '',
+      first_name:  emp.first_name  || '',
+      last_name:   emp.last_name   || '',
+      email:       emp.email       || '',
+      phone:       emp.phone       || '',
+      department:  emp.department  || '',
       designation: emp.designation || '',
-      join_date:  emp.join_date  || '',
-      ctc:        emp.ctc        || '',
-      bank_acc:   emp.bank_acc   || '',
-      pan:        emp.pan        || '',
-      aadhar:     emp.aadhar     || '',
+      join_date:   emp.join_date   || '',
+      ctc:         emp.ctc         || '',
+      bank_acc:    emp.bank_acc    || '',
+      pan:         emp.pan         || '',
+      aadhar:      emp.aadhar      || '',
+      role:        emp.role        || 'employee',
     } : EMPTY_FORM);
     setShowModal(true);
   };
@@ -130,6 +131,7 @@ export default function EmployeesPage() {
       bank_acc:    form.bank_acc.trim(),
       pan:         form.pan.trim(),
       aadhar:      form.aadhar.trim(),
+      role:        form.role || 'employee',
     };
 
     setSaving(true);
@@ -290,6 +292,14 @@ export default function EmployeesPage() {
         <div className="form-row">
           <div className="form-group"><label className="form-label">PAN</label><input className="form-input" value={form.pan} onChange={(e) => setForm({ ...form, pan: e.target.value })} /></div>
           <div className="form-group"><label className="form-label">Aadhar</label><input className="form-input" value={form.aadhar} onChange={(e) => setForm({ ...form, aadhar: e.target.value })} /></div>
+        </div>
+        <div className="form-group">
+          <label className="form-label">Role</label>
+          <select className="form-select" value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}>
+            <option value="employee">Employee</option>
+            <option value="manager">Manager</option>
+          </select>
+          <div className="form-hint">Managers can add employees and process payroll</div>
         </div>
       </Modal>
 
