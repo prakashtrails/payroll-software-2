@@ -26,6 +26,5 @@ export async function verifyOtp(to, code) {
   });
 
   if (error) throw new Error(error.message || 'Verification failed');
-  if (data?.error) throw new Error(data.error);
-  return data; // { verified: true/false }
+  return data; // { verified: true/false, error?: 'expired' }
 }

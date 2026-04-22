@@ -111,13 +111,19 @@ export default function OtpVerificationModal({ show, to, channel, onVerified, on
       const result = await verifyOtp(to, code);
       if (result.verified) {
         onVerified();
+      } else if (result.error === 'expired') {
+        setError('OTP expired. Click Resend to get a new code.');
+        setDigits(Array(OTP_LENGTH).fill(''));
+        setCooldown(0);
       } else {
         setError('Invalid code. Please try again.');
         setDigits(Array(OTP_LENGTH).fill(''));
         inputRefs.current[0]?.focus();
       }
     } catch (err) {
-      setError(err.message || 'Verification failed');
+      setError('Something went wrong. Please try again.');
+      setDigits(Array(OTP_LENGTH).fill(''));
+      inputRefs.current[0]?.focus();
     } finally {
       setVerifying(false);
     }
@@ -199,10 +205,11 @@ export default function OtpVerificationModal({ show, to, channel, onVerified, on
                   background: 'var(--danger-light)', color: 'var(--danger)',
                   padding: '8px 12px', borderRadius: 'var(--radius-sm)',
                   fontSize: 12, marginBottom: 16,
-                  display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'center',
+                  display: 'flex', alignItems: 'flex-start', gap: 6,
+                  textAlign: 'left', wordBreak: 'break-word', overflowWrap: 'anywhere',
                 }}>
-                  <i className="fas fa-exclamation-circle" />
-                  {error}
+                  <i className="fas fa-exclamation-circle" style={{ marginTop: 2, flexShrink: 0 }} />
+                  <span>{error}</span>
                 </div>
               )}
 

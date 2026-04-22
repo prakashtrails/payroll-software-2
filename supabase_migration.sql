@@ -11,6 +11,7 @@ CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 -- 1. TABLES
 -- =============================================================
 
+
 -- Tenants (one per registered company)
 CREATE TABLE IF NOT EXISTS tenants (
   id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
