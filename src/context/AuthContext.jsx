@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState, useCallback, useMemo } from 'react';
 import { supabase } from '@/lib/supabase';
+import { sendOtp as svcSendOtp, verifyOtp as svcVerifyOtp } from '@/services/otpService';
 
 const AuthContext = createContext({});
 
@@ -118,11 +119,20 @@ export function AuthProvider({ children }) {
     return Promise.resolve(null);
   }, [user, fetchProfile]);
 
+  // ── OTP helpers (delegated to otpService) ──────────────────────────────────
+  const sendOtp = useCallback((identifier, options) => svcSendOtp(identifier, options), []);
+  const verifyOtp = useCallback(
+    (identifier, token, isSignup, password, firstName, lastName) =>
+      svcVerifyOtp(identifier, token, isSignup, password, firstName, lastName),
+    []
+  );
+
   const value = useMemo(() => ({
     user, profile, tenant, loading,
     signIn, signUp, signOut,
     fetchProfile, refreshProfile,
-  }), [user, profile, tenant, loading, signIn, signUp, signOut, fetchProfile, refreshProfile]);
+    sendOtp, verifyOtp,
+  }), [user, profile, tenant, loading, signIn, signUp, signOut, fetchProfile, refreshProfile, sendOtp, verifyOtp]);
 
   return (
     <AuthContext.Provider value={value}>

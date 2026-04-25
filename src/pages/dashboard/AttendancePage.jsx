@@ -6,7 +6,7 @@ import { showToast } from '@/components/Toast';
 import { useAuth } from '@/context/AuthContext';
 import {
   fetchMyMonthAttendance, clockIn as svcClockIn, clockOut as svcClockOut,
-  fetchTeamAttendance, saveManualAttendance,
+  fetchTeamAttendance, saveManualAttendance, fetchAttendanceAuditLog,
 } from '@/services/attendanceService';
 import { todayStr, dateStr, timeStr, fmtTime12, diffHours, fmtDuration, monthLabel, getInitials, getAvatarColor } from '@/lib/helpers';
 
@@ -34,8 +34,12 @@ export default function AttendancePage() {
 
   // Manual attendance modal
   const [showManual, setShowManual] = useState(false);
-  const [manualForm, setManualForm] = useState({ profile_id: '', date: todayStr(), clockIn: '09:00', clockOut: '18:00', status: 'Present' });
+  const [manualForm, setManualForm] = useState({ profile_id: '', date: todayStr(), clockIn: '09:00', clockOut: '18:00', status: 'Present', reason: '' });
   const [employees, setEmployees] = useState([]);
+
+  // Audit log
+  const [auditLogs, setAuditLogs] = useState([]);
+  const [auditLoading, setAuditLoading] = useState(false);
 
   const fetchMyAttendance = useCallback(async () => {
     if (!profile || !tenant) return;
@@ -150,11 +154,34 @@ export default function AttendancePage() {
 
   useEffect(() => { if (tab === 'team') fetchTeamData(); }, [tab, fetchTeamData]);
 
+  const fetchAuditLogs = useCallback(async () => {
+    if (!tenant) return;
+    setAuditLoading(true);
+    try {
+      const { data } = await fetchAttendanceAuditLog(tenant.id);
+      setAuditLogs(data);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setAuditLoading(false);
+    }
+  }, [tenant]);
+
+  useEffect(() => { if (tab === 'audit') fetchAuditLogs(); }, [tab, fetchAuditLogs]);
+
   const handleSaveManual = async () => {
     if (!manualForm.profile_id || !manualForm.date) return showToast('Employee and date required', 'error');
+    if (!manualForm.reason.trim()) return showToast('Reason is required for manual attendance changes', 'error');
     try {
-      await saveManualAttendance(tenant.id, { profile_id: manualForm.profile_id, date: manualForm.date, clockIn: manualForm.clockIn, clockOut: manualForm.clockOut, status: manualForm.status });
-      showToast('Attendance marked', 'success');
+      await saveManualAttendance(tenant.id, {
+        profile_id: manualForm.profile_id,
+        date: manualForm.date,
+        clockIn: manualForm.clockIn,
+        clockOut: manualForm.clockOut,
+        status: manualForm.status,
+        reason: manualForm.reason,
+      }, profile.id);
+      showToast('Attendance marked & audit logged', 'success');
       setShowManual(false);
       fetchTeamData();
     } catch (err) {
@@ -265,9 +292,9 @@ export default function AttendancePage() {
 
         {/* Tabs */}
         <div className="tabs">
-          {['my', 'team'].map((t) => (
+          {['my', 'team', 'audit'].map((t) => (
             <button key={t} className={`tab-btn ${tab === t ? 'active' : ''}`} onClick={() => setTab(t)}>
-              {t === 'my' ? 'My Attendance' : 'Team View'}
+              {t === 'my' ? 'My Attendance' : t === 'team' ? 'Team View' : 'Audit Log'}
             </button>
           ))}
         </div>
@@ -337,7 +364,7 @@ export default function AttendancePage() {
               </select>
               <input className="form-input" type="date" value={teamDate} onChange={(e) => setTeamDate(e.target.value)} style={{ width: 'auto' }} />
               <div style={{ marginLeft: 'auto' }}>
-                <button className="btn btn-primary" onClick={() => { setManualForm({ profile_id: '', date: teamDate, clockIn: '09:00', clockOut: '18:00', status: 'Present' }); setShowManual(true); }}>
+                <button className="btn btn-primary" onClick={() => { setManualForm({ profile_id: '', date: teamDate, clockIn: '09:00', clockOut: '18:00', status: 'Present', reason: '' }); setShowManual(true); }}>
                   <i className="fas fa-plus" /> Mark Attendance
                 </button>
               </div>
@@ -375,10 +402,65 @@ export default function AttendancePage() {
                         <td>{r.hours}</td>
                         <td><span className={`badge ${r.badgeCls}`}>{r.status}</span></td>
                         <td>
-                          <button className="btn btn-outline btn-sm" onClick={() => { setManualForm({ profile_id: r.id, date: teamDate, clockIn: '09:00', clockOut: '18:00', status: 'Present' }); setShowManual(true); }}>
+                          <button className="btn btn-outline btn-sm" onClick={() => { setManualForm({ profile_id: r.id, date: teamDate, clockIn: '09:00', clockOut: '18:00', status: 'Present', reason: '' }); setShowManual(true); }}>
                             <i className="fas fa-edit" />
                           </button>
                         </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </>
+        )}
+
+        {/* AUDIT LOG TAB */}
+        {tab === 'audit' && (
+          <>
+            <div className="card">
+              <div className="card-header">
+                <h3><i className="fas fa-history" style={{ marginRight: 8 }} />Attendance Change History</h3>
+                <button className="btn btn-outline btn-sm" onClick={fetchAuditLogs}><i className="fas fa-sync" /> Refresh</button>
+              </div>
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Date</th>
+                      <th>Employee</th>
+                      <th>Action</th>
+                      <th>Old Status</th>
+                      <th>New Status</th>
+                      <th>Hours</th>
+                      <th>Changed By</th>
+                      <th>Reason</th>
+                      <th>Timestamp</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {auditLoading ? (
+                      <tr><td colSpan={9} style={{ textAlign: 'center', padding: 40, color: 'var(--text-muted)' }}><div className="spinner" style={{ margin: '0 auto 12px' }} />Loading audit log...</td></tr>
+                    ) : auditLogs.length === 0 ? (
+                      <tr><td colSpan={9} style={{ textAlign: 'center', padding: 40, color: 'var(--text-muted)' }}>No manual attendance changes recorded yet.</td></tr>
+                    ) : auditLogs.map((log) => (
+                      <tr key={log.id}>
+                        <td>{log.date}</td>
+                        <td>
+                          <div className="emp-cell">
+                            <div className="emp-avatar" style={{ background: `linear-gradient(135deg, ${getAvatarColor(log.profile_id)})`, width: 28, height: 28, fontSize: 10 }}>
+                              {getInitials(log.target_profile?.first_name, log.target_profile?.last_name)}
+                            </div>
+                            <span className="emp-name" style={{ fontSize: 12 }}>{log.target_profile?.first_name} {log.target_profile?.last_name}</span>
+                          </div>
+                        </td>
+                        <td><span className={`badge ${log.action === 'create' ? 'badge-success' : 'badge-warning'}`}>{log.action === 'create' ? 'Created' : 'Updated'}</span></td>
+                        <td style={{ color: 'var(--text-muted)' }}>{log.old_status || '—'}</td>
+                        <td><strong>{log.new_status}</strong></td>
+                        <td style={{ fontSize: 11, color: 'var(--text-muted)' }}>{log.old_hours != null ? `${log.old_hours}h` : '—'} → {log.new_hours != null ? `${log.new_hours}h` : '—'}</td>
+                        <td style={{ fontSize: 12 }}>{log.changed_by_profile?.first_name} {log.changed_by_profile?.last_name}</td>
+                        <td style={{ fontSize: 11, maxWidth: 200, whiteSpace: 'normal' }}>{log.reason || '—'}</td>
+                        <td style={{ fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{new Date(log.created_at).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -416,6 +498,10 @@ export default function AttendancePage() {
           <select className="form-select" value={manualForm.status} onChange={(e) => setManualForm({ ...manualForm, status: e.target.value })}>
             <option>Present</option><option>Absent</option><option>Half Day</option><option>Leave</option>
           </select>
+        </div>
+        <div className="form-group">
+          <label className="form-label">Reason *</label>
+          <textarea className="form-input" rows={2} placeholder="e.g. Forgot to clock in, manager override, late arrival correction..." value={manualForm.reason} onChange={(e) => setManualForm({ ...manualForm, reason: e.target.value })} style={{ resize: 'vertical' }} />
         </div>
       </Modal>
     </>

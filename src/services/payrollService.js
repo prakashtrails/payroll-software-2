@@ -18,7 +18,11 @@ export async function fetchPayroll(tenantId, month, year) {
  * Inserts the payroll record, generates all payslips, and deducts advance EMIs.
  */
 export async function processPayroll({ tenantId, month, year, employees, components, advances, workDays, workDayOverrides }) {
-  // 1. Create payroll record
+  // 1. Check if payroll already exists
+  const { data: existing } = await fetchPayroll(tenantId, month, year);
+  if (existing) throw new Error('Payroll for this month is already processed. Revert it first to re-process.');
+
+  // 2. Create payroll record
   const { data: payroll, error: pErr } = await supabase
     .from('payrolls')
     .insert([{ tenant_id: tenantId, month: month + 1, year, status: 'Processed' }])

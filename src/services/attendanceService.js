@@ -114,20 +114,28 @@ export async function fetchTeamAttendance(tenantId, date) {
   };
 }
 
-/** Upsert a manual attendance entry (admin override). */
-export async function saveManualAttendance(tenantId, { profile_id, date, clockIn: ci, clockOut: co, status }) {
+/** Upsert a manual attendance entry (admin override) with audit logging. */
+export async function saveManualAttendance(tenantId, { profile_id, date, clockIn: ci, clockOut: co, status, reason }, changedBy) {
   const hours = (ci && co) ? Math.round(diffHours(ci, co) * 100) / 100 : 0;
 
+  // Fetch existing record to capture old values for audit
   const { data: existing, error: fetchErr } = await supabase
     .from('attendance')
-    .select('id')
+    .select('id, status, total_hours')
     .eq('profile_id', profile_id)
     .eq('date', date)
     .maybeSingle();
   if (fetchErr) throw fetchErr;
 
   let attId;
+  let action = 'create';
+  let oldStatus = null;
+  let oldHours = null;
+
   if (existing) {
+    action = 'update';
+    oldStatus = existing.status;
+    oldHours = existing.total_hours;
     await supabase.from('attendance')
       .update({ status, total_hours: hours, location: 'Office (Manual)' })
       .eq('id', existing.id);
@@ -150,6 +158,23 @@ export async function saveManualAttendance(tenantId, { profile_id, date, clockIn
     const { error: punchErr } = await supabase.from('punches').insert(punches);
     if (punchErr) throw punchErr;
   }
+
+  // Write audit log entry
+  if (changedBy) {
+    await supabase.from('attendance_audit_log').insert([{
+      tenant_id: tenantId,
+      attendance_id: attId,
+      profile_id: profile_id,
+      changed_by: changedBy,
+      date,
+      action,
+      old_status: oldStatus,
+      new_status: status,
+      old_hours: oldHours,
+      new_hours: hours,
+      reason: reason || '',
+    }]);
+  }
 }
 
 /** Attendance stats for the current month — for the employee self-service dashboard. */
@@ -167,4 +192,36 @@ export async function fetchMyMonthStats(profileId, year, month) {
 
   const presentDays = (data || []).filter((r) => r.status === 'Present' || r.status === 'Late').length;
   return { presentDays, error };
+}
+
+/** Fetch all attendance records for a tenant for a given month/year. */
+export async function fetchAllTenantAttendance(tenantId, year, month) {
+  const startDate = `${year}-${String(month + 1).padStart(2, '0')}-01`;
+  const endDay    = new Date(year, month + 1, 0).getDate();
+  const endDate   = `${year}-${String(month + 1).padStart(2, '0')}-${endDay}`;
+
+  const { data, error } = await supabase
+    .from('attendance')
+    .select('profile_id, status, date')
+    .eq('tenant_id', tenantId)
+    .gte('date', startDate)
+    .lte('date', endDate);
+  return { data: data || [], error };
+}
+
+/** Fetch audit log entries for a tenant, optionally filtered by date. */
+export async function fetchAttendanceAuditLog(tenantId, date) {
+  let query = supabase
+    .from('attendance_audit_log')
+    .select('*, changed_by_profile:profiles!attendance_audit_log_changed_by_fkey(first_name, last_name), target_profile:profiles!attendance_audit_log_profile_id_fkey(first_name, last_name)')
+    .eq('tenant_id', tenantId)
+    .order('created_at', { ascending: false })
+    .limit(50);
+
+  if (date) {
+    query = query.eq('date', date);
+  }
+
+  const { data, error } = await query;
+  return { data: data || [], error };
 }

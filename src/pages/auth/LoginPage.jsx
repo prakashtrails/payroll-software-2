@@ -1,71 +1,369 @@
 import React from 'react';
-import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '@/context/AuthContext';
-import { Link } from 'react-router-dom';
+import { detectIdentifierType } from '@/services/otpService';
 
-export default function LoginPage() {
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [error, setError] = useState('');
-  const [submitting, setSubmitting] = useState(false);
-  const [showPassword, setShowPassword] = useState(false);
-  const { signIn, user, profile, loading } = useAuth();
-  const navigate = useNavigate();
+/* ─── Shared banners ──────────────────────────────────────────────────────── */
 
-  // Redirect if already logged in and profile is loaded
-  useEffect(() => {
-    if (!loading && user && profile) {
-      const dest = profile.role === 'employee' ? '/my-dashboard' : '/dashboard';
-      navigate(dest, { replace: true });
+function ErrorBanner({ message }) {
+  if (!message) return null;
+  return (
+    <div style={{
+      background:'var(--danger-light)',color:'var(--danger)',
+      padding:'10px 14px',borderRadius:'var(--radius-sm)',
+      fontSize:13,marginBottom:16,display:'flex',alignItems:'center',gap:8,
+    }}>
+      <i className="fas fa-exclamation-circle" style={{flexShrink:0}} />{message}
+    </div>
+  );
+}
+function SuccessBanner({ message }) {
+  if (!message) return null;
+  return (
+    <div style={{
+      background:'var(--success-light)',color:'var(--success)',
+      padding:'10px 14px',borderRadius:'var(--radius-sm)',
+      fontSize:13,marginBottom:16,display:'flex',alignItems:'center',gap:8,
+    }}>
+      <i className="fas fa-check-circle" style={{flexShrink:0}} />{message}
+    </div>
+  );
+}
+
+/* ─── 6-box OTP input ─────────────────────────────────────────────────────── */
+
+function OtpInput({ value, onChange, disabled }) {
+  const refs = useRef([]);
+  const handleKey = (i, e) => {
+    if (e.key === 'Backspace') {
+      if (!value[i] && i > 0) refs.current[i - 1]?.focus();
+      const a = value.split(''); a[i] = ''; onChange(a.join(''));
+      return;
     }
-  }, [user, profile, loading, navigate]);
-
-  // After signIn, profile loads async — redirect when it arrives
-  useEffect(() => {
-    if (user && profile && submitting === false) {
-      const dest = profile.role === 'employee' ? '/my-dashboard' : '/dashboard';
-      navigate(dest, { replace: true });
+    if (e.key === 'ArrowLeft'  && i > 0) { refs.current[i-1]?.focus(); return; }
+    if (e.key === 'ArrowRight' && i < 5) { refs.current[i+1]?.focus(); return; }
+  };
+  const handleChange = (i, e) => {
+    const raw = e.target.value.replace(/\D/g,'');
+    if (!raw) return;
+    if (raw.length > 1) {
+      const a = value.split('');
+      raw.slice(0, 6 - i).split('').forEach((ch, j) => { a[i+j] = ch; });
+      onChange(a.join('').slice(0,6));
+      setTimeout(() => refs.current[Math.min(i+raw.length,5)]?.focus(), 0);
+      return;
     }
-  }, [profile, user, submitting, navigate]);
+    const a = value.padEnd(6,'').split(''); a[i] = raw; onChange(a.join(''));
+    if (i < 5) setTimeout(() => refs.current[i+1]?.focus(), 0);
+  };
+  return (
+    <div style={{display:'flex',gap:8,justifyContent:'center',margin:'8px 0'}}>
+      {Array.from({length:6}).map((_,i) => (
+        <input key={i} ref={el => { refs.current[i]=el; }}
+          type="text" inputMode="numeric" maxLength={6}
+          value={value[i]||''} disabled={disabled}
+          onChange={e => handleChange(i,e)}
+          onKeyDown={e => handleKey(i,e)}
+          onFocus={e => e.target.select()}
+          style={{
+            width:44,height:52,textAlign:'center',fontSize:22,fontWeight:700,
+            border:`2px solid ${value[i]?'var(--primary)':'var(--border)'}`,
+            borderRadius:'var(--radius-sm)',background:'var(--surface)',
+            color:'var(--text)',outline:'none',transition:'border-color .15s',
+            caretColor:'transparent',
+          }}
+        />
+      ))}
+    </div>
+  );
+}
+
+/* ─── Resend countdown ────────────────────────────────────────────────────── */
+
+function ResendTimer({ onResend, loading }) {
+  const [sec, setSec] = useState(60);
+  useEffect(() => {
+    if (sec <= 0) return;
+    const id = setTimeout(() => setSec(s => s-1), 1000);
+    return () => clearTimeout(id);
+  }, [sec]);
+  const handle = async () => { await onResend(); setSec(60); };
+  if (sec > 0) return (
+    <p style={{textAlign:'center',fontSize:12,color:'var(--text-muted)',marginTop:12}}>
+      Resend OTP in <span style={{color:'var(--primary)',fontWeight:700}}>
+        {String(Math.floor(sec/60)).padStart(2,'0')}:{String(sec%60).padStart(2,'0')}
+      </span>
+    </p>
+  );
+  return (
+    <p style={{textAlign:'center',fontSize:12,color:'var(--text-muted)',marginTop:12}}>
+      Didn&apos;t receive it?{' '}
+      <button type="button" disabled={loading} onClick={handle}
+        style={{background:'none',border:'none',cursor:'pointer',
+          color:'var(--primary)',fontWeight:700,fontSize:12,padding:0,textDecoration:'underline'}}>
+        {loading ? 'Sending…' : 'Resend OTP'}
+      </button>
+    </p>
+  );
+}
+
+/* ─── Inline style constants ──────────────────────────────────────────────── */
+
+const ICON_STYLE = {
+  position:'absolute',left:13,top:'50%',transform:'translateY(-50%)',
+  color:'var(--text-muted)',fontSize:13,pointerEvents:'none',
+};
+const EYE_STYLE = {
+  position:'absolute',right:12,top:'50%',transform:'translateY(-50%)',
+  background:'none',border:'none',cursor:'pointer',
+  color:'var(--text-muted)',fontSize:14,padding:2,
+};
+
+/* ─── Password form ───────────────────────────────────────────────────────── */
+
+function PasswordLoginForm({ onSuccess }) {
+  const { signIn } = useAuth();
+  const [email,setEmail]         = useState('');
+  const [password,setPassword]   = useState('');
+  const [showPass,setShowPass]   = useState(false);
+  const [error,setError]         = useState('');
+  const [submitting,setSubmitting] = useState(false);
 
   const handleSubmit = async (e) => {
-    e.preventDefault();
-    setError('');
-    if (!email || !password) { setError('Please enter your email and password'); return; }
-
+    e.preventDefault(); setError('');
+    if (!email||!password) { setError('Please enter your email and password.'); return; }
     setSubmitting(true);
-    try {
-      await signIn(email, password);
-      // Redirect is handled by useEffect above once profile loads
-    } catch (err) {
-      setError(
-        err.message === 'Invalid login credentials'
-          ? 'Incorrect email or password. Please try again.'
-          : err.message || 'Login failed. Please try again.'
-      );
+    try { await signIn(email, password); onSuccess(); }
+    catch(err) {
+      setError(err.message==='Invalid login credentials'
+        ? 'Incorrect email or password. Please try again.'
+        : err.message||'Login failed. Please try again.');
       setSubmitting(false);
     }
   };
 
-  if (loading) {
-    return (
-      <div className="auth-container">
-        <div className="auth-card" style={{ textAlign: 'center', padding: '48px 36px' }}>
-          <div className="auth-logo" style={{ marginBottom: 24 }}>
-            <div className="logo-icon">P</div>
-            <h1>PayrollPro</h1>
-          </div>
-          <div className="spinner" style={{ margin: '0 auto 16px' }} />
-          <p style={{ color: 'var(--text-muted)', fontSize: 13 }}>Loading your workspace...</p>
+  return (
+    <form onSubmit={handleSubmit} noValidate>
+      <ErrorBanner message={error} />
+      <div className="form-group">
+        <label className="form-label">Email Address</label>
+        <div style={{position:'relative'}}>
+          <input className="form-input" type="email" placeholder="you@company.com"
+            value={email} onChange={e=>setEmail(e.target.value)}
+            autoFocus autoComplete="email" style={{paddingLeft:38}} />
+          <i className="fas fa-envelope" style={ICON_STYLE} />
         </div>
       </div>
-    );
-  }
+      <div className="form-group">
+        <label className="form-label">Password</label>
+        <div style={{position:'relative'}}>
+          <input className="form-input" type={showPass?'text':'password'}
+            placeholder="••••••••" value={password} onChange={e=>setPassword(e.target.value)}
+            autoComplete="current-password" style={{paddingLeft:38,paddingRight:42}} />
+          <i className="fas fa-lock" style={ICON_STYLE} />
+          <button type="button" onClick={()=>setShowPass(!showPass)} style={EYE_STYLE}>
+            <i className={`fas ${showPass?'fa-eye-slash':'fa-eye'}`} />
+          </button>
+        </div>
+      </div>
+      <button type="submit" className="btn btn-primary btn-lg btn-block"
+        disabled={submitting} style={{marginTop:8,borderRadius:12,fontSize:14}}>
+        {submitting
+          ? <><div className="spinner" style={{width:18,height:18,borderWidth:2}} /> Signing in…</>
+          : <><i className="fas fa-arrow-right-to-bracket" /> Sign In</>}
+      </button>
+    </form>
+  );
+}
+
+/* ─── OTP form ────────────────────────────────────────────────────────────── */
+
+function OtpLoginForm({ onSuccess }) {
+  const { sendOtp, verifyOtp } = useAuth();
+
+  const [identifier, setIdentifier] = useState('');
+  const [idType,     setIdType]     = useState(null);
+  const [step,       setStep]       = useState(1);
+  const [otp,        setOtp]        = useState('');
+  const [resolvedId, setResolvedId] = useState('');
+
+  const [error,      setError]      = useState('');
+  const [success,    setSuccess]    = useState('');
+  const [sending,    setSending]    = useState(false);
+  const [verifying,  setVerifying]  = useState(false);
+
+  const handleIdentifierChange = (e) => {
+    const val = e.target.value;
+    setIdentifier(val);
+    setIdType(detectIdentifierType(val));
+    setError('');
+  };
+
+  /* Step 1 */
+  const handleSendOtp = useCallback(async (e) => {
+    e?.preventDefault();
+    setError(''); setSuccess('');
+    if (!identifier.trim()) { setError('Please enter your email or mobile number.'); return; }
+    if (!idType)             { setError('Please enter a valid email or mobile number.'); return; }
+    setSending(true);
+    try {
+      const result = await sendOtp(identifier, { shouldCreateUser: true });
+      setResolvedId(result.identifier);
+      setOtp(''); setStep(2);
+      setSuccess(result.type==='email'
+        ? `OTP sent to ${result.identifier}. Check your inbox.`
+        : `OTP sent to ${result.identifier} via SMS.`);
+    } catch(err) {
+      if (err.message?.includes('not found')||err.message?.includes('User not found'))
+        setError('No account found. Please sign up first.');
+      else if (err.message?.includes('rate'))
+        setError('Too many attempts. Please wait and try again.');
+      else
+        setError(err.message||'Failed to send OTP. Please try again.');
+    } finally { setSending(false); }
+  }, [identifier, idType, sendOtp]);
+
+  /* Step 2 */
+  const handleVerifyOtp = useCallback(async (e) => {
+    e?.preventDefault(); setError('');
+    if (otp.replace(/\D/g,'').length!==6) { setError('Please enter the complete 6-digit OTP.'); return; }
+    setVerifying(true);
+    try {
+      await verifyOtp(resolvedId, otp.replace(/\D/g,''), idType);
+      onSuccess();
+    } catch(err) {
+      if (err.message?.includes('expired')||err.message?.includes('Token has expired'))
+        setError('OTP expired. Please request a new one.');
+      else if (err.message?.includes('invalid'))
+        setError('Incorrect OTP. Please try again.');
+      else
+        setError(err.message||'Verification failed. Please try again.');
+    } finally { setVerifying(false); }
+  }, [otp, resolvedId, idType, verifyOtp, onSuccess]);
+
+  /* Auto-submit when all 6 digits are filled */
+  useEffect(() => {
+    if (step===2 && otp.replace(/\D/g,'').length===6 && !verifying) handleVerifyOtp();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [otp]);
+
+  /* ── Step 1 ── */
+  if (step===1) return (
+    <form onSubmit={handleSendOtp} noValidate>
+      <ErrorBanner message={error} />
+      <div className="form-group">
+        <label className="form-label">Email or Mobile Number</label>
+        <div style={{position:'relative'}}>
+          <input className="form-input" type="text" inputMode="email"
+            placeholder="you@company.com"
+            value={identifier} onChange={handleIdentifierChange}
+            autoFocus style={{paddingLeft:38,paddingRight:idType?80:12}} />
+          <i className="fas fa-envelope" style={ICON_STYLE} />
+          {idType && (
+            <span style={{
+              position:'absolute',right:10,top:'50%',transform:'translateY(-50%)',
+              fontSize:10,fontWeight:700,letterSpacing:0.5,
+              background:'var(--primary-light)',color:'var(--primary)',
+              padding:'2px 8px',borderRadius:99,
+            }}>{idType==='email'?'EMAIL':'PHONE'}</span>
+          )}
+        </div>
+        <div className="form-hint">We&apos;ll send a 6-digit OTP to your email.</div>
+      </div>
+      <button type="submit" className="btn btn-primary btn-lg btn-block"
+        disabled={sending||!idType} style={{marginTop:8,borderRadius:12,fontSize:14}}>
+        {sending
+          ? <><div className="spinner" style={{width:18,height:18,borderWidth:2}} /> Sending OTP…</>
+          : <><i className="fas fa-paper-plane" /> Send OTP</>}
+      </button>
+    </form>
+  );
+
+  /* ── Step 2 ── */
+  return (
+    <form onSubmit={handleVerifyOtp} noValidate>
+      <SuccessBanner message={success} />
+      <ErrorBanner  message={error} />
+
+      {/* Back */}
+      <button type="button"
+        onClick={()=>{ setStep(1); setOtp(''); setError(''); setSuccess(''); }}
+        style={{background:'none',border:'none',cursor:'pointer',
+          color:'var(--text-muted)',fontSize:12,padding:'0 0 16px',
+          display:'flex',alignItems:'center',gap:6}}>
+        <i className="fas fa-arrow-left" /> Change {idType==='email'?'email':'number'}
+      </button>
+
+      {/* Destination */}
+      <div style={{
+        background:'var(--bg)',borderRadius:'var(--radius-md)',
+        padding:'12px 16px',marginBottom:20,fontSize:13,
+        display:'flex',alignItems:'center',gap:10,
+      }}>
+        <i className={`fas ${idType==='phone'?'fa-mobile-alt':'fa-envelope'}`}
+          style={{color:'var(--primary)',fontSize:16}} />
+        <div>
+          <div style={{fontWeight:600}}>OTP sent to</div>
+          <div style={{color:'var(--text-muted)',fontSize:12}}>{resolvedId}</div>
+        </div>
+      </div>
+
+      <div className="form-group">
+        <label className="form-label" style={{textAlign:'center',display:'block'}}>
+          Enter 6-Digit OTP
+        </label>
+        <OtpInput value={otp} onChange={setOtp} disabled={verifying} />
+        <div className="form-hint" style={{textAlign:'center',marginTop:6}}>
+          OTP expires in 5 minutes
+        </div>
+      </div>
+
+      <button type="submit" className="btn btn-primary btn-lg btn-block"
+        disabled={verifying||otp.replace(/\D/g,'').length!==6}
+        style={{marginTop:8,borderRadius:12,fontSize:14}}>
+        {verifying
+          ? <><div className="spinner" style={{width:18,height:18,borderWidth:2}} /> Verifying…</>
+          : <><i className="fas fa-shield-alt" /> Verify &amp; Sign In</>}
+      </button>
+
+      <ResendTimer onResend={handleSendOtp} loading={sending} />
+    </form>
+  );
+}
+
+/* ─── Main LoginPage ──────────────────────────────────────────────────────── */
+
+export default function LoginPage() {
+  const { user, profile, loading } = useAuth();
+  const navigate = useNavigate();
+  const [loginMode, setLoginMode] = useState('password');
+
+  useEffect(() => {
+    if (!loading && user && profile) {
+      navigate(profile.role==='employee'?'/my-dashboard':'/dashboard', { replace:true });
+    }
+  }, [user, profile, loading, navigate]);
+
+  // no-op: redirect fires automatically from useEffect above when profile loads
+  const handleSuccess = useCallback(() => {}, []);
+
+  if (loading) return (
+    <div className="auth-container">
+      <div className="auth-card" style={{textAlign:'center',padding:'48px 36px'}}>
+        <div className="auth-logo" style={{marginBottom:24}}>
+          <div className="logo-icon">P</div><h1>PayrollPro</h1>
+        </div>
+        <div className="spinner" style={{margin:'0 auto 16px'}} />
+        <p style={{color:'var(--text-muted)',fontSize:13}}>Loading your workspace…</p>
+      </div>
+    </div>
+  );
 
   return (
     <div className="auth-container">
       <div className="auth-card">
+
         {/* Logo */}
         <div className="auth-logo">
           <div className="logo-icon">P</div>
@@ -78,103 +376,46 @@ export default function LoginPage() {
           <p>Sign in to your company workspace</p>
         </div>
 
-        {/* Error */}
-        {error && (
-          <div style={{
-            background: 'var(--danger-light)', color: 'var(--danger)',
-            padding: '10px 14px', borderRadius: 'var(--radius-sm)',
-            fontSize: '13px', marginBottom: '16px',
-            display: 'flex', alignItems: 'center', gap: '8px',
-          }}>
-            <i className="fas fa-exclamation-circle" />
-            {error}
-          </div>
-        )}
+        {/* Mode toggle */}
+        <div style={{
+          display:'flex',background:'var(--bg)',
+          borderRadius:'var(--radius-md)',padding:4,gap:4,marginBottom:24,
+        }}>
+          {[
+            { key:'password', icon:'fa-lock',       label:'Password' },
+            { key:'otp',      icon:'fa-mobile-alt', label:'OTP Login' },
+          ].map(({key,icon,label}) => (
+            <button key={key} type="button" onClick={()=>setLoginMode(key)}
+              style={{
+                flex:1,padding:'9px 12px',borderRadius:'var(--radius-sm)',
+                border:'none',cursor:'pointer',fontSize:13,fontWeight:600,
+                background:loginMode===key?'var(--surface)':'transparent',
+                color:loginMode===key?'var(--text)':'var(--text-muted)',
+                boxShadow:loginMode===key?'var(--shadow-sm)':'none',
+                transition:'all .15s',
+                display:'flex',alignItems:'center',justifyContent:'center',gap:7,
+              }}>
+              <i className={`fas ${icon}`} />{label}
+            </button>
+          ))}
+        </div>
 
-        <form onSubmit={handleSubmit} noValidate>
-          <div className="form-group">
-            <label className="form-label">Email Address</label>
-            <div style={{ position: 'relative' }}>
-              <input
-                className="form-input" type="email"
-                placeholder="you@company.com"
-                value={email} onChange={(e) => setEmail(e.target.value)}
-                autoFocus autoComplete="email"
-                style={{ paddingLeft: 38 }}
-              />
-              <i className="fas fa-envelope" style={{
-                position: 'absolute', left: 13, top: '50%', transform: 'translateY(-50%)',
-                color: 'var(--text-muted)', fontSize: 13, pointerEvents: 'none',
-              }} />
-            </div>
-          </div>
-
-          <div className="form-group">
-            <label className="form-label">Password</label>
-            <div style={{ position: 'relative' }}>
-              <input
-                className="form-input"
-                type={showPassword ? 'text' : 'password'}
-                placeholder="••••••••"
-                value={password} onChange={(e) => setPassword(e.target.value)}
-                autoComplete="current-password"
-                style={{ paddingLeft: 38, paddingRight: 42 }}
-              />
-              <i className="fas fa-lock" style={{
-                position: 'absolute', left: 13, top: '50%', transform: 'translateY(-50%)',
-                color: 'var(--text-muted)', fontSize: 13, pointerEvents: 'none',
-              }} />
-              <button
-                type="button"
-                onClick={() => setShowPassword(!showPassword)}
-                style={{
-                  position: 'absolute', right: 12, top: '50%',
-                  transform: 'translateY(-50%)',
-                  background: 'none', border: 'none', cursor: 'pointer',
-                  color: 'var(--text-muted)', fontSize: 14, padding: 2,
-                }}
-              >
-                <i className={`fas ${showPassword ? 'fa-eye-slash' : 'fa-eye'}`} />
-              </button>
-            </div>
-          </div>
-
-          <button
-            type="submit"
-            className="btn btn-primary btn-lg btn-block"
-            disabled={submitting}
-            style={{ marginTop: 8, borderRadius: 12, fontSize: 14, letterSpacing: 0.2 }}
-          >
-            {submitting ? (
-              <><div className="spinner" style={{ width: 18, height: 18, borderWidth: 2 }} /> Signing in...</>
-            ) : (
-              <><i className="fas fa-arrow-right-to-bracket" /> Sign In</>
-            )}
-          </button>
-        </form>
+        {loginMode==='password'
+          ? <PasswordLoginForm onSuccess={handleSuccess} />
+          : <OtpLoginForm     onSuccess={handleSuccess} />}
 
         <div className="auth-divider">or</div>
-
         <div className="auth-footer">
           Don&apos;t have an account?{' '}
           <Link to="/signup">Register your company</Link>
         </div>
 
-        {/* Trust badges */}
         <div className="auth-trust">
-          <div className="auth-trust-item">
-            <i className="fas fa-shield-halved" />
-            Secure & Encrypted
-          </div>
-          <div className="auth-trust-item">
-            <i className="fas fa-building" />
-            Multi-tenant
-          </div>
-          <div className="auth-trust-item">
-            <i className="fas fa-lock" />
-            RLS Protected
-          </div>
+          <div className="auth-trust-item"><i className="fas fa-shield-halved" /> Secure &amp; Encrypted</div>
+          <div className="auth-trust-item"><i className="fas fa-building" /> Multi-tenant</div>
+          <div className="auth-trust-item"><i className="fas fa-lock" /> RLS Protected</div>
         </div>
+
       </div>
     </div>
   );
