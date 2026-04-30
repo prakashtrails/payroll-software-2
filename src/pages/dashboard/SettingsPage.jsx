@@ -3,21 +3,28 @@ import { useEffect, useState, useCallback } from 'react';
 import Header from '@/components/Header';
 import { showToast } from '@/components/Toast';
 import { useAuth } from '@/context/AuthContext';
-import { updateTenant, listDepartments, addDepartment, removeDepartment } from '@/services/tenantService';
+import { updateTenant, listDepartments, addDepartment, removeDepartment, listShifts, addShift, removeShift } from '@/services/tenantService';
 
 export default function SettingsPage() {
   const { tenant, refreshProfile } = useAuth();
   const [form, setForm] = useState({
     company_name: '', pay_day: 1, work_days: 26, currency: '₹',
     shift_start: '09:00', shift_end: '18:00', late_threshold: 15,
+    min_half_day_hours: 4, min_full_day_hours: 8,
+    geofence_lat: '', geofence_lng: '', geofence_radius: 200,
   });
   const [departments, setDepartments] = useState([]);
+  const [shifts, setShifts]           = useState([]);
   const [saving, setSaving]           = useState(false);
 
-  const fetchDepartments = useCallback(async () => {
+  const fetchData = useCallback(async () => {
     if (!tenant) return;
-    const { data } = await listDepartments(tenant.id);
-    setDepartments(data || []);
+    const [deptRes, shiftRes] = await Promise.all([
+      listDepartments(tenant.id),
+      listShifts(tenant.id)
+    ]);
+    setDepartments(deptRes.data || []);
+    setShifts(shiftRes.data || []);
   }, [tenant]);
 
   useEffect(() => {
@@ -30,9 +37,14 @@ export default function SettingsPage() {
       shift_start:    tenant.shift_start    || '09:00',
       shift_end:      tenant.shift_end      || '18:00',
       late_threshold: tenant.late_threshold || 15,
+      min_half_day_hours: tenant.min_half_day_hours || 4,
+      min_full_day_hours: tenant.min_full_day_hours || 8,
+      geofence_lat: tenant.geofence_lat || '',
+      geofence_lng: tenant.geofence_lng || '',
+      geofence_radius: tenant.geofence_radius || 200,
     });
-    fetchDepartments();
-  }, [tenant, fetchDepartments]);
+    fetchData();
+  }, [tenant, fetchData]);
 
   const saveSettings = async () => {
     setSaving(true);
@@ -44,6 +56,11 @@ export default function SettingsPage() {
       shift_start:    form.shift_start    || '09:00',
       shift_end:      form.shift_end      || '18:00',
       late_threshold: parseInt(form.late_threshold) || 15,
+      min_half_day_hours: parseFloat(form.min_half_day_hours) || 4,
+      min_full_day_hours: parseFloat(form.min_full_day_hours) || 8,
+      geofence_lat: form.geofence_lat ? parseFloat(form.geofence_lat) : null,
+      geofence_lng: form.geofence_lng ? parseFloat(form.geofence_lng) : null,
+      geofence_radius: parseInt(form.geofence_radius) || 200,
     });
     setSaving(false);
     if (error) return showToast('Save failed: ' + error.message, 'error');
@@ -57,27 +74,69 @@ export default function SettingsPage() {
     const { error } = await addDepartment(tenant.id, name);
     if (error) return showToast('Failed to add: ' + error.message, 'error');
     showToast('Department added', 'success');
-    fetchDepartments();
+    fetchData();
   };
 
   const handleRemoveDepartment = async (id) => {
     const { error } = await removeDepartment(id);
     if (error) return showToast('Remove failed: ' + error.message, 'error');
     showToast('Department removed', 'success');
-    fetchDepartments();
+    fetchData();
+  };
+
+  const handleAddShift = async () => {
+    const name = prompt('Enter shift name (e.g. Night Shift):');
+    if (!name?.trim()) return;
+    const start = prompt('Start time (HH:MM):', '22:00');
+    const end = prompt('End time (HH:MM):', '07:00');
+    if (!start || !end) return;
+
+    const { error } = await addShift(tenant.id, { name, start_time: start, end_time: end, total_hours: 9 });
+    if (error) return showToast('Failed to add shift: ' + error.message, 'error');
+    showToast('Shift added', 'success');
+    fetchData();
+  };
+
+  const handleRemoveShift = async (id) => {
+    const { error } = await removeShift(id);
+    if (error) return showToast('Remove failed: ' + error.message, 'error');
+    showToast('Shift removed', 'success');
+    fetchData();
   };
 
   return (
     <>
       <Header title="Settings" breadcrumb="Company and system configuration" />
       <div className="page-content">
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 20 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, marginBottom: 20 }}>
+          
           <div className="card">
             <div className="card-header"><h3>Company Settings</h3></div>
             <div className="card-body">
               <div className="form-group">
                 <label className="form-label">Company Name</label>
                 <input className="form-input" value={form.company_name} onChange={(e) => setForm({ ...form, company_name: e.target.value })} />
+              </div>
+              <div className="form-group">
+                <label className="form-label">Company Join Code</label>
+                <div style={{ 
+                  padding: '12px', 
+                  background: 'var(--bg)', 
+                  borderRadius: 'var(--radius-md)', 
+                  border: '1px dashed var(--primary)',
+                  fontSize: '20px',
+                  fontWeight: 'bold',
+                  letterSpacing: '2px',
+                  textAlign: 'center',
+                  color: 'var(--primary)',
+                  cursor: 'pointer'
+                }} onClick={() => {
+                  navigator.clipboard.writeText(tenant?.join_code);
+                  showToast('Join code copied to clipboard', 'success');
+                }} title="Click to copy">
+                  {tenant?.join_code || 'N/A'}
+                </div>
+                <div className="form-hint">Share this code with employees so they can join your workspace.</div>
               </div>
               <div className="form-row">
                 <div className="form-group">
@@ -95,11 +154,11 @@ export default function SettingsPage() {
               </div>
               <div className="form-row">
                 <div className="form-group">
-                  <label className="form-label">Shift Start</label>
+                  <label className="form-label">Default Shift Start</label>
                   <input className="form-input" type="time" value={form.shift_start} onChange={(e) => setForm({ ...form, shift_start: e.target.value })} />
                 </div>
                 <div className="form-group">
-                  <label className="form-label">Shift End</label>
+                  <label className="form-label">Default Shift End</label>
                   <input className="form-input" type="time" value={form.shift_end} onChange={(e) => setForm({ ...form, shift_end: e.target.value })} />
                 </div>
               </div>
@@ -115,40 +174,70 @@ export default function SettingsPage() {
           </div>
 
           <div className="card">
-            <div className="card-header"><h3>Organization Code</h3></div>
+            <div className="card-header"><h3>Attendance & Geofencing</h3></div>
             <div className="card-body">
-              <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 16 }}>
-                Share this code with employees so they can self-register and join your workspace on the sign-up page.
-              </p>
-              {tenant?.join_code ? (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                  <span style={{
-                    fontSize: 26, fontWeight: 800, letterSpacing: 6,
-                    fontFamily: 'monospace', color: 'var(--primary)',
-                    background: 'var(--primary-light)', padding: '8px 20px',
-                    borderRadius: 'var(--radius-sm)',
-                  }}>
-                    {tenant.join_code}
-                  </span>
-                  <button
-                    className="btn btn-outline btn-sm"
-                    onClick={() => { navigator.clipboard.writeText(tenant.join_code); }}
-                  >
-                    <i className="fas fa-copy" /> Copy
+              <div className="form-row">
+                <div className="form-group">
+                  <label className="form-label">Half-Day Min. Hours</label>
+                  <input className="form-input" type="number" step="0.5" value={form.min_half_day_hours} onChange={(e) => setForm({ ...form, min_half_day_hours: e.target.value })} />
+                </div>
+                <div className="form-group">
+                  <label className="form-label">Full-Day Min. Hours</label>
+                  <input className="form-input" type="number" step="0.5" value={form.min_full_day_hours} onChange={(e) => setForm({ ...form, min_full_day_hours: e.target.value })} />
+                </div>
+              </div>
+              
+              <div style={{ padding: '12px', background: 'var(--bg)', borderRadius: 'var(--radius-md)', marginBottom: 16 }}>
+                <h4 style={{ margin: '0 0 8px 0', fontSize: 13 }}><i className="fas fa-map-marker-alt" /> Geofencing</h4>
+                <p style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 12 }}>Restrict employee clock-in/out to a specific location.</p>
+                <div className="form-row">
+                  <div className="form-group">
+                    <label className="form-label">Latitude</label>
+                    <input className="form-input" placeholder="e.g. 28.6139" value={form.geofence_lat} onChange={(e) => setForm({ ...form, geofence_lat: e.target.value })} />
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">Longitude</label>
+                    <input className="form-input" placeholder="e.g. 77.2090" value={form.geofence_lng} onChange={(e) => setForm({ ...form, geofence_lng: e.target.value })} />
+                  </div>
+                </div>
+                <div className="form-group">
+                  <label className="form-label">Radius (meters)</label>
+                  <input className="form-input" type="number" value={form.geofence_radius} onChange={(e) => setForm({ ...form, geofence_radius: e.target.value })} />
+                </div>
+              </div>
+
+              <button className="btn btn-primary" onClick={saveSettings} disabled={saving}>
+                {saving ? 'Saving…' : <><i className="fas fa-save" /> Save Attendance Rules</>}
+              </button>
+            </div>
+          </div>
+
+          <div className="card">
+            <div className="card-header">
+              <h3>Shifts</h3>
+              <button className="btn btn-primary btn-sm" onClick={handleAddShift}><i className="fas fa-plus" /> Add Shift</button>
+            </div>
+            <div className="card-body">
+              {shifts.length === 0 ? (
+                <p style={{ color: 'var(--text-muted)', fontSize: 13 }}>Only the company default shift is available. Add more shifts for flexible timing.</p>
+              ) : shifts.map((s) => (
+                <div key={s.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 0', borderBottom: '1px solid var(--border-light)' }}>
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 600 }}>{s.name}</div>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{s.start_time} — {s.end_time}</div>
+                  </div>
+                  <button className="btn btn-outline btn-icon btn-sm" style={{ color: 'var(--danger)' }} onClick={() => handleRemoveShift(s.id)}>
+                    <i className="fas fa-trash-alt" />
                   </button>
                 </div>
-              ) : (
-                <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>
-                  No code found. Re-run the migration SQL (section 6) to generate one.
-                </p>
-              )}
+              ))}
             </div>
           </div>
 
           <div className="card">
             <div className="card-header">
               <h3>Departments</h3>
-              <button className="btn btn-primary btn-sm" onClick={handleAddDepartment}><i className="fas fa-plus" /> Add</button>
+              <button className="btn btn-primary btn-sm" onClick={handleAddDepartment}><i className="fas fa-plus" /> Add Dept</button>
             </div>
             <div className="card-body">
               {departments.length === 0 ? (
@@ -163,6 +252,7 @@ export default function SettingsPage() {
               ))}
             </div>
           </div>
+
         </div>
       </div>
     </>

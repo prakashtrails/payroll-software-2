@@ -1,6 +1,12 @@
 // Utility helpers shared across the app
+// Utility helpers shared across the app
 export const fmt = (n, currency = '₹') =>
   currency + Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 });
+
+fmt.date = (d) => {
+  if (!d) return '—';
+  return new Date(d).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+};
 
 export const monthKey = (m, y) => `${y}-${String(m + 1).padStart(2, '0')}`;
 

@@ -26,6 +26,27 @@ export async function removeDepartment(id) {
   return { error };
 }
 
+export async function listShifts(tenantId) {
+  const { data, error } = await supabase
+    .from('shifts')
+    .select('*')
+    .eq('tenant_id', tenantId)
+    .order('name');
+  return { data: data || [], error };
+}
+
+export async function addShift(tenantId, shift) {
+  const { error } = await supabase
+    .from('shifts')
+    .insert([{ ...shift, tenant_id: tenantId }]);
+  return { error };
+}
+
+export async function removeShift(id) {
+  const { error } = await supabase.from('shifts').delete().eq('id', id);
+  return { error };
+}
+
 /** Aggregate dashboard stats — all queries run in parallel. */
 export async function fetchDashboardStats(tenantId) {
   const [empsRes, payrollRes, advRes] = await Promise.all([

@@ -154,6 +154,34 @@ CREATE TABLE IF NOT EXISTS advances (
   created_at  timestamptz NOT NULL DEFAULT now()
 );
 
+-- OTP verification table (used by send-otp / verify-otp edge functions)
+CREATE TABLE IF NOT EXISTS otp_table (
+  id          uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id     text        NOT NULL,  -- stores the email address
+  otp         text        NOT NULL,
+  expires_at  timestamptz NOT NULL DEFAULT (now() + interval '5 minutes'),
+  created_at  timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_otp_table_user_id ON otp_table(user_id);
+
+-- Leave requests (employees apply; admins/managers approve)
+CREATE TABLE IF NOT EXISTS leave_requests (
+  id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id   uuid NOT NULL REFERENCES tenants(id)  ON DELETE CASCADE,
+  profile_id  uuid NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  leave_type  text NOT NULL,
+  start_date  date NOT NULL,
+  end_date    date NOT NULL,
+  reason      text,
+  status      text NOT NULL DEFAULT 'Pending' CHECK (status IN ('Pending','Approved','Rejected')),
+  approved_by uuid REFERENCES profiles(id),
+  created_at  timestamptz NOT NULL DEFAULT now()
+);
+-- Drop old restrictive leave_type check if it exists (old migration used different values)
+ALTER TABLE leave_requests DROP CONSTRAINT IF EXISTS leave_requests_leave_type_check;
+CREATE INDEX IF NOT EXISTS idx_leave_requests_profile   ON leave_requests(profile_id);
+CREATE INDEX IF NOT EXISTS idx_leave_requests_tenant    ON leave_requests(tenant_id, status);
+
 
 -- =============================================================
 -- 2. ROW-LEVEL SECURITY (RLS)
@@ -168,6 +196,8 @@ ALTER TABLE punches           ENABLE ROW LEVEL SECURITY;
 ALTER TABLE payrolls          ENABLE ROW LEVEL SECURITY;
 ALTER TABLE payslips          ENABLE ROW LEVEL SECURITY;
 ALTER TABLE advances          ENABLE ROW LEVEL SECURITY;
+ALTER TABLE otp_table         ENABLE ROW LEVEL SECURITY;
+ALTER TABLE leave_requests    ENABLE ROW LEVEL SECURITY;
 
 -- Helper: get the calling user's tenant_id
 CREATE OR REPLACE FUNCTION my_tenant_id()
@@ -287,6 +317,24 @@ CREATE POLICY "punches: employee can insert own"
     )
   );
 
+CREATE POLICY "punches: admin/manager can insert"
+  ON punches FOR INSERT
+  WITH CHECK (
+    attendance_id IN (
+      SELECT id FROM attendance WHERE tenant_id = my_tenant_id()
+    )
+    AND my_role() IN ('admin','manager','superadmin')
+  );
+
+CREATE POLICY "punches: admin/manager can delete"
+  ON punches FOR DELETE
+  USING (
+    attendance_id IN (
+      SELECT id FROM attendance WHERE tenant_id = my_tenant_id()
+    )
+    AND my_role() IN ('admin','manager','superadmin')
+  );
+
 -- ---- payrolls ----
 CREATE POLICY "payrolls: tenant members can read"
   ON payrolls FOR SELECT
@@ -324,6 +372,23 @@ CREATE POLICY "advances: admin/manager can write"
   ON advances FOR ALL
   USING (tenant_id = my_tenant_id() AND my_role() IN ('admin','manager'))
   WITH CHECK (tenant_id = my_tenant_id() AND my_role() IN ('admin','manager'));
+
+-- ---- leave_requests ----
+CREATE POLICY "leaves: admin sees tenant"
+  ON leave_requests FOR SELECT
+  USING (tenant_id = my_tenant_id() AND my_role() IN ('admin','manager','superadmin'));
+
+CREATE POLICY "leaves: employee sees own"
+  ON leave_requests FOR SELECT
+  USING (profile_id = auth.uid());
+
+CREATE POLICY "leaves: employee can insert own"
+  ON leave_requests FOR INSERT
+  WITH CHECK (profile_id = auth.uid() AND tenant_id = my_tenant_id());
+
+CREATE POLICY "leaves: admin can update tenant"
+  ON leave_requests FOR UPDATE
+  USING (tenant_id = my_tenant_id() AND my_role() IN ('admin','manager','superadmin'));
 
 
 -- =============================================================
@@ -364,12 +429,21 @@ BEGIN
 
   SELECT email INTO v_email FROM auth.users WHERE id = v_uid;
 
+  -- Create the tenant
   INSERT INTO tenants (company_name, join_code)
   VALUES (p_company_name, v_join_code)
   RETURNING id INTO v_tenant_id;
 
+  -- Create or Update the profile
   INSERT INTO profiles (id, tenant_id, first_name, last_name, email, role, status)
-  VALUES (v_uid, v_tenant_id, p_first_name, p_last_name, COALESCE(v_email,''), 'admin', 'Active');
+  VALUES (v_uid, v_tenant_id, p_first_name, p_last_name, COALESCE(v_email,''), 'admin', 'Active')
+  ON CONFLICT (id) DO UPDATE SET
+    tenant_id = EXCLUDED.tenant_id,
+    first_name = EXCLUDED.first_name,
+    last_name = EXCLUDED.last_name,
+    email = EXCLUDED.email,
+    role = 'admin',
+    status = 'Active';
 
   RETURN v_join_code;
 END;
@@ -592,3 +666,125 @@ END;
 $$;
 
 GRANT EXECUTE ON FUNCTION clear_must_change_password() TO authenticated;
+
+
+-- =============================================================
+-- 8. ATTENDANCE AUDIT LOG
+-- =============================================================
+
+-- Tracks every manual attendance edit made by admin/manager.
+CREATE TABLE IF NOT EXISTS attendance_audit_log (
+  id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id       uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  attendance_id   uuid REFERENCES attendance(id) ON DELETE SET NULL,
+  profile_id      uuid NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  changed_by      uuid NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  date            date NOT NULL,
+  action          text NOT NULL CHECK (action IN ('create','update')),
+  old_status      text,
+  new_status      text NOT NULL,
+  old_hours       numeric,
+  new_hours       numeric,
+  reason          text NOT NULL DEFAULT '',
+  created_at      timestamptz NOT NULL DEFAULT now()
+);
+
+ALTER TABLE attendance_audit_log ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "audit_log: admin/manager can read tenant"
+  ON attendance_audit_log FOR SELECT
+  USING (tenant_id = my_tenant_id() AND my_role() IN ('admin','manager','superadmin'));
+
+CREATE POLICY "audit_log: admin/manager can insert"
+  ON attendance_audit_log FOR INSERT
+  WITH CHECK (tenant_id = my_tenant_id() AND my_role() IN ('admin','manager','superadmin'));
+
+CREATE INDEX IF NOT EXISTS idx_audit_log_tenant_date  ON attendance_audit_log(tenant_id, date);
+CREATE INDEX IF NOT EXISTS idx_audit_log_attendance   ON attendance_audit_log(attendance_id);
+CREATE INDEX IF NOT EXISTS idx_audit_log_profile      ON attendance_audit_log(profile_id);
+
+
+-- =============================================================
+-- 9. SHIFTS, GEOFENCING & ENHANCED PROFILES
+-- =============================================================
+
+-- Add shifts table
+CREATE TABLE IF NOT EXISTS shifts (
+  id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id    uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  name         text NOT NULL,
+  start_time   time NOT NULL,
+  end_time     time NOT NULL,
+  total_hours  numeric NOT NULL DEFAULT 9,
+  created_at   timestamptz NOT NULL DEFAULT now()
+);
+
+ALTER TABLE shifts ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "shifts: read for tenant" ON shifts FOR SELECT USING (tenant_id = my_tenant_id());
+CREATE POLICY "shifts: write for admin" ON shifts FOR ALL USING (tenant_id = my_tenant_id() AND my_role() = 'admin');
+
+-- Add geofencing columns to tenants
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS geofence_lat numeric;
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS geofence_lng numeric;
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS geofence_radius integer DEFAULT 200;
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS min_half_day_hours numeric DEFAULT 4;
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS min_full_day_hours numeric DEFAULT 8;
+
+-- Add new columns to profiles
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS temp_password text;
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS weekly_holiday text DEFAULT 'Sunday';
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS shift_id uuid REFERENCES shifts(id) ON DELETE SET NULL;
+
+-- Add location columns to attendance
+ALTER TABLE attendance ADD COLUMN IF NOT EXISTS punch_in_lat numeric;
+ALTER TABLE attendance ADD COLUMN IF NOT EXISTS punch_in_lng numeric;
+ALTER TABLE attendance ADD COLUMN IF NOT EXISTS punch_out_lat numeric;
+ALTER TABLE attendance ADD COLUMN IF NOT EXISTS punch_out_lng numeric;
+
+-- Drop and recreate insert_employee_profile with temp_password support
+DROP FUNCTION IF EXISTS insert_employee_profile(uuid,text,text,text,text,text,text,numeric,date,text,text,text);
+CREATE OR REPLACE FUNCTION insert_employee_profile(
+  p_user_id      uuid,
+  p_first_name   text,
+  p_last_name    text,
+  p_email        text,
+  p_phone        text,
+  p_department   text,
+  p_designation  text,
+  p_ctc          numeric,
+  p_join_date    date,
+  p_bank_acc     text,
+  p_pan          text,
+  p_aadhar       text,
+  p_temp_password text DEFAULT NULL
+)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_tenant_id uuid;
+BEGIN
+  -- Get the tenant_id of the creator (admin/manager)
+  SELECT tenant_id INTO v_tenant_id FROM profiles WHERE id = auth.uid();
+
+  INSERT INTO profiles (
+    id, tenant_id,
+    first_name, last_name, email, phone,
+    department, designation,
+    ctc, join_date,
+    bank_acc, pan, aadhar,
+    role, status, must_change_password, temp_password
+  ) VALUES (
+    p_user_id, v_tenant_id,
+    p_first_name, p_last_name, p_email, COALESCE(p_phone,''),
+    COALESCE(p_department,''), COALESCE(p_designation,''),
+    COALESCE(p_ctc, 0), p_join_date,
+    COALESCE(p_bank_acc,''), COALESCE(p_pan,''), COALESCE(p_aadhar,''),
+    'employee', 'Active', true, p_temp_password
+  );
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION insert_employee_profile(uuid,text,text,text,text,text,text,numeric,date,text,text,text,text) TO authenticated;

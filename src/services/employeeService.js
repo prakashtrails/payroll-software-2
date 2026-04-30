@@ -84,7 +84,7 @@ export async function createEmployee(profileData) {
   }
 
   const { error: rpcError } = await supabase.rpc('insert_employee_profile', {
-    p_user_id:     authData.user.id,
+    p_user_id:       authData.user.id,
     p_first_name:  profileData.first_name,
     p_last_name:   profileData.last_name,
     p_email:       profileData.email,
@@ -96,8 +96,18 @@ export async function createEmployee(profileData) {
     p_bank_acc:    profileData.bank_acc    || '',
     p_pan:         profileData.pan         || '',
     p_aadhar:      profileData.aadhar      || '',
+    p_temp_password: tempPassword,
   });
   if (rpcError) throw rpcError;
+
+  // Update profile with weekly_holiday and shift_id if provided
+  // (Since the RPC might not have been updated yet in the DB or we want to be safe)
+  if (profileData.weekly_holiday || profileData.shift_id) {
+    await supabase.from('profiles').update({
+      weekly_holiday: profileData.weekly_holiday,
+      shift_id:       profileData.shift_id,
+    }).eq('id', authData.user.id);
+  }
 
   return { tempPassword };
 }

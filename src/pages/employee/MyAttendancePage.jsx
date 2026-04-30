@@ -20,8 +20,11 @@ export default function MyAttendancePage() {
   const [liveDate, setLiveDate] = useState('');
   const [timerDisplay, setTimerDisplay] = useState('00:00:00');
   const [isClockedIn, setIsClockedIn] = useState(false);
+  const [locationStatus, setLocationStatus] = useState('Checking...');
+  
   const clockRef = useRef(null);
   const timerRef = useRef(null);
+  const geofenceRef = useRef(null);
 
   const fetchMyAttendance = useCallback(async () => {
     if (!profile || !tenant) return;
@@ -74,19 +77,86 @@ export default function MyAttendancePage() {
     return () => clearInterval(timerRef.current);
   }, [myPunches]);
 
-  const clockIn = async () => {
-    if (isClockedIn) return showToast('Already clocked in!', 'warning');
+  const calculateDistance = (lat1, lon1, lat2, lon2) => {
+    const R = 6371e3; // metres
+    const phi1 = lat1 * Math.PI/180;
+    const phi2 = lat2 * Math.PI/180;
+    const deltaPhi = (lat2-lat1) * Math.PI/180;
+    const deltaLambda = (lon2-lon1) * Math.PI/180;
+    const a = Math.sin(deltaPhi/2) * Math.sin(deltaPhi/2) +
+              Math.cos(phi1) * Math.cos(phi2) *
+              Math.sin(deltaLambda/2) * Math.sin(deltaLambda/2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    return R * c;
+  };
+
+  const checkGeofence = useCallback(async (autoLogout = false) => {
+    if (!tenant?.geofence_lat || !tenant?.geofence_lng) {
+      setLocationStatus('Geofencing not enabled');
+      return true;
+    }
+
     try {
-      await svcClockIn(tenant.id, profile.id, tenant);
+      const pos = await new Promise((resolve, reject) => {
+        navigator.geolocation.getCurrentPosition(resolve, reject, { enableHighAccuracy: true });
+      });
+      const dist = calculateDistance(pos.coords.latitude, pos.coords.longitude, tenant.geofence_lat, tenant.geofence_lng);
+      const radius = tenant.geofence_radius || 200;
+      
+      if (dist > radius) {
+        setLocationStatus(`Outside area (${Math.round(dist)}m away)`);
+        if (autoLogout && isClockedIn) {
+          showToast('Auto-logging out: You have left the office area.', 'warning');
+          clockOut({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+        }
+        return false;
+      }
+      setLocationStatus('Within office area');
+      return { lat: pos.coords.latitude, lng: pos.coords.longitude };
+    } catch (err) {
+      setLocationStatus('Location access required');
+      return false;
+    }
+  }, [tenant, isClockedIn]);
+
+  useEffect(() => {
+    if (isClockedIn && tenant?.geofence_lat) {
+      geofenceRef.current = setInterval(() => checkGeofence(true), 60000); // Check every minute
+    } else {
+      clearInterval(geofenceRef.current);
+    }
+    return () => clearInterval(geofenceRef.current);
+  }, [isClockedIn, tenant, checkGeofence]);
+
+  const clockIn = async () => {
+    if (!profile || !tenant) {
+      return showToast('Account setup incomplete. Please contact support or try logging out and back in.', 'error');
+    }
+    if (isClockedIn) return showToast('Already clocked in!', 'warning');
+    
+    const location = await checkGeofence();
+    if (!location) {
+      return showToast(locationStatus, 'error');
+    }
+
+    try {
+      await svcClockIn(tenant.id, profile.id, tenant, location);
       showToast(`Clocked in at ${fmtTime12(timeStr(new Date()))}`, 'success');
       fetchMyAttendance();
     } catch (err) { showToast('Clock in failed: ' + err.message, 'error'); }
   };
 
-  const clockOut = async () => {
+  const clockOut = async (location = null) => {
     if (!isClockedIn) return showToast('Not clocked in!', 'warning');
+
+    if (!location) {
+      const loc = await checkGeofence();
+      if (!loc) return showToast(locationStatus, 'error');
+      location = loc;
+    }
+
     try {
-      const { total } = await svcClockOut(profile.id);
+      const { total } = await svcClockOut(profile.id, location);
       showToast(`Clocked out. Worked ${fmtDuration(total)}`, 'success');
       fetchMyAttendance();
     } catch (err) { showToast('Clock out failed: ' + err.message, 'error'); }
@@ -149,6 +219,9 @@ export default function MyAttendancePage() {
             <div className={`clock-status ${isClockedIn ? '' : 'not-in'}`}>
               <span className="pulse" /><span>{isClockedIn ? 'Currently Working' : (myPunches?.punches?.length ? 'Clocked Out' : 'Not Clocked In')}</span>
             </div>
+            <div style={{ fontSize: 10, color: 'rgba(255,255,255,.6)', marginTop: 8 }}>
+              <i className="fas fa-location-dot" /> {locationStatus}
+            </div>
           </div>
           <div style={{ textAlign: 'center' }}>
             <div className="clock-timer">{timerDisplay}</div>
@@ -156,7 +229,7 @@ export default function MyAttendancePage() {
           </div>
           <div className="clock-actions">
             <button className="clock-btn clock-in" onClick={clockIn} disabled={isClockedIn}><i className="fas fa-sign-in-alt" /> Clock In</button>
-            <button className="clock-btn clock-out" onClick={clockOut} disabled={!isClockedIn}><i className="fas fa-sign-out-alt" /> Clock Out</button>
+            <button className="clock-btn clock-out" onClick={() => clockOut()} disabled={!isClockedIn}><i className="fas fa-sign-out-alt" /> Clock Out</button>
           </div>
         </div>
         <div className="att-summary-bar">

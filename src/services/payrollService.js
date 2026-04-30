@@ -15,29 +15,26 @@ export async function fetchPayroll(tenantId, month, year) {
 
 /**
  * Process payroll for a month.
- * Inserts the payroll record, generates all payslips, and deducts advance EMIs.
+ * Uses atomic RPC to ensure data integrity.
  */
 export async function processPayroll({ tenantId, month, year, employees, components, advances, workDays, workDayOverrides }) {
-  // 1. Create payroll record
-  const { data: payroll, error: pErr } = await supabase
-    .from('payrolls')
-    .insert([{ tenant_id: tenantId, month: month + 1, year, status: 'Processed' }])
-    .select()
-    .single();
-  if (pErr) throw pErr;
-
-  // 2. Generate payslips
-  const slips = employees.map((emp) => {
+  const payrollMonth = month + 1; // 1-indexed for DB
+  
+  // Prepare the data for the atomic RPC
+  const payload = employees.map((emp) => {
     const actualDays = workDayOverrides[emp.id] !== undefined ? workDayOverrides[emp.id] : workDays;
     const sal        = calcSalary(emp.ctc || 0, components, workDays, actualDays);
 
-    const advDeduction = advances
-      .filter((a) => a.profile_id === emp.id)
-      .reduce((sum, a) => sum + Math.min(a.emi, a.balance), 0);
+    const empAdvances = advances
+      .filter((a) => a.profile_id === emp.id && a.balance > 0)
+      .map(a => ({
+        id: a.id,
+        amount: Math.min(a.emi, a.balance)
+      }));
+
+    const totalAdvDed = empAdvances.reduce((sum, a) => sum + a.amount, 0);
 
     return {
-      payroll_id:        payroll.id,
-      tenant_id:         tenantId,
       profile_id:        emp.id,
       emp_name:          `${emp.first_name} ${emp.last_name}`,
       department:        emp.department   || '',
@@ -47,37 +44,27 @@ export async function processPayroll({ tenantId, month, year, employees, compone
       total_work_days:   workDays,
       gross_earnings:    sal.totalEarning,
       total_deductions:  sal.totalDeduction,
-      advance_deduction: advDeduction,
-      net_pay:           sal.net - advDeduction,
-      breakdown:         JSON.stringify({ earnings: sal.earnings, deductions: sal.deductions }),
+      advance_deduction: totalAdvDed,
+      net_pay:           sal.net - totalAdvDed,
+      breakdown:         { earnings: sal.earnings, deductions: sal.deductions },
+      advances:          empAdvances
     };
   });
 
-  const { error: sErr } = await supabase.from('payslips').insert(slips);
-  if (sErr) throw sErr;
+  const { data, error } = await supabase.rpc('process_payroll_atomic', {
+    p_tenant_id: tenantId,
+    p_month:     payrollMonth,
+    p_year:      year,
+    p_data:      payload
+  });
 
-  // 3. Update advance balances
-  for (const emp of employees) {
-    const empAdvances = advances.filter((a) => a.profile_id === emp.id);
-    for (const adv of empAdvances) {
-      const ded        = Math.min(adv.emi, adv.balance);
-      const newPaid    = adv.paid + ded;
-      const newBalance = adv.balance - ded;
-      await supabase.from('advances').update({
-        paid:    newPaid,
-        balance: newBalance,
-        status:  newBalance <= 0 ? 'Completed' : 'Active',
-      }).eq('id', adv.id);
-    }
-  }
-
-  return { payroll };
+  if (error) throw error;
+  return { payroll_id: data };
 }
 
-/** Delete a payroll run and all its payslips. */
+/** Delete a payroll run and all its payslips using atomic RPC. */
 export async function revertPayroll(payrollId) {
-  await supabase.from('payslips').delete().eq('payroll_id', payrollId);
-  const { error } = await supabase.from('payrolls').delete().eq('id', payrollId);
+  const { error } = await supabase.rpc('revert_payroll_atomic', { p_payroll_id: payrollId });
   if (error) throw error;
 }
 

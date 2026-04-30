@@ -20,6 +20,7 @@ const NAV_CONFIG = {
         { label: 'Dashboard', icon: 'fa-th-large', href: '/dashboard' },
         { label: 'Employees', icon: 'fa-users', href: '/employees' },
         { label: 'Attendance', icon: 'fa-fingerprint', href: '/attendance' },
+        { label: 'Leave Requests', icon: 'fa-calendar-check', href: '/leaves' },
       ],
     },
     {
@@ -45,6 +46,7 @@ const NAV_CONFIG = {
         { label: 'Dashboard', icon: 'fa-th-large', href: '/my-dashboard' },
         { label: 'My Attendance', icon: 'fa-fingerprint', href: '/my-attendance' },
         { label: 'My Payslips', icon: 'fa-file-invoice-dollar', href: '/my-payslips' },
+        { label: 'My Leaves', icon: 'fa-calendar-alt', href: '/my-leaves' },
       ],
     },
   ],

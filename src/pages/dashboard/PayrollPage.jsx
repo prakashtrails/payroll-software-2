@@ -9,6 +9,7 @@ import { fetchPayroll, processPayroll, revertPayroll } from '@/services/payrollS
 import { listActiveEmployees } from '@/services/employeeService';
 import { listComponents } from '@/services/salaryService';
 import { listActiveAdvances } from '@/services/advanceService';
+import { fetchAllTenantAttendance } from '@/services/attendanceService';
 import { fmt, monthLabel, calcSalary, getInitials, getAvatarColor } from '@/lib/helpers';
 
 export default function RunPayrollPage() {
@@ -30,17 +31,44 @@ export default function RunPayrollPage() {
     if (!tenant) return;
     setLoading(true);
     try {
-      const [empsRes, compsRes, advsRes, payrollRes] = await Promise.all([
+      const [empsRes, compsRes, advsRes, payrollRes, attRes] = await Promise.all([
         listActiveEmployees(tenant.id),
         listComponents(tenant.id),
         listActiveAdvances(tenant.id),
         fetchPayroll(tenant.id, payrollMonth, payrollYear),
+        fetchAllTenantAttendance(tenant.id, payrollYear, payrollMonth),
       ]);
       setEmployees(empsRes.data);
       setComponents(compsRes.data);
       setAdvances(advsRes.data);
       setProcessed(payrollRes.data);
-      setWorkDayOverrides({});
+      
+      // Calculate actual working days from attendance
+      const attendance = attRes.data || [];
+      const overrides = {};
+      empsRes.data.forEach(emp => {
+        const empAtt = attendance.filter(a => a.profile_id === emp.id);
+        let days = 0;
+        empAtt.forEach(a => {
+          if (a.status === 'Present' || a.status === 'Late') days += 1;
+          else if (a.status === 'Half Day') days += 0.5;
+        });
+
+        // If no attendance but they joined after the start of this month,
+        // we ensure we don't default to a full month if they joined late.
+        // Actually, our attendance-based logic already handles this (0 days if no attendance).
+        // But let's add a check: if they joined AFTER this month, they should have 0 days.
+        const joinDate = emp.join_date ? new Date(emp.join_date) : null;
+        const monthStart = new Date(payrollYear, payrollMonth, 1);
+        const monthEnd = new Date(payrollYear, payrollMonth + 1, 0);
+
+        if (joinDate && joinDate > monthEnd) {
+          days = 0;
+        }
+
+        overrides[emp.id] = days;
+      });
+      setWorkDayOverrides(overrides);
     } catch (err) {
       console.error(err);
     } finally {
@@ -140,7 +168,7 @@ export default function RunPayrollPage() {
               <StatCard icon="fa-users" iconColor="blue" value={processed ? slips.length : employees.length} label={processed ? 'Employees Paid' : 'Employees to Process'} />
               <StatCard icon="fa-arrow-up" iconColor="green" value={processed ? fmt(totalGross) : fmt(employees.reduce((s, e) => s + (e.ctc || 0), 0))} label={processed ? 'Gross Earnings' : 'Total CTC'} />
               <StatCard icon="fa-arrow-down" iconColor="orange" value={processed ? fmt(totalDed) : fmt(advances.reduce((s, a) => s + a.emi, 0))} label={processed ? 'Total Deductions' : 'EMI Deductions'} />
-              <StatCard icon="fa-money-bill" iconColor="purple" value={processed ? fmt(totalNet) : fmt(workDays)} label={processed ? 'Net Payroll' : 'Working Days'} />
+              <StatCard icon="fa-money-bill" iconColor="purple" value={processed ? fmt(totalNet) : workDays} label={processed ? 'Net Payroll' : 'Working Days'} />
             </div>
 
             {/* Status badge */}
