@@ -86,22 +86,24 @@ Deno.serve(async (req) => {
         if (createError.message?.includes('already been registered') || 
             createError.message?.includes('already exists') ||
             createError.status === 422) {
-          // Fetch existing user by email using generateLink (which returns the user object and recovers soft-deleted identities)
-          const { data: linkData, error: linkError } = await supabase.auth.admin.generateLink({
-            type: 'magiclink',
-            email: identifier,
+          // Fetch existing user by listing with email filter (single user, not all)
+          const { data: { users }, error: lookupErr } = await supabase.auth.admin.listUsers({
+            filter: `email.eq.${identifier}`,
+            page: 1,
+            perPage: 1,
           })
           
-          if (linkError || !linkData?.user) {
-            return new Response(JSON.stringify({
-              error: 'User exists but could not be recovered. Please contact support.',
-              message: linkError?.message || 'Recovery failed.'
+          if (lookupErr || !users?.length) {
+            console.error('User lookup failed:', lookupErr)
+            return new Response(JSON.stringify({ 
+              error: 'User exists but could not be found. Please try logging in.',
+              message: 'User exists but could not be found. Please try logging in.' 
             }), {
               headers: { ...corsHeaders, 'Content-Type': 'application/json' },
               status: 500,
             })
           }
-          userId = linkData.user.id
+          userId = users[0].id
         } else {
           console.error('Create User Error:', createError)
           return new Response(JSON.stringify({ error: createError.message, message: createError.message }), {

@@ -9,7 +9,6 @@ import {
   OtpStepPanel,
 } from '@/components/OtpVerification';
 
-
 /* ─── Inline style constants ──────────────────────────────────────────────── */
 
 const ICON_STYLE = {

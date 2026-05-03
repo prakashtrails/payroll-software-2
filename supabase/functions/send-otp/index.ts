@@ -41,8 +41,8 @@ Deno.serve(async (req) => {
     // Generate 6-digit OTP
     const otp = Math.floor(100000 + Math.random() * 900000).toString()
     
-    // Set expiration to 5 minutes from now
-    const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString()
+    // Set expiration to 10 minutes from now
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString()
 
     // 1. Delete any previous OTPs for this email (prevents stale entries)
     await supabase.from('otp_table').delete().eq('user_id', identifier)

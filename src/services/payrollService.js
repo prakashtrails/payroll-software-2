@@ -19,7 +19,7 @@ export async function fetchPayroll(tenantId, month, year) {
  */
 export async function processPayroll({ tenantId, month, year, employees, components, advances, workDays, workDayOverrides }) {
   const payrollMonth = month + 1; // 1-indexed for DB
-  
+
   // Prepare the data for the atomic RPC
   const payload = employees.map((emp) => {
     const actualDays = workDayOverrides[emp.id] !== undefined ? workDayOverrides[emp.id] : workDays;

@@ -702,8 +702,6 @@ CREATE POLICY "audit_log: admin/manager can insert"
 CREATE INDEX IF NOT EXISTS idx_audit_log_tenant_date  ON attendance_audit_log(tenant_id, date);
 CREATE INDEX IF NOT EXISTS idx_audit_log_attendance   ON attendance_audit_log(attendance_id);
 CREATE INDEX IF NOT EXISTS idx_audit_log_profile      ON attendance_audit_log(profile_id);
-
-
 -- =============================================================
 -- 9. SHIFTS, GEOFENCING & ENHANCED PROFILES
 -- =============================================================
