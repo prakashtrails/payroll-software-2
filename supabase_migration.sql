@@ -453,9 +453,10 @@ $$;
 -- Inserts the employee profile under the calling manager's tenant.
 -- Sets must_change_password = true so the employee is forced to change their
 -- temporary password on first login.
-DROP FUNCTION IF EXISTS insert_employee_profile(uuid,text,text,text,text,text,text,numeric,date,text,text,text);
+DROP FUNCTION IF EXISTS insert_employee_profile(uuid,uuid,text,text,text,text,text,text,numeric,date,text,text,text,text);
 CREATE OR REPLACE FUNCTION insert_employee_profile(
   p_user_id     uuid,
+  p_tenant_id   uuid,
   p_first_name  text,
   p_last_name   text,
   p_email       text,
@@ -466,44 +467,34 @@ CREATE OR REPLACE FUNCTION insert_employee_profile(
   p_join_date   date DEFAULT NULL,
   p_bank_acc    text DEFAULT '',
   p_pan         text DEFAULT '',
-  p_aadhar      text DEFAULT ''
+  p_aadhar      text DEFAULT '',
+  p_temp_password text DEFAULT NULL
 )
 RETURNS void
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = public
 AS $$
-DECLARE
-  v_tenant_id uuid;
 BEGIN
-  -- Verify the caller is an admin/manager and get their tenant
-  SELECT tenant_id INTO v_tenant_id
-  FROM profiles
-  WHERE id = auth.uid() AND role IN ('admin', 'manager');
-
-  IF v_tenant_id IS NULL THEN
-    RAISE EXCEPTION 'Only admins and managers can create employees';
-  END IF;
-
   INSERT INTO profiles (
     id, tenant_id,
     first_name, last_name, email, phone,
     department, designation, ctc, join_date,
     bank_acc, pan, aadhar,
-    role, status, must_change_password
+    role, status, must_change_password, temp_password
   ) VALUES (
-    p_user_id, v_tenant_id,
+    p_user_id, p_tenant_id,
     p_first_name, p_last_name, p_email, COALESCE(p_phone,''),
     COALESCE(p_department,''), COALESCE(p_designation,''),
     COALESCE(p_ctc, 0), p_join_date,
     COALESCE(p_bank_acc,''), COALESCE(p_pan,''), COALESCE(p_aadhar,''),
-    'employee', 'Active', true
+    'employee', 'Active', true, p_temp_password
   );
 END;
 $$;
 
 GRANT EXECUTE ON FUNCTION create_workspace(text,text,text,uuid)                            TO anon, authenticated;
-GRANT EXECUTE ON FUNCTION insert_employee_profile(uuid,text,text,text,text,text,text,numeric,date,text,text,text) TO authenticated;
+GRANT EXECUTE ON FUNCTION insert_employee_profile(uuid,uuid,text,text,text,text,text,text,numeric,date,text,text,text,text) TO authenticated;
 
 
 -- =============================================================
@@ -702,6 +693,8 @@ CREATE POLICY "audit_log: admin/manager can insert"
 CREATE INDEX IF NOT EXISTS idx_audit_log_tenant_date  ON attendance_audit_log(tenant_id, date);
 CREATE INDEX IF NOT EXISTS idx_audit_log_attendance   ON attendance_audit_log(attendance_id);
 CREATE INDEX IF NOT EXISTS idx_audit_log_profile      ON attendance_audit_log(profile_id);
+
+
 -- =============================================================
 -- 9. SHIFTS, GEOFENCING & ENHANCED PROFILES
 -- =============================================================
@@ -740,9 +733,10 @@ ALTER TABLE attendance ADD COLUMN IF NOT EXISTS punch_out_lat numeric;
 ALTER TABLE attendance ADD COLUMN IF NOT EXISTS punch_out_lng numeric;
 
 -- Drop and recreate insert_employee_profile with temp_password support
-DROP FUNCTION IF EXISTS insert_employee_profile(uuid,text,text,text,text,text,text,numeric,date,text,text,text);
+DROP FUNCTION IF EXISTS insert_employee_profile(uuid,uuid,text,text,text,text,text,text,numeric,date,text,text,text,text);
 CREATE OR REPLACE FUNCTION insert_employee_profile(
   p_user_id      uuid,
+  p_tenant_id    uuid,
   p_first_name   text,
   p_last_name    text,
   p_email        text,
@@ -761,12 +755,7 @@ LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = public
 AS $$
-DECLARE
-  v_tenant_id uuid;
 BEGIN
-  -- Get the tenant_id of the creator (admin/manager)
-  SELECT tenant_id INTO v_tenant_id FROM profiles WHERE id = auth.uid();
-
   INSERT INTO profiles (
     id, tenant_id,
     first_name, last_name, email, phone,
@@ -775,7 +764,7 @@ BEGIN
     bank_acc, pan, aadhar,
     role, status, must_change_password, temp_password
   ) VALUES (
-    p_user_id, v_tenant_id,
+    p_user_id, p_tenant_id,
     p_first_name, p_last_name, p_email, COALESCE(p_phone,''),
     COALESCE(p_department,''), COALESCE(p_designation,''),
     COALESCE(p_ctc, 0), p_join_date,
@@ -785,4 +774,4 @@ BEGIN
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION insert_employee_profile(uuid,text,text,text,text,text,text,numeric,date,text,text,text,text) TO authenticated;
+GRANT EXECUTE ON FUNCTION insert_employee_profile(uuid,uuid,text,text,text,text,text,text,numeric,date,text,text,text,text) TO authenticated;

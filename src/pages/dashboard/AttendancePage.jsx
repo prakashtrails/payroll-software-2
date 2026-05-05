@@ -1,14 +1,13 @@
 import React from 'react';
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import Header from '@/components/Header';
 import Modal from '@/components/Modal';
 import { showToast } from '@/components/Toast';
 import { useAuth } from '@/context/AuthContext';
 import {
-  fetchMyMonthAttendance, clockIn as svcClockIn, clockOut as svcClockOut,
+  fetchMyMonthAttendance,
   fetchTeamAttendance, saveManualAttendance, fetchAttendanceAuditLog,
-} from '@/services/attendanceService';
-import { todayStr, dateStr, timeStr, fmtTime12, diffHours, fmtDuration, monthLabel, getInitials, getAvatarColor } from '@/lib/helpers';
+} from '@/services/attendanceService';import { listHolidays } from '@/services/tenantService';import { todayStr, dateStr, fmtTime12, fmtDuration, monthLabel, getInitials, getAvatarColor } from '@/lib/helpers';
 
 export default function AttendancePage() {
   const { profile, tenant } = useAuth();
@@ -19,12 +18,7 @@ export default function AttendancePage() {
   // My Attendance
   const [myRecords, setMyRecords] = useState([]);
   const [myPunches, setMyPunches] = useState({});
-  const [liveClock, setLiveClock] = useState('');
-  const [liveDate, setLiveDate] = useState('');
-  const [timerDisplay, setTimerDisplay] = useState('00:00:00');
-  const [isClockedIn, setIsClockedIn] = useState(false);
-  const clockRef = useRef(null);
-  const timerRef = useRef(null);
+  const [holidays, setHolidays] = useState([]);
 
   // Team view
   const [teamDate, setTeamDate] = useState(todayStr());
@@ -47,74 +41,24 @@ export default function AttendancePage() {
     setMyRecords(data);
     const todayRec = data.find((r) => r.date === todayStr());
     if (todayRec) {
-      const ins  = (todayRec.punches || []).filter((p) => p.punch_type === 'in').length;
-      const outs = (todayRec.punches || []).filter((p) => p.punch_type === 'out').length;
-      setIsClockedIn(ins > outs);
       setMyPunches(todayRec);
     } else {
-      setIsClockedIn(false);
       setMyPunches({});
     }
   }, [profile, tenant, attMonth, attYear]);
 
   useEffect(() => { fetchMyAttendance(); }, [fetchMyAttendance]);
 
-  // Live clock
-  useEffect(() => {
-    const tick = () => {
-      const now = new Date();
-      setLiveClock(now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true }));
-      setLiveDate(now.toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }));
-    };
-    tick();
-    clockRef.current = setInterval(tick, 1000);
-    return () => clearInterval(clockRef.current);
-  }, []);
+  const getHolidayDate = (h) => h.holiday_date || h.date;
 
-  // Work timer
-  useEffect(() => {
-    const tickTimer = () => {
-      const todayRec = myPunches;
-      if (!todayRec?.punches?.length) { setTimerDisplay('00:00:00'); return; }
-      const sorted = [...todayRec.punches].sort((a, b) => a.punch_time.localeCompare(b.punch_time));
-      let totalSecs = 0;
-      const ins = sorted.filter((p) => p.punch_type === 'in');
-      const outs = sorted.filter((p) => p.punch_type === 'out');
-      for (let i = 0; i < ins.length; i++) {
-        const outTime = outs[i]?.punch_time || timeStr(new Date());
-        totalSecs += diffHours(ins[i].punch_time, outTime) * 3600;
-      }
-      const h = Math.floor(totalSecs / 3600);
-      const m = Math.floor((totalSecs % 3600) / 60);
-      const s = Math.floor(totalSecs % 60);
-      setTimerDisplay(`${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`);
-    };
-    tickTimer();
-    timerRef.current = setInterval(tickTimer, 1000);
-    return () => clearInterval(timerRef.current);
-  }, [myPunches]);
+  const fetchHolidayData = useCallback(async () => {
+    if (!tenant) return;
+    const { data, error } = await listHolidays(tenant.id);
+    if (error) return showToast('Could not load holidays: ' + error.message, 'error');
+    setHolidays(data);
+  }, [tenant]);
 
-  const clockIn = async () => {
-    if (isClockedIn) return showToast('Already clocked in!', 'warning');
-    try {
-      await svcClockIn(tenant.id, profile.id, tenant);
-      showToast(`Clocked in at ${fmtTime12(timeStr(new Date()))}`, 'success');
-      fetchMyAttendance();
-    } catch (err) {
-      showToast('Clock in failed: ' + err.message, 'error');
-    }
-  };
-
-  const clockOut = async () => {
-    if (!isClockedIn) return showToast('Not clocked in!', 'warning');
-    try {
-      const { total } = await svcClockOut(profile.id);
-      showToast(`Clocked out. Worked ${fmtDuration(total)}`, 'success');
-      fetchMyAttendance();
-    } catch (err) {
-      showToast('Clock out failed: ' + err.message, 'error');
-    }
-  };
+  useEffect(() => { fetchHolidayData(); }, [fetchHolidayData]);
 
   const fetchTeamData = useCallback(async () => {
     if (!tenant) return;
@@ -215,10 +159,14 @@ export default function AttendancePage() {
       const isFuture = date > today;
       const isWeekend = date.getDay() === 0 || date.getDay() === 6;
       const rec = myRecords.find((r) => r.date === ds);
+      const holiday = holidays.find((h) => getHolidayDate(h) === ds && h.status === 'Approved');
 
       let cls = '', hoursStr = '';
       if (isFuture) cls = 'future';
-      else if (isWeekend) cls = 'weekend';
+      else if (holiday) {
+        cls = 'holiday';
+        hoursStr = holiday.name;
+      } else if (isWeekend) cls = 'weekend';
       else if (rec) {
         const st = rec.status?.toLowerCase().replace(/\s/g, '-') || 'present';
         cls = st;
@@ -247,6 +195,8 @@ export default function AttendancePage() {
     const date = new Date(attYear, attMonth, d);
     if (date > today || date.getDay() === 0 || date.getDay() === 6) continue;
     const ds = dateStr(date);
+    const holiday = holidays.find((h) => getHolidayDate(h) === ds && h.status === 'Approved');
+    if (holiday) continue;
     const rec = myRecords.find((r) => r.date === ds);
     if (!rec?.status) { if (date < today) summary.absent++; continue; }
     if (rec.status === 'Present') summary.present++;
@@ -264,32 +214,8 @@ export default function AttendancePage() {
 
   return (
     <>
-      <Header title="Attendance" breadcrumb="Track attendance and clock in/out" />
+      <Header title="Attendance" breadcrumb="Track attendance" />
       <div className="page-content">
-        {/* Clock Widget */}
-        <div className="clock-widget">
-          <div>
-            <div className="clock-time">{liveClock}</div>
-            <div className="clock-date">{liveDate}</div>
-            <div className={`clock-status ${isClockedIn ? '' : 'not-in'}`}>
-              <span className="pulse" />
-              <span>{isClockedIn ? 'Currently Working' : (myPunches?.punches?.length ? 'Clocked Out' : 'Not Clocked In')}</span>
-            </div>
-          </div>
-          <div style={{ textAlign: 'center' }}>
-            <div className="clock-timer">{timerDisplay}</div>
-            <div style={{ fontSize: 11, color: 'rgba(255,255,255,.5)', marginTop: 4 }}>Today&apos;s Working Hours</div>
-          </div>
-          <div className="clock-actions">
-            <button className="clock-btn clock-in" onClick={clockIn} disabled={isClockedIn}>
-              <i className="fas fa-sign-in-alt" /> Clock In
-            </button>
-            <button className="clock-btn clock-out" onClick={clockOut} disabled={!isClockedIn}>
-              <i className="fas fa-sign-out-alt" /> Clock Out
-            </button>
-          </div>
-        </div>
-
         {/* Tabs */}
         <div className="tabs">
           {['my', 'team', 'audit'].map((t) => (

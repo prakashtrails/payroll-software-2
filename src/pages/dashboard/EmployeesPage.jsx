@@ -67,7 +67,7 @@ const EMPTY_FORM = {
   first_name: '', last_name: '', email: '', phone: '',
   department: '', designation: '', join_date: '', ctc: '',
   bank_acc: '', pan: '', aadhar: '', role: 'employee',
-  weekly_holiday: 'Sunday', shift_id: '',
+  weekly_holiday: 'Sunday', shift_id: '', leave_allocation: 0,
 };
 
 export default function EmployeesPage() {
@@ -134,8 +134,21 @@ export default function EmployeesPage() {
       role: emp.role || 'employee',
       weekly_holiday: emp.weekly_holiday || 'Sunday',
       shift_id: emp.shift_id || '',
+      leave_allocation: emp.leave_allocation || 0,
     } : EMPTY_FORM);
     setShowModal(true);
+  };
+
+  const downloadSampleCSV = () => {
+    const csvContent = 'first_name,last_name,email,phone,department,designation,join_date,ctc,bank_acc,pan,aadhar,role,weekly_holiday,leave_allocation\n' +
+      'Jane,Doe,jane.doe@example.com,9999999999,HR,Recruiter,2026-05-01,45000,123456789012,ABCDE1234F,999988887777,employee,Sunday,12\n';
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.setAttribute('download', 'employee_import_sample.csv');
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   };
 
   const saveEmployee = async () => {
@@ -161,6 +174,7 @@ export default function EmployeesPage() {
       role: form.role || 'employee',
       weekly_holiday: form.weekly_holiday,
       shift_id: form.shift_id || null,
+      leave_allocation: parseInt(form.leave_allocation, 10) || 0,
     };
 
     setSaving(true);
@@ -171,7 +185,7 @@ export default function EmployeesPage() {
         showToast('Employee updated', 'success');
         setShowModal(false);
       } else {
-        const { tempPassword } = await createEmployee(profileData);
+        const { tempPassword } = await createEmployee(tenant?.id, profileData);
         setShowModal(false);
         setTempCreds({ empName: `${profileData.first_name} ${profileData.last_name}`, email: profileData.email, password: tempPassword });
       }
@@ -217,12 +231,13 @@ export default function EmployeesPage() {
           aadhar: data.aadhar || '',
           role: data.role || 'employee',
           weekly_holiday: data.weekly_holiday || 'Sunday',
+          leave_allocation: parseInt(data.leave_allocation, 10) || 0,
         };
 
         if (!profileData.email) { failCount++; continue; }
 
         try {
-          await createEmployee(profileData);
+          await createEmployee(tenant?.id, profileData);
           successCount++;
         } catch (err) {
           console.error('Import fail:', err);
@@ -282,11 +297,14 @@ export default function EmployeesPage() {
             onChange={(e) => setSearch(e.target.value)}
             style={{ minWidth: 220 }}
           />
-          <div style={{ marginLeft: 'auto', display: 'flex', gap: 10 }}>
+          <div style={{ marginLeft: 'auto', display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
             <button className="btn btn-outline" onClick={() => document.getElementById('import-csv').click()}>
-              <i className="fas fa-file-import" /> Import
+              <i className="fas fa-file-import" /> Import CSV
             </button>
-            <input id="import-csv" type="file" accept=".csv" style={{ display: 'none' }} onChange={handleImport} />
+            <input id="import-csv" type="file" accept=".csv,.txt" style={{ display: 'none' }} onChange={handleImport} />
+            <button className="btn btn-outline" onClick={downloadSampleCSV}>
+              <i className="fas fa-file-csv" /> Sample CSV
+            </button>
             <button className="btn btn-primary" onClick={() => openModal()}>
               <i className="fas fa-plus" /> Add Employee
             </button>
@@ -303,7 +321,7 @@ export default function EmployeesPage() {
               <table>
                 <thead>
                   <tr>
-                    <th>Employee</th><th>Department</th><th>Designation</th>
+                    <th>Employee</th><th>Department</th><th>Designation</th><th>Leaves</th>
                     <th>Monthly CTC</th><th>Status</th><th>Actions</th>
                   </tr>
                 </thead>
@@ -331,6 +349,7 @@ export default function EmployeesPage() {
                       </td>
                       <td>{e.department || '—'}</td>
                       <td>{e.designation || '—'}</td>
+                      <td>{typeof e.leave_allocation === 'number' ? e.leave_allocation : (e.leave_allocation || 0)}</td>
                       <td>{fmt(e.ctc)}</td>
                       <td><span className={`badge ${e.status === 'Active' ? 'badge-success' : 'badge-danger'}`}>{e.status}</span></td>
                       <td>
@@ -411,14 +430,22 @@ export default function EmployeesPage() {
               </select>
             </div>
           </div>
-          <div className="form-group">
-            <label className="form-label">User Role</label>
-            <select className="form-select" value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}>
-              <option value="employee">Employee</option>
-              <option value="manager">Manager</option>
-              <option value="admin">Admin</option>
-            </select>
-            <div className="form-hint">Managers can approve leaves. Admins have full access.</div>
+          <div className="form-row">
+            <div className="form-group">
+              <label className="form-label">Annual Leave Allocation</label>
+              <input className="form-input" type="number" min="0" value={form.leave_allocation}
+                onChange={(e) => setForm({ ...form, leave_allocation: e.target.value })} />
+              <div className="form-hint">Number of leaves assigned to this employee per year.</div>
+            </div>
+            <div className="form-group">
+              <label className="form-label">User Role</label>
+              <select className="form-select" value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}>
+                <option value="employee">Employee</option>
+                <option value="manager">Manager</option>
+                <option value="admin">Admin</option>
+              </select>
+              <div className="form-hint">Managers can approve leaves. Admins have full access.</div>
+            </div>
           </div>
         </div>
       </Modal>

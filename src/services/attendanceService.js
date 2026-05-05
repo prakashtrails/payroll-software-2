@@ -112,8 +112,7 @@ export async function clockOut(profileId, locationData = null) {
   let status = 'Absent';
   if (total >= fullMin) {
     status = 'Present';
-  } else if (total > 0) {
-    // FEATURE: Even 1 min = Half Day
+  } else if (total >= halfMin) {
     status = 'Half Day';
   }
 
@@ -144,6 +143,34 @@ export async function fetchTeamAttendance(tenantId, date) {
     records:     attRes.data    || [],
     error:       empsRes.error || deptsRes.error || attRes.error,
   };
+}
+
+export async function fetchTodayAttendanceSummary(tenantId, date) {
+  const [profilesRes, attendanceRes] = await Promise.all([
+    supabase.from('profiles').select('id').eq('tenant_id', tenantId).eq('status', 'Active'),
+    supabase.from('attendance').select('profile_id, status').eq('tenant_id', tenantId).eq('date', date),
+  ]);
+
+  const error = profilesRes.error || attendanceRes.error;
+  const statusMap = {};
+  (attendanceRes.data || []).forEach((row) => {
+    statusMap[row.profile_id] = row.status;
+  });
+
+  const summary = { total: 0, present: 0, absent: 0, late: 0, halfDay: 0, leave: 0 };
+  summary.total = (profilesRes.data || []).length;
+
+  (profilesRes.data || []).forEach((profile) => {
+    const status = statusMap[profile.id];
+    if (status === 'Present') summary.present += 1;
+    else if (status === 'Late') { summary.present += 1; summary.late += 1; }
+    else if (status === 'Half Day') summary.halfDay += 1;
+    else if (status === 'Leave') summary.leave += 1;
+  });
+
+  summary.absent = summary.total - summary.present - summary.halfDay - summary.leave;
+  if (summary.absent < 0) summary.absent = 0;
+  return { ...summary, error };
 }
 
 /** Upsert a manual attendance entry (admin override) with audit logging. */

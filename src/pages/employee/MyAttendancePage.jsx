@@ -8,6 +8,7 @@ import {
   clockIn as svcClockIn,
   clockOut as svcClockOut,
 } from '@/services/attendanceService';
+import { listHolidays } from '@/services/tenantService';
 import { todayStr, dateStr, timeStr, fmtTime12, diffHours, fmtDuration, monthLabel } from '@/lib/helpers';
 
 export default function MyAttendancePage() {
@@ -16,6 +17,7 @@ export default function MyAttendancePage() {
   const [attYear, setAttYear] = useState(new Date().getFullYear());
   const [myRecords, setMyRecords] = useState([]);
   const [myPunches, setMyPunches] = useState({});
+  const [holidays, setHolidays] = useState([]);
   const [liveClock, setLiveClock] = useState('');
   const [liveDate, setLiveDate] = useState('');
   const [timerDisplay, setTimerDisplay] = useState('00:00:00');
@@ -43,6 +45,17 @@ export default function MyAttendancePage() {
   }, [profile, tenant, attMonth, attYear]);
 
   useEffect(() => { fetchMyAttendance(); }, [fetchMyAttendance]);
+
+  const fetchHolidayData = useCallback(async () => {
+    if (!tenant) return;
+    const { data, error } = await listHolidays(tenant.id);
+    if (error) return showToast('Could not load holidays: ' + error.message, 'error');
+    setHolidays(data);
+  }, [tenant]);
+
+  const getHolidayDate = (h) => h.holiday_date || h.date;
+
+  useEffect(() => { fetchHolidayData(); }, [fetchHolidayData]);
 
   useEffect(() => {
     const tick = () => {
@@ -107,51 +120,24 @@ export default function MyAttendancePage() {
         setLocationStatus(`Outside area (${Math.round(dist)}m away)`);
         if (autoLogout && isClockedIn) {
           showToast('Auto-logging out: You have left the office area.', 'warning');
-          clockOut({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+          return { outside: true, lat: pos.coords.latitude, lng: pos.coords.longitude };
         }
         return false;
       }
       setLocationStatus('Within office area');
-      return { lat: pos.coords.latitude, lng: pos.coords.longitude };
-    } catch (err) {
+      return { outside: false, lat: pos.coords.latitude, lng: pos.coords.longitude };
+    } catch (_err) {
       setLocationStatus('Location access required');
       return false;
     }
   }, [tenant, isClockedIn]);
 
-  useEffect(() => {
-    if (isClockedIn && tenant?.geofence_lat) {
-      geofenceRef.current = setInterval(() => checkGeofence(true), 60000); // Check every minute
-    } else {
-      clearInterval(geofenceRef.current);
-    }
-    return () => clearInterval(geofenceRef.current);
-  }, [isClockedIn, tenant, checkGeofence]);
-
-  const clockIn = async () => {
-    if (!profile || !tenant) {
-      return showToast('Account setup incomplete. Please contact support or try logging out and back in.', 'error');
-    }
-    if (isClockedIn) return showToast('Already clocked in!', 'warning');
-    
-    const location = await checkGeofence();
-    if (!location) {
-      return showToast(locationStatus, 'error');
-    }
-
-    try {
-      await svcClockIn(tenant.id, profile.id, tenant, location);
-      showToast(`Clocked in at ${fmtTime12(timeStr(new Date()))}`, 'success');
-      fetchMyAttendance();
-    } catch (err) { showToast('Clock in failed: ' + err.message, 'error'); }
-  };
-
-  const clockOut = async (location = null) => {
+  const clockOut = useCallback(async (location = null) => {
     if (!isClockedIn) return showToast('Not clocked in!', 'warning');
 
     if (!location) {
       const loc = await checkGeofence();
-      if (!loc) return showToast(locationStatus, 'error');
+      if (!loc || loc.outside) return showToast(locationStatus, 'error');
       location = loc;
     }
 
@@ -160,6 +146,38 @@ export default function MyAttendancePage() {
       showToast(`Clocked out. Worked ${fmtDuration(total)}`, 'success');
       fetchMyAttendance();
     } catch (err) { showToast('Clock out failed: ' + err.message, 'error'); }
+  }, [checkGeofence, fetchMyAttendance, isClockedIn, locationStatus, profile]);
+
+  useEffect(() => {
+    if (isClockedIn && tenant?.geofence_lat) {
+      geofenceRef.current = setInterval(async () => {
+        const result = await checkGeofence(true);
+        if (result?.outside) {
+          await clockOut({ lat: result.lat, lng: result.lng });
+        }
+      }, 60000);
+    } else {
+      clearInterval(geofenceRef.current);
+    }
+    return () => clearInterval(geofenceRef.current);
+  }, [isClockedIn, tenant, checkGeofence, clockOut]);
+
+  const clockIn = async () => {
+    if (!profile || !tenant) {
+      return showToast('Account setup incomplete. Please contact support or try logging out and back in.', 'error');
+    }
+    if (isClockedIn) return showToast('Already clocked in!', 'warning');
+    
+    const location = await checkGeofence();
+    if (!location || location.outside) {
+      return showToast(locationStatus, 'error');
+    }
+
+    try {
+      await svcClockIn(tenant.id, profile.id, tenant, location);
+      showToast(`Clocked in at ${fmtTime12(timeStr(new Date()))}`, 'success');
+      fetchMyAttendance();
+    } catch (err) { showToast('Clock in failed: ' + err.message, 'error'); }
   };
 
   const changeMonth = (delta) => {
@@ -182,8 +200,10 @@ export default function MyAttendancePage() {
       const isFuture = date > today;
       const isWeekend = date.getDay() === 0 || date.getDay() === 6;
       const rec = myRecords.find((r) => r.date === ds);
+      const holiday = holidays.find((h) => getHolidayDate(h) === ds && h.status === 'Approved');
       let cls = '', hoursStr = '';
       if (isFuture) cls = 'future';
+      else if (holiday) { cls = 'holiday'; hoursStr = holiday.name; }
       else if (isWeekend) cls = 'weekend';
       else if (rec) { cls = rec.status?.toLowerCase().replace(/\s/g, '-') || 'present'; if (rec.total_hours) hoursStr = fmtDuration(rec.total_hours); }
       else if (!isFuture && !isToday) cls = 'absent';
@@ -198,7 +218,10 @@ export default function MyAttendancePage() {
   for (let d = 1; d <= new Date(attYear, attMonth + 1, 0).getDate(); d++) {
     const date = new Date(attYear, attMonth, d);
     if (date > today || date.getDay() === 0 || date.getDay() === 6) continue;
-    const rec = myRecords.find((r) => r.date === dateStr(date));
+    const ds = dateStr(date);
+    const holiday = holidays.find((h) => getHolidayDate(h) === ds && h.status === 'Approved');
+    if (holiday) continue;
+    const rec = myRecords.find((r) => r.date === ds);
     if (!rec?.status) { if (date < today) summary.absent++; continue; }
     if (rec.status === 'Present') summary.present++;
     else if (rec.status === 'Late') { summary.late++; summary.present++; }

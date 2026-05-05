@@ -1,7 +1,7 @@
 /**
  * otpService.js
  *
- * This version uses Nodemailer for Email OTP and has removed Twilio.
+ * This version uses Nodemailer for Email OTP 
  */
 
 import { supabase } from '@/lib/supabase';

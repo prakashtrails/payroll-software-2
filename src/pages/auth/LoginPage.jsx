@@ -1,6 +1,7 @@
 import React from 'react';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
+import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/context/AuthContext';
 import { detectIdentifierType } from '@/services/otpService';
 import {
@@ -8,6 +9,7 @@ import {
   OtpInput, ResendTimer,
   OtpStepPanel,
 } from '@/components/OtpVerification';
+
 
 /* ─── Inline style constants ──────────────────────────────────────────────── */
 
@@ -23,7 +25,7 @@ const EYE_STYLE = {
 
 /* ─── Password form ───────────────────────────────────────────────────────── */
 
-function PasswordLoginForm({ onSuccess }) {
+function PasswordLoginForm({ onSuccess, onForgotPassword }) {
   const { signIn } = useAuth();
   const [email, setEmail]           = useState('');
   const [password, setPassword]     = useState('');
@@ -79,7 +81,71 @@ function PasswordLoginForm({ onSuccess }) {
           ? <><div className="spinner" style={{width:18,height:18,borderWidth:2}} /> Signing in…</>
           : <><i className="fas fa-arrow-right-to-bracket" /> Sign In</>}
       </button>
+      <div style={{ marginTop: 14, textAlign: 'center' }}>
+        <button type="button" className="btn btn-link" onClick={onForgotPassword}>
+          Forgot password / credentials?
+        </button>
+      </div>
     </form>
+  );
+}
+
+function ForgotPasswordModal({ show, onClose }) {
+  const [email, setEmail] = useState('');
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const handleReset = async (e) => {
+    e?.preventDefault();
+    setError('');
+    setSuccess('');
+    if (!email.trim()) {
+      setError('Please enter your email address.');
+      return;
+    }
+    setLoading(true);
+    try {
+      const { error } = await supabase.auth.resetPasswordForEmail(email.trim().toLowerCase());
+      if (error) throw error;
+      setSuccess('If this email exists, password reset instructions have been sent.');
+      setEmail('');
+    } catch (err) {
+      setError(err.message || 'Failed to send reset instructions.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className={`modal ${show ? 'show' : ''}`} style={{ display: show ? 'block' : 'none' }}>
+      <div className="modal-backdrop" onClick={onClose} />
+      <div className="modal-dialog" style={{ maxWidth: 420 }}>
+        <div className="modal-content">
+          <div className="modal-header">
+            <h3>Forgot Password</h3>
+            <button className="btn btn-icon" onClick={onClose}><i className="fas fa-times" /></button>
+          </div>
+          <div className="modal-body">
+            <ErrorBanner message={error} />
+            <SuccessBanner message={success} />
+            <p style={{ marginBottom: 16, color: 'var(--text-muted)' }}>
+              Enter the email address associated with your account. You can also use OTP login if you don't remember your password.
+            </p>
+            <div className="form-group">
+              <label className="form-label">Email Address</label>
+              <input className="form-input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@company.com" />
+            </div>
+          </div>
+          <div className="modal-footer">
+            <button className="btn btn-outline" onClick={onClose}>Cancel</button>
+            <button className="btn btn-primary" onClick={handleReset} disabled={loading}>
+              {loading ? 'Sending…' : 'Send reset link'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -210,6 +276,7 @@ export default function LoginPage() {
   const { user, profile, loading } = useAuth();
   const navigate = useNavigate();
   const [loginMode, setLoginMode] = useState('password');
+  const [showForgotPassword, setShowForgotPassword] = useState(false);
 
   useEffect(() => {
     if (!loading && user && profile) {
@@ -273,8 +340,10 @@ export default function LoginPage() {
         </div>
 
         {loginMode==='password'
-          ? <PasswordLoginForm onSuccess={handleSuccess} />
+          ? <PasswordLoginForm onSuccess={handleSuccess} onForgotPassword={() => setShowForgotPassword(true)} />
           : <OtpLoginForm     onSuccess={handleSuccess} />}
+
+        <ForgotPasswordModal show={showForgotPassword} onClose={() => setShowForgotPassword(false)} />
 
         <div className="auth-divider">or</div>
         <div className="auth-footer">

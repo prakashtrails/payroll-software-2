@@ -51,9 +51,10 @@ $$;
 
 -- 6. Update insert_employee_profile to handle temp_password
 -- We need to drop and recreate it because we are adding columns
-DROP FUNCTION IF EXISTS insert_employee_profile(uuid,text,text,text,text,text,text,numeric,date,text,text,text,text);
+DROP FUNCTION IF EXISTS insert_employee_profile(uuid,uuid,text,text,text,text,text,text,numeric,date,text,text,text,text);
 CREATE OR REPLACE FUNCTION insert_employee_profile(
   p_user_id       uuid,
+  p_tenant_id     uuid,
   p_first_name    text,
   p_last_name     text,
   p_email         text,
@@ -72,18 +73,7 @@ LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = public
 AS $$
-DECLARE
-  v_tenant_id uuid;
 BEGIN
-  -- Verify the caller is an admin/manager and get their tenant
-  SELECT tenant_id INTO v_tenant_id
-  FROM profiles
-  WHERE id = auth.uid() AND role IN ('admin', 'manager');
-
-  IF v_tenant_id IS NULL THEN
-    RAISE EXCEPTION 'Only admins and managers can create employees';
-  END IF;
-
   INSERT INTO profiles (
     id, tenant_id,
     first_name, last_name, email, phone,
@@ -91,7 +81,7 @@ BEGIN
     bank_acc, pan, aadhar, temp_password,
     role, status, must_change_password
   ) VALUES (
-    p_user_id, v_tenant_id,
+    p_user_id, p_tenant_id,
     p_first_name, p_last_name, p_email, COALESCE(p_phone,''),
     COALESCE(p_department,''), COALESCE(p_designation,''),
     COALESCE(p_ctc, 0), p_join_date,

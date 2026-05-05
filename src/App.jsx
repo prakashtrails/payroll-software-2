@@ -12,7 +12,7 @@ import AttendancePage from './pages/dashboard/AttendancePage';
 import SalaryPage from './pages/dashboard/SalaryPage';
 import PayrollPage from './pages/dashboard/PayrollPage';
 import PayslipsPage from './pages/dashboard/PayslipsPage';
-import AdvancesPage from './pages/dashboard/AdvancesPage';
+
 import LeavesPage from './pages/dashboard/LeavesPage';
 import SettingsPage from './pages/dashboard/SettingsPage';
 import TenantsPage from './pages/dashboard/TenantsPage';
@@ -62,7 +62,7 @@ export default function App() {
         <Route path="/salary" element={<PrivateRoute allowedRoles={['admin', 'manager', 'superadmin']}><SalaryPage /></PrivateRoute>} />
         <Route path="/payroll" element={<PrivateRoute allowedRoles={['admin', 'manager', 'superadmin']}><PayrollPage /></PrivateRoute>} />
         <Route path="/payslips" element={<PrivateRoute allowedRoles={['admin', 'manager', 'superadmin']}><PayslipsPage /></PrivateRoute>} />
-        <Route path="/advances" element={<PrivateRoute allowedRoles={['admin', 'manager', 'superadmin']}><AdvancesPage /></PrivateRoute>} />
+
         <Route path="/leaves" element={<PrivateRoute allowedRoles={['admin', 'manager', 'superadmin']}><LeavesPage /></PrivateRoute>} />
         <Route path="/settings" element={<PrivateRoute allowedRoles={['admin', 'manager', 'superadmin']}><SettingsPage /></PrivateRoute>} />
         

@@ -29,7 +29,6 @@ const NAV_CONFIG = {
         { label: 'Salary Structure', icon: 'fa-sliders-h', href: '/salary' },
         { label: 'Run Payroll', icon: 'fa-money-bill-wave', href: '/payroll' },
         { label: 'Payslips', icon: 'fa-file-invoice-dollar', href: '/payslips' },
-        { label: 'Advances & Loans', icon: 'fa-hand-holding-usd', href: '/advances' },
       ],
     },
     {
