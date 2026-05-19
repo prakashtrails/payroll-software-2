@@ -1,5 +1,6 @@
 import React from 'react';
 import { useEffect, useState, useCallback } from 'react';
+import * as XLSX from 'xlsx';
 import Header from '@/components/Header';
 import Modal from '@/components/Modal';
 import Pagination from '@/components/Pagination';
@@ -7,10 +8,11 @@ import { showToast } from '@/components/Toast';
 import { useAuth } from '@/context/AuthContext';
 import { useDebounce } from '@/hooks/useDebounce';
 import {
-  listEmployees, createEmployee, updateEmployee,
+  listEmployees, createEmployee, updateEmployee, updateEmployeeAdmin,
   setEmployeeStatus, removeEmployee, EMPLOYEE_PAGE_SIZE,
 } from '@/services/employeeService';
 import { listDepartments, listShifts } from '@/services/tenantService';
+import { supabase } from '@/lib/supabase';
 import { fmt, getInitials, getAvatarColor, todayStr } from '@/lib/helpers';
 
 function TempPasswordModal({ show, onClose, empName, email, password }) {
@@ -89,6 +91,7 @@ export default function EmployeesPage() {
   const [departments, setDepartments] = useState([]);
   const [shifts, setShifts] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [clockedInSet, setClockedInSet] = useState(new Set());
 
   // ---- modal ----
   const [showModal, setShowModal] = useState(false);
@@ -103,15 +106,30 @@ export default function EmployeesPage() {
   const fetchData = useCallback(async () => {
     if (!tenant) return;
     setLoading(true);
-    const [empRes, deptRes, shiftRes] = await Promise.all([
+    const [empRes, deptRes, shiftRes, attRes] = await Promise.all([
       listEmployees(tenant.id, { page, search: debouncedSearch, department: deptFilter, status: statusFilter }),
       listDepartments(tenant.id),
       listShifts(tenant.id),
+      supabase
+        .from('attendance')
+        .select('profile_id, punches(punch_type)')
+        .eq('tenant_id', tenant.id)
+        .eq('date', todayStr()),
     ]);
     setEmployees(empRes.data);
     setTotalCount(empRes.count);
     setDepartments((deptRes.data || []).map((d) => d.name));
     setShifts(shiftRes.data || []);
+
+    // Build set of profile_ids who are currently clocked in (more ins than outs today)
+    const working = new Set();
+    (attRes.data || []).forEach((rec) => {
+      const ins  = (rec.punches || []).filter((p) => p.punch_type === 'in').length;
+      const outs = (rec.punches || []).filter((p) => p.punch_type === 'out').length;
+      if (ins > outs) working.add(rec.profile_id);
+    });
+    setClockedInSet(working);
+
     setLoading(false);
   }, [tenant, page, debouncedSearch, deptFilter, statusFilter]);
 
@@ -200,55 +218,185 @@ export default function EmployeesPage() {
   const handleImport = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
+
+    const isXlsx = file.name.endsWith('.xlsx') || file.name.endsWith('.xls');
+
+    const toDateStr = (val) => {
+      if (!val && val !== 0) return '';
+      // Excel serial number (e.g. 45839)
+      if (typeof val === 'number') {
+        const date = new Date(Math.round((val - 25569) * 86400 * 1000));
+        return date.toISOString().slice(0, 10);
+      }
+      // JS Date object (when cellDates:true is used)
+      if (val instanceof Date) return val.toISOString().slice(0, 10);
+      // Already a string — normalise DD/MM/YYYY or DD-MM-YYYY → YYYY-MM-DD
+      const s = String(val).trim();
+      const dmyMatch = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+      if (dmyMatch) return `${dmyMatch[3]}-${dmyMatch[2].padStart(2,'0')}-${dmyMatch[1].padStart(2,'0')}`;
+      return s;
+    };
+
+    const parseRows = (buffer) => {
+      const workbook = XLSX.read(buffer, { type: 'array', cellDates: true });
+      const sheet = workbook.Sheets[workbook.SheetNames[0]];
+      return XLSX.utils.sheet_to_json(sheet, { defval: '' });
+    };
+
+    const parseCsv = (text) => {
+      const lines = text.split('\n').filter(l => l.trim());
+      if (lines.length < 2) return [];
+      const headers = lines[0].split(',').map(h => h.trim().toLowerCase());
+      return lines.slice(1).map(row => {
+        const values = row.split(',').map(v => v.trim());
+        const obj = {};
+        headers.forEach((h, i) => { obj[h] = values[i] ?? ''; });
+        return obj;
+      });
+    };
+
     const reader = new FileReader();
     reader.onload = async (evt) => {
-      const text = evt.target.result;
-      const lines = text.split('\n').filter(l => l.trim());
-      const headers = lines[0].split(',').map(h => h.trim().toLowerCase());
-      const rows = lines.slice(1);
+      let rows;
+      try {
+        if (isXlsx) {
+          rows = parseRows(new Uint8Array(evt.target.result));
+        } else {
+          rows = parseCsv(evt.target.result);
+        }
+      } catch (parseErr) {
+        showToast('Failed to parse file: ' + (parseErr.message || 'Unknown error'), 'error');
+        e.target.value = '';
+        return;
+      }
+
+      if (!rows.length) {
+        showToast('No data rows found in file', 'error');
+        e.target.value = '';
+        return;
+      }
+
+      // Fetch existing profiles (id + email + name) to detect duplicates and incomplete records
+      const { data: existingProfiles } = await supabase
+        .from('profiles')
+        .select('id, email, first_name, last_name')
+        .eq('tenant_id', tenant?.id);
+      const existingProfileMap = new Map(
+        (existingProfiles || []).map(p => [(p.email || '').toLowerCase(), p])
+      );
 
       let successCount = 0;
+      let updateCount = 0;
+      let skipCount = 0;
       let failCount = 0;
+      let failErrors = [];
 
       showToast(`Importing ${rows.length} employees...`, 'info');
 
-      for (const row of rows) {
-        const values = row.split(',').map(v => v.trim());
-        const data = {};
-        headers.forEach((h, i) => { data[h] = values[i]; });
+      for (const data of rows) {
+        // Normalize keys: lowercase + replace spaces/hyphens with underscores
+        // Convert Date objects to YYYY-MM-DD before stringifying to avoid
+        // locale timezone strings like "GMT+0530" reaching Postgres.
+        const d = Object.fromEntries(Object.entries(data).map(([k, v]) => {
+          const key = k.trim().toLowerCase().replace(/[\s\-]+/g, '_');
+          const val = v instanceof Date ? v.toISOString().slice(0, 10) : String(v ?? '').trim();
+          return [key, val];
+        }));
 
+        const fullName = d.name || d.full_name || d.employee_name || '';
         const profileData = {
-          first_name: data.first_name || data.name?.split(' ')[0] || 'Imported',
-          last_name: data.last_name || data.name?.split(' ').slice(1).join(' ') || 'User',
-          email: data.email,
-          phone: data.phone || '',
-          department: data.department || '',
-          designation: data.designation || '',
-          join_date: data.join_date || todayStr(),
-          ctc: parseFloat(data.ctc) || 0,
-          bank_acc: data.bank_acc || '',
-          pan: data.pan || '',
-          aadhar: data.aadhar || '',
-          role: data.role || 'employee',
-          weekly_holiday: data.weekly_holiday || 'Sunday',
-          leave_allocation: parseInt(data.leave_allocation, 10) || 0,
+          first_name: d.first_name || d.firstname || fullName.split(' ')[0] || 'Imported',
+          last_name: d.last_name || d.lastname || d.surname || fullName.split(' ').slice(1).join(' ') || 'User',
+          email: d.email || d.email_id || d.email_address || '',
+          phone: d.phone || d.mobile || d.contact || d.phone_number || d.mobile_number || '',
+          department: d.department || d.dept || '',
+          designation: d.designation || d.position || d.job_title || d.title || '',
+          join_date: toDateStr(d.join_date || d.joining_date || d.date_of_joining || d.doj) || todayStr(),
+          ctc: parseFloat(d.ctc || d.salary || d.annual_ctc || d.gross_salary || 0) || 0,
+          bank_acc: d.bank_acc || d.bank_account || d.account_number || d.acc_no || '',
+          pan: d.pan || d.pan_number || d.pan_no || '',
+          aadhar: d.aadhar || d.aadhaar || d.aadhar_number || d.aadhaar_number || '',
+          role: d.role || d.user_role || 'employee',
+          status: /^inactive$/i.test(d.status) ? 'Inactive' : 'Active',
+          weekly_holiday: d.weekly_holiday || d.holiday || 'Sunday',
+          leave_allocation: parseInt(d.leave_allocation || d.leaves || d.annual_leaves || 0, 10) || 0,
         };
 
         if (!profileData.email) { failCount++; continue; }
 
+        const existing = existingProfileMap.get(profileData.email.toLowerCase());
+        if (existing) {
+          // Update only if name fields are missing/placeholder
+          const nameMissing =
+            !existing.first_name || existing.first_name === 'Imported' ||
+            !existing.last_name || existing.last_name === 'User';
+          if (!nameMissing) {
+            skipCount++;
+            continue;
+          }
+          try {
+            const { error: updErr } = await updateEmployeeAdmin(existing.id, {
+              first_name: profileData.first_name,
+              last_name: profileData.last_name,
+              phone: profileData.phone || '',
+              department: profileData.department || '',
+              designation: profileData.designation || '',
+              join_date: toDateStr(profileData.join_date) || null,
+              ctc: profileData.ctc || 0,
+              bank_acc: profileData.bank_acc || '',
+              pan: profileData.pan || '',
+              aadhar: profileData.aadhar || '',
+              weekly_holiday: profileData.weekly_holiday || 'Sunday',
+              leave_allocation: profileData.leave_allocation || 0,
+            });
+            if (updErr) throw updErr;
+            updateCount++;
+          } catch (err) {
+            failCount++;
+            failErrors.push(`${profileData.email}: ${err.message || 'Update failed'}`);
+          }
+          continue;
+        }
+
         try {
           await createEmployee(tenant?.id, profileData);
+          existingProfileMap.set(profileData.email.toLowerCase(), { email: profileData.email });
           successCount++;
         } catch (err) {
-          console.error('Import fail:', err);
-          failCount++;
+          const msg = err.message || '';
+          if (/already registered|already in use|already exists|user already/i.test(msg)) {
+            skipCount++;
+          } else if (/rate limit|too many requests|security purposes|after \d+ second/i.test(msg)) {
+            failCount++;
+            failErrors.push(`${profileData.email}: email rate limit — deploy the create-employee-user edge function (see docs)`);
+          } else {
+            console.error(`Import fail for ${profileData.email}:`, err);
+            failCount++;
+            failErrors.push(`${profileData.email}: ${msg || 'Unknown error'}`);
+          }
         }
       }
-      showToast(`Import complete: ${successCount} success, ${failCount} failed`, successCount > 0 ? 'success' : 'error');
+
+      const parts = [`${successCount} imported`];
+      if (updateCount > 0) parts.push(`${updateCount} updated`);
+      if (skipCount > 0) parts.push(`${skipCount} skipped (already complete)`);
+      if (failCount > 0) parts.push(`${failCount} failed`);
+      const summary = parts.join(', ');
+
+      if (failCount > 0) {
+        showToast(`Import complete: ${summary}. Errors: ${failErrors.join(' | ')}`, 'error');
+      } else {
+        showToast(`Import complete: ${summary}`, successCount > 0 ? 'success' : 'info');
+      }
       fetchData();
       e.target.value = '';
     };
-    reader.readAsText(file);
+
+    if (isXlsx) {
+      reader.readAsArrayBuffer(file);
+    } else {
+      reader.readAsText(file);
+    }
   };
 
   const toggleStatus = async (emp) => {
@@ -299,9 +447,9 @@ export default function EmployeesPage() {
           />
           <div style={{ marginLeft: 'auto', display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
             <button className="btn btn-outline" onClick={() => document.getElementById('import-csv').click()}>
-              <i className="fas fa-file-import" /> Import CSV
+              <i className="fas fa-file-import" /> Import CSV / XLSX
             </button>
-            <input id="import-csv" type="file" accept=".csv,.txt" style={{ display: 'none' }} onChange={handleImport} />
+            <input id="import-csv" type="file" accept=".csv,.txt,.xlsx,.xls" style={{ display: 'none' }} onChange={handleImport} />
             <button className="btn btn-outline" onClick={downloadSampleCSV}>
               <i className="fas fa-file-csv" /> Sample CSV
             </button>
@@ -322,13 +470,13 @@ export default function EmployeesPage() {
                 <thead>
                   <tr>
                     <th>Employee</th><th>Department</th><th>Designation</th><th>Leaves</th>
-                    <th>Monthly CTC</th><th>Status</th><th>Actions</th>
+                    <th>Monthly CTC</th><th>Status</th><th>Today</th><th>Actions</th>
                   </tr>
                 </thead>
                 <tbody>
                   {employees.length === 0 ? (
                     <tr>
-                      <td colSpan={6} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 40 }}>
+                      <td colSpan={8} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 40 }}>
                         {debouncedSearch || deptFilter || statusFilter
                           ? 'No employees match your filters.'
                           : 'No employees yet. Click "Add Employee" to get started.'}
@@ -352,6 +500,11 @@ export default function EmployeesPage() {
                       <td>{typeof e.leave_allocation === 'number' ? e.leave_allocation : (e.leave_allocation || 0)}</td>
                       <td>{fmt(e.ctc)}</td>
                       <td><span className={`badge ${e.status === 'Active' ? 'badge-success' : 'badge-danger'}`}>{e.status}</span></td>
+                      <td>
+                        {clockedInSet.has(e.id)
+                          ? <span className="badge badge-success" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><span style={{ width: 7, height: 7, borderRadius: '50%', background: '#fff', display: 'inline-block' }} />Working</span>
+                          : <span className="badge badge-secondary" style={{ color: 'var(--text-muted)' }}>—</span>}
+                      </td>
                       <td>
                         <div style={{ display: 'flex', gap: 4 }}>
                           <button className="btn btn-outline btn-icon btn-sm" onClick={() => openModal(e)} title="Edit"><i className="fas fa-edit" /></button>
