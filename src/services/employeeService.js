@@ -41,7 +41,7 @@ export async function listEmployees(tenantId, { page = 1, search = '', departmen
 export async function listActiveEmployees(tenantId) {
   const { data, error } = await supabase
     .from('profiles')
-    .select('id, first_name, last_name, department, designation, ctc, role')
+    .select('id, first_name, last_name, department, designation, ctc, role, country')
     .eq('tenant_id', tenantId)
     .eq('status', 'Active')
     .in('role', ['employee', 'admin', 'manager'])
@@ -122,6 +122,10 @@ export async function createEmployee(tenantId, profileData) {
         bank_acc: profileData.bank_acc || '',
         pan: profileData.pan || '',
         aadhar: profileData.aadhar || '',
+        country: profileData.country || 'India',
+        passport_number: profileData.passport_number || '',
+        work_permit_number: profileData.work_permit_number || '',
+        work_permit_expiry: profileData.work_permit_expiry || null,
         weekly_holiday: profileData.weekly_holiday || 'Sunday',
         leave_allocation: profileData.leave_allocation || 0,
         temp_password: tempPassword,
@@ -162,10 +166,14 @@ export async function createEmployee(tenantId, profileData) {
     designation:         profileData.designation  || '',
     ctc:                 profileData.ctc          || 0,
     join_date:           profileData.join_date    || null,
-    bank_acc:            profileData.bank_acc     || '',
-    pan:                 profileData.pan          || '',
-    aadhar:              profileData.aadhar       || '',
-    weekly_holiday:      profileData.weekly_holiday || 'Sunday',
+    bank_acc:            profileData.bank_acc          || '',
+    pan:                 profileData.pan               || '',
+    aadhar:              profileData.aadhar            || '',
+    country:             profileData.country           || 'India',
+    passport_number:     profileData.passport_number   || '',
+    work_permit_number:  profileData.work_permit_number || '',
+    work_permit_expiry:  profileData.work_permit_expiry || null,
+    weekly_holiday:      profileData.weekly_holiday    || 'Sunday',
     leave_allocation:    profileData.leave_allocation || 0,
     shift_id:            profileData.shift_id     || null,
     temp_password:       tempPassword,

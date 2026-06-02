@@ -28,3 +28,9 @@ dist-ssr
 
 # Vite temp files
 vite.config.js.timestamp-*
+
+# Supabase CLI temp state
+supabase/.temp/
+
+# Supabase CLI binary
+supabase.exe
