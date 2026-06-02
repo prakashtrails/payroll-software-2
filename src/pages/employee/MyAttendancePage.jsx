@@ -81,8 +81,8 @@ export default function MyAttendancePage() {
       <div
         key={ds}
         className={`att-cal-day ${cls}`}
-        onClick={isFuture ? undefined : () => setSelectedDate(ds)}
-        style={isFuture ? undefined : { cursor: 'pointer' }}
+        onClick={() => setSelectedDate(ds)}
+        style={{ cursor: 'pointer' }}
       >
         <div className="day-num">{d}</div>
         {hoursStr && <div className="day-hours">{hoursStr}</div>}
