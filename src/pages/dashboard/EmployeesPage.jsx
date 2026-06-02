@@ -70,6 +70,28 @@ const EMPTY_FORM = {
   department: '', designation: '', join_date: '', ctc: '',
   bank_acc: '', pan: '', aadhar: '', role: 'employee',
   weekly_holiday: 'Sunday', shift_id: '', leave_allocation: 0,
+  country: 'India', passport_number: '', work_permit_number: '', work_permit_expiry: '',
+};
+
+const isIndia = (country) => !country || country.trim().toLowerCase() === 'india';
+
+function getComplianceStatus(emp) {
+  if (isIndia(emp.country)) {
+    const hasPan = !!emp.pan;
+    const hasAadhar = !!emp.aadhar;
+    if (hasPan && hasAadhar) return 'compliant';
+    if (hasPan || hasAadhar) return 'partial';
+    return 'missing';
+  }
+  // International employee
+  if (emp.passport_number) return 'compliant';
+  return 'missing';
+}
+
+const COMPLIANCE_BADGE = {
+  compliant: { label: 'Compliant', cls: 'badge-success' },
+  partial:   { label: 'Partial',   cls: 'badge-warning' },
+  missing:   { label: 'Docs Missing', cls: 'badge-danger' },
 };
 
 export default function EmployeesPage() {
@@ -153,13 +175,19 @@ export default function EmployeesPage() {
       weekly_holiday: emp.weekly_holiday || 'Sunday',
       shift_id: emp.shift_id || '',
       leave_allocation: emp.leave_allocation || 0,
+      country: emp.country || 'India',
+      passport_number: emp.passport_number || '',
+      work_permit_number: emp.work_permit_number || '',
+      work_permit_expiry: emp.work_permit_expiry || '',
     } : EMPTY_FORM);
     setShowModal(true);
   };
 
   const downloadSampleCSV = () => {
-    const csvContent = 'first_name,last_name,email,phone,department,designation,join_date,ctc,bank_acc,pan,aadhar,role,weekly_holiday,leave_allocation\n' +
-      'Jane,Doe,jane.doe@example.com,9999999999,HR,Recruiter,2026-05-01,45000,123456789012,ABCDE1234F,999988887777,employee,Sunday,12\n';
+    const csvContent =
+      'first_name,last_name,email,phone,department,designation,join_date,ctc,bank_acc,country,pan,aadhar,passport_number,work_permit_number,work_permit_expiry,role,weekly_holiday,leave_allocation\n' +
+      'Jane,Doe,jane.doe@example.com,9999999999,HR,Recruiter,2026-05-01,45000,123456789012,India,ABCDE1234F,999988887777,,,employee,Sunday,12\n' +
+      'John,Smith,john.smith@example.com,+442012345678,Engineering,Developer,2026-05-01,80000,GB12345678,United Kingdom,,,,P12345678,WP-UK-9999,2027-12-31,employee,Saturday,15\n';
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const link = document.createElement('a');
     link.href = URL.createObjectURL(blob);
@@ -177,6 +205,17 @@ export default function EmployeesPage() {
     if (!form.bank_acc) return showToast('Bank account details are mandatory', 'error');
     if (!form.ctc || parseFloat(form.ctc) <= 0) return showToast('Valid Monthly CTC is required', 'error');
 
+    const empCountry = (form.country || 'India').trim();
+    if (isIndia(empCountry)) {
+      if (!form.pan && !form.aadhar) {
+        showToast('Compliance warning: PAN and Aadhar are missing for an India-based employee. Please add at least one document.', 'warning');
+      }
+    } else {
+      if (!form.passport_number) {
+        showToast('Compliance warning: Passport number is missing for an international employee.', 'warning');
+      }
+    }
+
     const profileData = {
       first_name: form.first_name.trim(),
       last_name: form.last_name.trim(),
@@ -187,8 +226,12 @@ export default function EmployeesPage() {
       join_date: form.join_date || null,
       ctc: parseFloat(form.ctc) || 0,
       bank_acc: form.bank_acc.trim(),
-      pan: form.pan.trim(),
-      aadhar: form.aadhar.trim(),
+      pan: isIndia(empCountry) ? form.pan.trim() : '',
+      aadhar: isIndia(empCountry) ? form.aadhar.trim() : '',
+      country: empCountry,
+      passport_number: !isIndia(empCountry) ? (form.passport_number || '').trim() : '',
+      work_permit_number: !isIndia(empCountry) ? (form.work_permit_number || '').trim() : '',
+      work_permit_expiry: !isIndia(empCountry) ? (form.work_permit_expiry || null) : null,
       role: form.role || 'employee',
       weekly_holiday: form.weekly_holiday,
       shift_id: form.shift_id || null,
@@ -219,7 +262,7 @@ export default function EmployeesPage() {
     const file = e.target.files[0];
     if (!file) return;
 
-    const isXlsx = file.name.endsWith('.xlsx') || file.name.endsWith('.xls');
+    const isXlsx = file.name.endsWith('.xlsx') || file.name.endsWith('.xls') || file.name.endsWith('.xlsm');
 
     const toDateStr = (val) => {
       if (!val && val !== 0) return '';
@@ -304,6 +347,9 @@ export default function EmployeesPage() {
         }));
 
         const fullName = d.name || d.full_name || d.employee_name || '';
+        const rowCountry = (d.country || d.country_of_residence || d.nationality || 'India').trim() || 'India';
+        const rowIsIndia = isIndia(rowCountry);
+
         const profileData = {
           first_name: d.first_name || d.firstname || fullName.split(' ')[0] || 'Imported',
           last_name: d.last_name || d.lastname || d.surname || fullName.split(' ').slice(1).join(' ') || 'User',
@@ -314,8 +360,14 @@ export default function EmployeesPage() {
           join_date: toDateStr(d.join_date || d.joining_date || d.date_of_joining || d.doj) || todayStr(),
           ctc: parseFloat(d.ctc || d.salary || d.annual_ctc || d.gross_salary || 0) || 0,
           bank_acc: d.bank_acc || d.bank_account || d.account_number || d.acc_no || '',
-          pan: d.pan || d.pan_number || d.pan_no || '',
-          aadhar: d.aadhar || d.aadhaar || d.aadhar_number || d.aadhaar_number || '',
+          // India-only compliance docs — set empty for international employees
+          pan:    rowIsIndia ? (d.pan || d.pan_number || d.pan_no || '') : '',
+          aadhar: rowIsIndia ? (d.aadhar || d.aadhaar || d.aadhar_number || d.aadhaar_number || '') : '',
+          // International compliance docs — only relevant for non-India employees
+          country: rowCountry,
+          passport_number:    !rowIsIndia ? (d.passport_number || d.passport || d.passport_no || '') : '',
+          work_permit_number: !rowIsIndia ? (d.work_permit_number || d.work_permit || d.permit_number || '') : '',
+          work_permit_expiry: !rowIsIndia ? toDateStr(d.work_permit_expiry || d.permit_expiry || d.visa_expiry || '') || null : null,
           role: d.role || d.user_role || 'employee',
           status: /^inactive$/i.test(d.status) ? 'Inactive' : 'Active',
           weekly_holiday: d.weekly_holiday || d.holiday || 'Sunday',
@@ -346,6 +398,10 @@ export default function EmployeesPage() {
               bank_acc: profileData.bank_acc || '',
               pan: profileData.pan || '',
               aadhar: profileData.aadhar || '',
+              country: profileData.country || 'India',
+              passport_number: profileData.passport_number || '',
+              work_permit_number: profileData.work_permit_number || '',
+              work_permit_expiry: profileData.work_permit_expiry || null,
               weekly_holiday: profileData.weekly_holiday || 'Sunday',
               leave_allocation: profileData.leave_allocation || 0,
             });
@@ -449,7 +505,7 @@ export default function EmployeesPage() {
             <button className="btn btn-outline" onClick={() => document.getElementById('import-csv').click()}>
               <i className="fas fa-file-import" /> Import CSV / XLSX
             </button>
-            <input id="import-csv" type="file" accept=".csv,.txt,.xlsx,.xls" style={{ display: 'none' }} onChange={handleImport} />
+            <input id="import-csv" type="file" accept=".csv,.txt,.xlsx,.xls,.xlsm" style={{ display: 'none' }} onChange={handleImport} />
             <button className="btn btn-outline" onClick={downloadSampleCSV}>
               <i className="fas fa-file-csv" /> Sample CSV
             </button>
@@ -470,13 +526,13 @@ export default function EmployeesPage() {
                 <thead>
                   <tr>
                     <th>Employee</th><th>Department</th><th>Designation</th><th>Leaves</th>
-                    <th>Monthly CTC</th><th>Status</th><th>Today</th><th>Actions</th>
+                    <th>Monthly CTC</th><th>Compliance</th><th>Status</th><th>Today</th><th>Actions</th>
                   </tr>
                 </thead>
                 <tbody>
                   {employees.length === 0 ? (
                     <tr>
-                      <td colSpan={8} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 40 }}>
+                      <td colSpan={9} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 40 }}>
                         {debouncedSearch || deptFilter || statusFilter
                           ? 'No employees match your filters.'
                           : 'No employees yet. Click "Add Employee" to get started.'}
@@ -499,6 +555,16 @@ export default function EmployeesPage() {
                       <td>{e.designation || '—'}</td>
                       <td>{typeof e.leave_allocation === 'number' ? e.leave_allocation : (e.leave_allocation || 0)}</td>
                       <td>{fmt(e.ctc)}</td>
+                      <td>
+                        {(() => {
+                          const cs = getComplianceStatus(e);
+                          const { label, cls } = COMPLIANCE_BADGE[cs];
+                          const tip = isIndia(e.country)
+                            ? `India — PAN: ${e.pan || 'missing'}, Aadhar: ${e.aadhar || 'missing'}`
+                            : `${e.country || 'International'} — Passport: ${e.passport_number || 'missing'}`;
+                          return <span className={`badge ${cls}`} title={tip}>{label}</span>;
+                        })()}
+                      </td>
                       <td><span className={`badge ${e.status === 'Active' ? 'badge-success' : 'badge-danger'}`}>{e.status}</span></td>
                       <td>
                         {clockedInSet.has(e.id)
@@ -563,10 +629,59 @@ export default function EmployeesPage() {
             <label className="form-label">Bank Account Number *</label>
             <input className="form-input" value={form.bank_acc} onChange={(e) => setForm({ ...form, bank_acc: e.target.value })} placeholder="Enter bank account number" />
           </div>
-          <div className="form-row">
-            <div className="form-group"><label className="form-label">PAN Card</label><input className="form-input" value={form.pan} onChange={(e) => setForm({ ...form, pan: e.target.value })} /></div>
-            <div className="form-group"><label className="form-label">Aadhar Number</label><input className="form-input" value={form.aadhar} onChange={(e) => setForm({ ...form, aadhar: e.target.value })} /></div>
+
+          {/* Compliance Section */}
+          <div style={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', padding: '14px 16px', marginTop: 8 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 12 }}>
+              <i className="fas fa-shield-alt" style={{ marginRight: 6, color: 'var(--primary)' }} />
+              Compliance &amp; Identity Documents
+            </div>
+            <div className="form-group" style={{ marginBottom: 12 }}>
+              <label className="form-label">Country of Residence</label>
+              <input
+                className="form-input"
+                value={form.country}
+                onChange={(e) => setForm({ ...form, country: e.target.value })}
+                placeholder="e.g. India, United Kingdom, USA"
+              />
+              <div className="form-hint">Set to &quot;India&quot; for Indian employees — PAN &amp; Aadhar will be required. Other countries need Passport details.</div>
+            </div>
+
+            {isIndia(form.country) ? (
+              <div className="form-row">
+                <div className="form-group">
+                  <label className="form-label">PAN Card</label>
+                  <input className="form-input" value={form.pan} onChange={(e) => setForm({ ...form, pan: e.target.value })} placeholder="e.g. ABCDE1234F" />
+                </div>
+                <div className="form-group">
+                  <label className="form-label">Aadhar Number</label>
+                  <input className="form-input" value={form.aadhar} onChange={(e) => setForm({ ...form, aadhar: e.target.value })} placeholder="12-digit Aadhar" />
+                </div>
+              </div>
+            ) : (
+              <>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, padding: '6px 10px', background: 'rgba(var(--primary-rgb, 59,130,246), 0.08)', borderRadius: 'var(--radius-sm)', fontSize: 12, color: 'var(--text-muted)' }}>
+                  <i className="fas fa-info-circle" style={{ color: 'var(--primary)' }} />
+                  International employee — Aadhar &amp; PAN not applicable. Please provide passport details.
+                </div>
+                <div className="form-row">
+                  <div className="form-group">
+                    <label className="form-label">Passport Number</label>
+                    <input className="form-input" value={form.passport_number} onChange={(e) => setForm({ ...form, passport_number: e.target.value })} placeholder="e.g. P1234567" />
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">Work Permit Number</label>
+                    <input className="form-input" value={form.work_permit_number} onChange={(e) => setForm({ ...form, work_permit_number: e.target.value })} placeholder="Optional" />
+                  </div>
+                </div>
+                <div className="form-group">
+                  <label className="form-label">Work Permit Expiry Date</label>
+                  <input className="form-input" type="date" value={form.work_permit_expiry} onChange={(e) => setForm({ ...form, work_permit_expiry: e.target.value })} />
+                </div>
+              </>
+            )}
           </div>
+
           <hr style={{ border: 'none', borderTop: '1px solid var(--border)', margin: '16px 0' }} />
           <div className="form-row">
             <div className="form-group">

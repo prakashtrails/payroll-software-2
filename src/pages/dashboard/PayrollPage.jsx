@@ -12,40 +12,51 @@ import { listActiveAdvances } from '@/services/advanceService';
 import { fetchAllTenantAttendance } from '@/services/attendanceService';
 import { fmt, monthLabel, calcSalary, getInitials, getAvatarColor } from '@/lib/helpers';
 
+function isIndia(emp) {
+  return !emp.country || emp.country === 'India';
+}
+
 export default function RunPayrollPage() {
   const { tenant } = useAuth();
-  const [payrollMonth, setPayrollMonth] = useState(new Date().getMonth());
-  const [payrollYear, setPayrollYear] = useState(new Date().getFullYear());
-  const [employees, setEmployees] = useState([]);
-  const [components, setComponents] = useState([]);
-  const [advances, setAdvances] = useState([]);
-  const [processed, setProcessed] = useState(null); // existing payroll + payslips
+  const [payrollMonth, setPayrollMonth]         = useState(new Date().getMonth());
+  const [payrollYear,  setPayrollYear]          = useState(new Date().getFullYear());
+  const [countryGroup, setCountryGroup]         = useState('India');
+  const [employees,    setEmployees]            = useState([]);
+  const [components,   setComponents]           = useState([]);
+  const [advances,     setAdvances]             = useState([]);
+  const [processedIndia, setProcessedIndia]     = useState(null);
+  const [processedIntl,  setProcessedIntl]      = useState(null);
   const [workDayOverrides, setWorkDayOverrides] = useState({});
-  const [loading, setLoading] = useState(true);
-  const [processing, setProcessing] = useState(false);
-  const [detailSlip, setDetailSlip] = useState(null);
+  const [loading,    setLoading]                = useState(true);
+  const [processing, setProcessing]             = useState(false);
+  const [detailSlip, setDetailSlip]             = useState(null);
 
-  const workDays = tenant?.work_days || 26;
+  const workDays      = tenant?.work_days || 26;
+  const indiaEmps     = employees.filter(isIndia);
+  const intlEmps      = employees.filter(e => !isIndia(e));
+  const activeEmps    = countryGroup === 'India' ? indiaEmps : intlEmps;
+  const processed     = countryGroup === 'India' ? processedIndia : processedIntl;
 
   const fetchData = useCallback(async () => {
     if (!tenant) return;
     setLoading(true);
     try {
-      const [empsRes, compsRes, advsRes, payrollRes, attRes] = await Promise.all([
+      const [empsRes, compsRes, advsRes, payIndiaRes, payIntlRes, attRes] = await Promise.all([
         listActiveEmployees(tenant.id),
         listComponents(tenant.id),
         listActiveAdvances(tenant.id),
-        fetchPayroll(tenant.id, payrollMonth, payrollYear),
+        fetchPayroll(tenant.id, payrollMonth, payrollYear, 'India'),
+        fetchPayroll(tenant.id, payrollMonth, payrollYear, 'International'),
         fetchAllTenantAttendance(tenant.id, payrollYear, payrollMonth),
       ]);
       setEmployees(empsRes.data);
       setComponents(compsRes.data);
       setAdvances(advsRes.data);
-      setProcessed(payrollRes.data);
-      
-      // Calculate actual working days from attendance
+      setProcessedIndia(payIndiaRes.data);
+      setProcessedIntl(payIntlRes.data);
+
       const attendance = attRes.data || [];
-      const overrides = {};
+      const overrides  = {};
       empsRes.data.forEach(emp => {
         const empAtt = attendance.filter(a => a.profile_id === emp.id);
         let days = 0;
@@ -53,19 +64,9 @@ export default function RunPayrollPage() {
           if (a.status === 'Present' || a.status === 'Late') days += 1;
           else if (a.status === 'Half Day') days += 0.5;
         });
-
-        // If no attendance but they joined after the start of this month,
-        // we ensure we don't default to a full month if they joined late.
-        // Actually, our attendance-based logic already handles this (0 days if no attendance).
-        // But let's add a check: if they joined AFTER this month, they should have 0 days.
         const joinDate = emp.join_date ? new Date(emp.join_date) : null;
-        const monthStart = new Date(payrollYear, payrollMonth, 1);
         const monthEnd = new Date(payrollYear, payrollMonth + 1, 0);
-
-        if (joinDate && joinDate > monthEnd) {
-          days = 0;
-        }
-
+        if (joinDate && joinDate > monthEnd) days = 0;
         overrides[emp.id] = days;
       });
       setWorkDayOverrides(overrides);
@@ -82,19 +83,28 @@ export default function RunPayrollPage() {
     let m = payrollMonth + delta;
     let y = payrollYear;
     if (m > 11) { m = 0; y++; }
-    if (m < 0) { m = 11; y--; }
+    if (m < 0)  { m = 11; y--; }
     setPayrollMonth(m);
     setPayrollYear(y);
   };
 
-  // ---- PROCESS PAYROLL ----
   const handleProcessPayroll = async () => {
-    if (employees.length === 0) return showToast('No active employees to process', 'error');
+    if (activeEmps.length === 0) return showToast('No employees in this group to process', 'error');
     if (components.length === 0) return showToast('Configure salary components first', 'error');
     setProcessing(true);
     try {
-      await processPayroll({ tenantId: tenant.id, month: payrollMonth, year: payrollYear, employees, components, advances, workDays, workDayOverrides });
-      showToast(`Payroll processed for ${monthLabel(payrollMonth, payrollYear)}!`, 'success');
+      await processPayroll({
+        tenantId:     tenant.id,
+        month:        payrollMonth,
+        year:         payrollYear,
+        countryGroup,
+        employees:    activeEmps,
+        components,
+        advances,
+        workDays,
+        workDayOverrides,
+      });
+      showToast(`Payroll processed for ${monthLabel(payrollMonth, payrollYear)}`, 'success');
       fetchData();
     } catch (err) {
       showToast('Processing failed: ' + err.message, 'error');
@@ -103,9 +113,8 @@ export default function RunPayrollPage() {
     }
   };
 
-  // ---- REVERT PAYROLL ----
   const handleRevertPayroll = async () => {
-    if (!processed || !confirm('Revert this payroll? All payslips will be deleted.')) return;
+    if (!processed || !confirm('Revert this payroll? All payslips for this group will be deleted.')) return;
     try {
       await revertPayroll(processed.id);
       showToast('Payroll reverted', 'warning');
@@ -115,7 +124,6 @@ export default function RunPayrollPage() {
     }
   };
 
-  // ---- EXPORT CSV ----
   const exportCSV = () => {
     if (!processed?.payslips?.length) return showToast('Process payroll first', 'warning');
     let csv = 'Employee,Department,Working Days,Gross Earnings,Deductions,Advance Ded.,Net Salary\n';
@@ -123,143 +131,177 @@ export default function RunPayrollPage() {
       csv += `"${p.emp_name}",${p.department},${p.work_days},${p.gross_earnings},${p.total_deductions},${p.advance_deduction},${p.net_pay}\n`;
     });
     const blob = new Blob([csv], { type: 'text/csv' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = `payroll_${payrollYear}-${String(payrollMonth + 1).padStart(2, '0')}.csv`;
+    const a    = document.createElement('a');
+    a.href     = URL.createObjectURL(blob);
+    a.download = `payroll_${countryGroup.toLowerCase()}_${payrollYear}-${String(payrollMonth + 1).padStart(2, '0')}.csv`;
     a.click();
     showToast('CSV exported', 'success');
   };
 
-  // ---- RENDER ----
-  const slips = processed?.payslips || [];
+  const slips      = processed?.payslips || [];
   const totalGross = slips.reduce((s, p) => s + (p.gross_earnings || 0), 0);
-  const totalDed = slips.reduce((s, p) => s + (p.total_deductions || 0) + (p.advance_deduction || 0), 0);
-  const totalNet = slips.reduce((s, p) => s + (p.net_pay || 0), 0);
+  const totalDed   = slips.reduce((s, p) => s + (p.total_deductions || 0) + (p.advance_deduction || 0), 0);
+  const totalNet   = slips.reduce((s, p) => s + (p.net_pay || 0), 0);
 
   return (
     <>
       <Header title="Run Payroll" breadcrumb={monthLabel(payrollMonth, payrollYear)} />
       <div className="page-content">
-        {/* Controls */}
+
         <div className="filter-bar">
+          {/* Month navigation */}
           <div className="month-selector">
             <button onClick={() => changeMonth(-1)}><i className="fas fa-chevron-left" /></button>
             <span>{monthLabel(payrollMonth, payrollYear)}</span>
             <button onClick={() => changeMonth(1)}><i className="fas fa-chevron-right" /></button>
           </div>
+
+          {/* Country group dropdown */}
+          <select
+            className="form-select"
+            value={countryGroup}
+            onChange={e => setCountryGroup(e.target.value)}
+            style={{ width: 180 }}
+          >
+            <option value="India">India</option>
+            <option value="International">International</option>
+          </select>
+
           <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
-            <button className="btn btn-outline" onClick={exportCSV}><i className="fas fa-file-csv" /> Export CSV</button>
+            <button className="btn btn-outline" onClick={exportCSV}>
+              <i className="fas fa-file-csv" /> Export CSV
+            </button>
             {processed ? (
-              <button className="btn btn-danger" onClick={handleRevertPayroll}><i className="fas fa-undo" /> Revert Payroll</button>
+              <button className="btn btn-danger" onClick={handleRevertPayroll}>
+                <i className="fas fa-undo" /> Revert Payroll
+              </button>
             ) : (
-              <button className="btn btn-primary" onClick={handleProcessPayroll} disabled={processing}>
-                {processing ? <><div className="spinner" style={{ width: 16, height: 16, borderWidth: 2 }} /> Processing...</> : <><i className="fas fa-play" /> Process Payroll</>}
+              <button className="btn btn-primary" onClick={handleProcessPayroll} disabled={processing || activeEmps.length === 0}>
+                {processing
+                  ? <><div className="spinner" style={{ width: 16, height: 16, borderWidth: 2 }} /> Processing…</>
+                  : <><i className="fas fa-play" /> Process Payroll</>}
               </button>
             )}
           </div>
         </div>
 
         {loading ? (
-          <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)' }}><div className="spinner" style={{ margin: '0 auto 16px' }} />Loading...</div>
+          <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)' }}>
+            <div className="spinner" style={{ margin: '0 auto 16px' }} />Loading…
+          </div>
         ) : (
           <>
-            {/* Stats */}
             <div className="stats-row">
-              <StatCard icon="fa-users" iconColor="blue" value={processed ? slips.length : employees.length} label={processed ? 'Employees Paid' : 'Employees to Process'} />
-              <StatCard icon="fa-arrow-up" iconColor="green" value={processed ? fmt(totalGross) : fmt(employees.reduce((s, e) => s + (e.ctc || 0), 0))} label={processed ? 'Gross Earnings' : 'Total CTC'} />
-              <StatCard icon="fa-arrow-down" iconColor="orange" value={processed ? fmt(totalDed) : fmt(advances.reduce((s, a) => s + a.emi, 0))} label={processed ? 'Total Deductions' : 'EMI Deductions'} />
-              <StatCard icon="fa-money-bill" iconColor="purple" value={processed ? fmt(totalNet) : workDays} label={processed ? 'Net Payroll' : 'Working Days'} />
+              <StatCard icon="fa-users"      iconColor="blue"   value={processed ? slips.length : activeEmps.length}                                                                                   label={processed ? 'Employees Paid' : 'Employees to Process'} />
+              <StatCard icon="fa-arrow-up"   iconColor="green"  value={processed ? fmt(totalGross) : fmt(activeEmps.reduce((s, e) => s + (e.ctc || 0), 0))}                                           label={processed ? 'Gross Earnings' : 'Total CTC'} />
+              <StatCard icon="fa-arrow-down" iconColor="orange" value={processed ? fmt(totalDed)   : fmt(advances.filter(a => activeEmps.some(e => e.id === a.profile_id)).reduce((s, a) => s + a.emi, 0))} label={processed ? 'Total Deductions' : 'EMI Deductions'} />
+              <StatCard icon="fa-money-bill" iconColor="purple" value={processed ? fmt(totalNet)   : workDays}                                                                                         label={processed ? 'Net Payroll' : 'Working Days'} />
             </div>
 
-            {/* Status badge */}
             <div className="card">
               <div className="card-header">
-                <h3>Payroll Details</h3>
-                {processed ? (
-                  <span className="badge badge-success"><i className="fas fa-check" /> Processed</span>
-                ) : (
-                  <span className="badge badge-warning">Not Processed</span>
-                )}
+                <h3>
+                  {countryGroup === 'India' ? 'India Payroll' : 'International Payroll'} — {monthLabel(payrollMonth, payrollYear)}
+                </h3>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  {processedIndia && <span className="badge badge-success">India Done</span>}
+                  {processedIntl  && <span className="badge badge-success">International Done</span>}
+                  {processed
+                    ? <span className="badge badge-success"><i className="fas fa-check" /> Processed</span>
+                    : <span className="badge badge-warning">Not Processed</span>}
+                </div>
               </div>
-              <div className="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Employee</th>
-                      <th>Working Days</th>
-                      <th>Gross Earnings</th>
-                      <th>Deductions</th>
-                      <th>Advance Ded.</th>
-                      <th>Net Salary</th>
-                      <th>Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {processed ? (
-                      slips.map((p) => (
-                        <tr key={p.id}>
-                          <td>
-                            <div className="emp-cell">
-                              <div className="emp-avatar" style={{ background: `linear-gradient(135deg, ${getAvatarColor(p.profile_id)})` }}>{getInitials(p.emp_name.split(' ')[0], p.emp_name.split(' ')[1])}</div>
-                              <div><div className="emp-name">{p.emp_name}</div><div className="emp-role">{p.department}</div></div>
-                            </div>
-                          </td>
-                          <td>{p.work_days}/{p.total_work_days}</td>
-                          <td>{fmt(p.gross_earnings)}</td>
-                          <td style={{ color: 'var(--danger)' }}>-{fmt(p.total_deductions)}</td>
-                          <td style={{ color: 'var(--warning)' }}>{p.advance_deduction > 0 ? '-' + fmt(p.advance_deduction) : '—'}</td>
-                          <td><strong>{fmt(p.net_pay)}</strong></td>
-                          <td>
-                            <button className="btn btn-outline btn-sm" onClick={() => setDetailSlip(p)}>
-                              <i className="fas fa-eye" />
-                            </button>
-                          </td>
-                        </tr>
-                      ))
-                    ) : (
-                      employees.map((e) => {
-                        const sal = calcSalary(e.ctc || 0, components, workDays, workDayOverrides[e.id] ?? workDays);
-                        const advDed = advances.filter((a) => a.profile_id === e.id).reduce((s, a) => s + Math.min(a.emi, a.balance), 0);
-                        return (
-                          <tr key={e.id}>
+
+              {activeEmps.length === 0 && !processed ? (
+                <div style={{ padding: '32px 20px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>
+                  No {countryGroup === 'India' ? 'Indian' : 'international'} employees found.
+                  Set an employee's country in the Employees page to assign them here.
+                </div>
+              ) : (
+                <div className="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Employee</th>
+                        <th>Working Days</th>
+                        <th>Gross Earnings</th>
+                        <th>Deductions</th>
+                        <th>Advance Ded.</th>
+                        <th>Net Salary</th>
+                        <th>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {processed ? (
+                        slips.map((p) => (
+                          <tr key={p.id}>
                             <td>
                               <div className="emp-cell">
-                                <div className="emp-avatar" style={{ background: `linear-gradient(135deg, ${getAvatarColor(e.id)})` }}>{getInitials(e.first_name, e.last_name)}</div>
-                                <div><div className="emp-name">{e.first_name} {e.last_name}</div><div className="emp-role">{e.department || ''}</div></div>
+                                <div className="emp-avatar" style={{ background: `linear-gradient(135deg, ${getAvatarColor(p.profile_id)})` }}>
+                                  {getInitials(p.emp_name.split(' ')[0], p.emp_name.split(' ')[1])}
+                                </div>
+                                <div>
+                                  <div className="emp-name">{p.emp_name}</div>
+                                  <div className="emp-role">{p.department}</div>
+                                </div>
                               </div>
                             </td>
+                            <td>{p.work_days}/{p.total_work_days}</td>
+                            <td>{fmt(p.gross_earnings)}</td>
+                            <td style={{ color: 'var(--danger)' }}>-{fmt(p.total_deductions)}</td>
+                            <td style={{ color: 'var(--warning)' }}>{p.advance_deduction > 0 ? '-' + fmt(p.advance_deduction) : '—'}</td>
+                            <td><strong>{fmt(p.net_pay)}</strong></td>
                             <td>
-                              <input
-                                className="form-input"
-                                type="number"
-                                min="0"
-                                max={workDays}
-                                value={workDayOverrides[e.id] ?? workDays}
-                                onChange={(ev) => setWorkDayOverrides((prev) => ({ ...prev, [e.id]: parseInt(ev.target.value) || 0 }))}
-                                style={{ width: 65, padding: '5px 8px', fontSize: 12 }}
-                              />
+                              <button className="btn btn-outline btn-sm" onClick={() => setDetailSlip(p)}>
+                                <i className="fas fa-eye" />
+                              </button>
                             </td>
-                            <td>{fmt(sal.totalEarning)}</td>
-                            <td style={{ color: 'var(--danger)' }}>-{fmt(sal.totalDeduction)}</td>
-                            <td style={{ color: 'var(--warning)' }}>{advDed > 0 ? '-' + fmt(advDed) : '—'}</td>
-                            <td><strong>{fmt(sal.net - advDed)}</strong></td>
-                            <td><span className="badge badge-warning">Pending</span></td>
                           </tr>
-                        );
-                      })
-                    )}
-                    {!processed && employees.length === 0 && (
-                      <tr><td colSpan={7} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 40 }}>No active employees found. Add employees first.</td></tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
+                        ))
+                      ) : (
+                        activeEmps.map((e) => {
+                          const sal    = calcSalary(e.ctc || 0, components, workDays, workDayOverrides[e.id] ?? workDays);
+                          const advDed = advances.filter((a) => a.profile_id === e.id).reduce((s, a) => s + Math.min(a.emi, a.balance), 0);
+                          return (
+                            <tr key={e.id}>
+                              <td>
+                                <div className="emp-cell">
+                                  <div className="emp-avatar" style={{ background: `linear-gradient(135deg, ${getAvatarColor(e.id)})` }}>
+                                    {getInitials(e.first_name, e.last_name)}
+                                  </div>
+                                  <div>
+                                    <div className="emp-name">{e.first_name} {e.last_name}</div>
+                                    <div className="emp-role">{e.department || ''}</div>
+                                  </div>
+                                </div>
+                              </td>
+                              <td>
+                                <input
+                                  className="form-input"
+                                  type="number" min="0" max={workDays}
+                                  value={workDayOverrides[e.id] ?? workDays}
+                                  onChange={(ev) => setWorkDayOverrides((prev) => ({ ...prev, [e.id]: parseInt(ev.target.value) || 0 }))}
+                                  style={{ width: 65, padding: '5px 8px', fontSize: 12 }}
+                                />
+                              </td>
+                              <td>{fmt(sal.totalEarning)}</td>
+                              <td style={{ color: 'var(--danger)' }}>-{fmt(sal.totalDeduction)}</td>
+                              <td style={{ color: 'var(--warning)' }}>{advDed > 0 ? '-' + fmt(advDed) : '—'}</td>
+                              <td><strong>{fmt(sal.net - advDed)}</strong></td>
+                              <td><span className="badge badge-warning">Pending</span></td>
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           </>
         )}
       </div>
 
-      {/* Salary Detail Modal */}
       <Modal show={!!detailSlip} onClose={() => setDetailSlip(null)} title="Salary Breakdown" width="620px"
         footer={<button className="btn btn-outline" onClick={() => setDetailSlip(null)}>Close</button>}
       >

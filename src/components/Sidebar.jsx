@@ -22,6 +22,8 @@ const NAV_CONFIG = {
         { label: 'Attendance', icon: 'fa-fingerprint', href: '/attendance' },
         { label: 'Regularize Attendance', icon: 'fa-file-alt', href: '/regularize' },
         { label: 'Leave Requests', icon: 'fa-calendar-check', href: '/leaves' },
+        { label: 'Special Requests', icon: 'fa-star-half-alt', href: '/special-requests' },
+        { label: 'Employee Calendar', icon: 'fa-calendar-day', href: '/employee-calendar' },
       ],
     },
     {
@@ -30,6 +32,7 @@ const NAV_CONFIG = {
         { label: 'Salary Structure', icon: 'fa-sliders-h', href: '/salary' },
         { label: 'Run Payroll', icon: 'fa-money-bill-wave', href: '/payroll' },
         { label: 'Payslips', icon: 'fa-file-invoice-dollar', href: '/payslips' },
+        { label: 'Advances & Loans', icon: 'fa-hand-holding-usd', href: '/advances' },
       ],
     },
     {
@@ -48,6 +51,8 @@ const NAV_CONFIG = {
         { label: 'Attendance', icon: 'fa-fingerprint', href: '/manager-attendance' },
         { label: 'Regularize Attendance', icon: 'fa-file-alt', href: '/manager-regularize' },
         { label: 'Leave Requests', icon: 'fa-calendar-check', href: '/manager-leaves' },
+        { label: 'Special Requests', icon: 'fa-star-half-alt', href: '/manager-special-requests' },
+        { label: 'Employee Calendar', icon: 'fa-calendar-day', href: '/manager-employee-calendar' },
       ],
     },
     {
@@ -65,6 +70,7 @@ const NAV_CONFIG = {
         { label: 'My Attendance', icon: 'fa-fingerprint', href: '/my-attendance' },
         { label: 'My Payslips', icon: 'fa-file-invoice-dollar', href: '/my-payslips' },
         { label: 'My Leaves', icon: 'fa-calendar-alt', href: '/my-leaves' },
+        { label: 'Special Requests', icon: 'fa-star-half-alt', href: '/my-special-requests' },
       ],
     },
   ],

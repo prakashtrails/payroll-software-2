@@ -927,6 +927,7 @@ tr:hover td {
 .att-cal-day.today { border: 2px solid var(--primary); box-shadow: 0 0 0 2px rgba(0, 174, 239, 0.15); }
 .att-cal-day.weekend { background: var(--bg); color: var(--text-muted); }
 .att-cal-day.future { opacity: 0.35; cursor: default; }
+.att-cal-day.selected { outline: 2px solid var(--primary); outline-offset: -2px; font-weight: 700; }
 
 /* ======================== ATTENDANCE SUMMARY ======================== */
 .att-summary-bar {

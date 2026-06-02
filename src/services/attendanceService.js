@@ -285,6 +285,43 @@ export async function fetchAttendanceAuditLog(tenantId, date) {
   return { data: data || [], error };
 }
 
+/** Fetch just the profile info for an employee (join_date, name, etc.) */
+export async function fetchEmployeeProfileInfo(profileId) {
+  const { data, error } = await supabase
+    .from('profiles')
+    .select('first_name, last_name, join_date, department, designation')
+    .eq('id', profileId)
+    .single();
+  return { profile: data, error };
+}
+
+/** Fetch complete attendance history for one employee from their join date. */
+export async function fetchEmployeeFullHistory(profileId) {
+  const { data: prof } = await supabase
+    .from('profiles')
+    .select('first_name, last_name, join_date, department, designation')
+    .eq('id', profileId)
+    .single();
+
+  // Fetch all attendance records (no date filter yet — need earliest to compute fromDate)
+  const { data: allRecords, error } = await supabase
+    .from('attendance')
+    .select('date, status, total_hours, punches(punch_time, punch_type)')
+    .eq('profile_id', profileId)
+    .order('date');
+
+  // Determine start date: join_date → first attendance record → today
+  let fromDate = prof?.join_date || null;
+  if (!fromDate && allRecords && allRecords.length > 0) {
+    fromDate = allRecords[0].date;
+  }
+  if (!fromDate) {
+    fromDate = todayStr();
+  }
+
+  return { data: allRecords || [], profile: prof, fromDate, error };
+}
+
 /** Bulk regularize attendance for multiple employees across a date range */
 export async function regularizeAttendance(tenantId, {
   fromDate,
@@ -304,17 +341,19 @@ export async function regularizeAttendance(tenantId, {
     throw new Error('Reason is required for attendance regularization');
   }
 
-  const from = new Date(fromDate);
-  const to = new Date(toDate);
-  if (from > to) {
+  if (fromDate > toDate) {
     throw new Error('From date must be less than or equal to To date');
   }
 
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  if (to > today) {
+  if (toDate > todayStr()) {
     throw new Error('Cannot regularize future dates');
   }
+
+  // Parse as local dates to avoid UTC-midnight timezone shifts
+  const [ffy, ffm, ffd] = fromDate.split('-').map(Number);
+  const [tty, ttm, ttd] = toDate.split('-').map(Number);
+  const from = new Date(ffy, ffm - 1, ffd);
+  const to = new Date(tty, ttm - 1, ttd);
 
   const auditLogs = [];
 

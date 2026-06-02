@@ -54,6 +54,12 @@ CREATE TABLE IF NOT EXISTS profiles (
 -- Add must_change_password to existing profiles tables created before this column existed
 ALTER TABLE profiles ADD COLUMN IF NOT EXISTS must_change_password boolean NOT NULL DEFAULT false;
 
+-- Compliance fields: country of residence + international employee documents
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS country             text    NOT NULL DEFAULT 'India';
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS passport_number     text    NOT NULL DEFAULT '';
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS work_permit_number  text    NOT NULL DEFAULT '';
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS work_permit_expiry  date;
+
 -- Fix role/status check constraints on existing tables (IF NOT EXISTS skips
 -- the CREATE TABLE above, so constraints on pre-existing tables need ALTER).
 ALTER TABLE profiles

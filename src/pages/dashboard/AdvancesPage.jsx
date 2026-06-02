@@ -1,5 +1,3 @@
-// Advances page removed as per request
-
 import { useEffect, useState, useCallback } from 'react';
 import Header from '@/components/Header';
 import Modal from '@/components/Modal';
