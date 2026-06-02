@@ -37,39 +37,24 @@ export async function sendOtp(identifier, options = { shouldCreateUser: true }) 
 
     try {
         const { data, error } = await supabase.functions.invoke('send-otp', {
-            body: { 
-                identifier: resolvedId,
-                type: 'email' 
-            },
-            headers: {
-                Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`
-            }
+            body: { identifier: resolvedId, type: 'email' },
         });
-        
+
         if (error) {
-            console.error('Functions Error Object:', error);
-            let msg = error.message;
-            
-            // Try to extract a more detailed message if available
+            console.error('send-otp error:', error);
+            let msg = error.message || '';
             if (error.context) {
                 try {
-                    const body = await error.context.json();
+                    const body = await error.context.clone().json();
                     msg = body.error || body.message || msg;
-                } catch (e) {
-                    // If not JSON, try text
-                    try {
-                        const text = await error.context.text();
-                        if (text) msg = text;
-                    } catch (e2) { /* ignore */ }
-                }
+                } catch (_) { /* body already consumed or not JSON */ }
             }
-            throw new Error(msg);
+            throw new Error(msg || 'Failed to send OTP. Please try again.');
         }
-        
+
         return { type: 'email', identifier: resolvedId };
     } catch (err) {
-        console.error('Detailed Email OTP Send Error:', err);
-        const finalMsg = err.message || 'Failed to send Email OTP. Check your Supabase logs or SMTP secrets.';
+        const finalMsg = err.message || 'Failed to send OTP. Please try again.';
         throw new Error(finalMsg);
     }
 }
@@ -93,18 +78,17 @@ export async function verifyOtp(identifier, token, isSignup = false, password = 
 
     const { data, error } = await supabase.functions.invoke('verify-otp', {
         body: requestBody,
-        headers: {
-            Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`
-        }
     });
 
     if (error) {
-        let msg = error.message;
-        try {
-            const body = await error.context?.json();
-            if (body?.error) msg = body.error;
-            else if (body?.message) msg = body.message;
-        } catch (_) { /* body already consumed — use error.message */ }
+        console.error('verify-otp error:', error);
+        let msg = error.message || '';
+        if (error.context) {
+            try {
+                const body = await error.context.clone().json();
+                msg = body.error || body.message || msg;
+            } catch (_) { /* body already consumed or not JSON */ }
+        }
         throw new Error(msg || 'OTP verification failed. Please try again.');
     }
 
