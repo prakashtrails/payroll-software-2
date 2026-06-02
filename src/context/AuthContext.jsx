@@ -51,7 +51,7 @@ export function AuthProvider({ children }) {
       // Hard timeout — never show spinner forever
       const timeoutId = setTimeout(() => {
         if (mounted) setLoading(false);
-      }, 8000);
+      }, 3000);
 
       try {
         const { data: { session } } = await supabase.auth.getSession();

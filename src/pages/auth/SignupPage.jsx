@@ -107,7 +107,7 @@ function SuccessScreen({ mode, companyName, joinCode, onLogin }) {
 /* ─── ADMIN SIGNUP (Create Company) ─────────────────────────────────────────── */
 
 function AdminSignupForm({ onSuccess }) {
-  const { signUp } = useAuth();
+  const { signUp, refreshProfile } = useAuth();
 
   // Step 1 form state
   const [form, setForm] = useState({
@@ -219,6 +219,9 @@ function AdminSignupForm({ onSuccess }) {
         throw new Error('Workspace setup failed: ' + msg);
       }
 
+      // Refresh the profile in AuthContext so the login page auto-redirects
+      await refreshProfile();
+
       onSuccess({ companyName: form.companyName, joinCode });
     } catch (err) {
       console.error('Signup Process Error:', err);
@@ -319,6 +322,7 @@ function AdminSignupForm({ onSuccess }) {
 /* ─── EMPLOYEE JOIN FORM ─────────────────────────────────────────────────────── */
 
 function EmployeeJoinForm({ onSuccess }) {
+  const { refreshProfile } = useAuth();
   const [form, setForm] = useState({
     orgCode: '', firstName: '', lastName: '',
     email: '', phone: '', password: '', confirmPassword: '',
@@ -432,6 +436,9 @@ function EmployeeJoinForm({ onSuccess }) {
       });
 
       if (joinError) throw new Error('Join failed: ' + joinError.message);
+
+      // Refresh the profile in AuthContext so the login page auto-redirects
+      await refreshProfile();
 
       onSuccess({ companyName: companyPreview, mode: 'employee' });
     } catch (err) {
