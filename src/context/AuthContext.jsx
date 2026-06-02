@@ -76,9 +76,10 @@ export function AuthProvider({ children }) {
         if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
           if (session?.user) {
             setUser(session.user);
-            setTimeout(async () => {
-              if (mounted) await fetchProfile(session.user.id);
-            }, 300);
+            // Await profile before clearing loading so PrivateRoute never sees
+            // a split-second where loading=false but profile=null, which would
+            // cause a redirect to /login and then back to /dashboard on refresh.
+            if (mounted) await fetchProfile(session.user.id);
           }
         } else if (event === 'SIGNED_OUT') {
           setUser(null);
