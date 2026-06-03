@@ -58,105 +58,63 @@ export async function addShift(tenantId, shift) {
 }
 
 export async function listHolidays(tenantId) {
-  const res = await supabase
+  const { data, error } = await supabase
     .from('holidays')
     .select('*')
     .eq('tenant_id', tenantId)
-    .order('holiday_date', { ascending: true });
+    .order('date', { ascending: true });
 
-  if (res.error && res.error.message?.includes('holiday_date')) {
-    const fallback = await supabase
-      .from('holidays')
-      .select('id,tenant_id,name,date,type,created_at')
-      .eq('tenant_id', tenantId)
-      .order('date', { ascending: true });
-
-    return { data: (fallback.data || []).map(normalizeHoliday), error: fallback.error };
-  }
-
-  return { data: (res.data || []).map(normalizeHoliday), error: res.error };
+  return { data: (data || []).map(normalizeHoliday), error };
 }
 
 export async function addHoliday(tenantId, holiday) {
-  let { error } = await supabase
+  const { error } = await supabase
     .from('holidays')
-    .insert([{ ...holiday, tenant_id: tenantId }]);
-
-  if (error && /holiday_date|approved_at|approved_by|requested_by|status/i.test(error.message)) {
-    const fallback = {
+    .insert([{
       tenant_id: tenantId,
       name: holiday.name,
-      date: holiday.holiday_date || holiday.date,
-      type: holiday.description || 'Public Holiday',
-      created_at: new Date().toISOString(),
-    };
-    const fallbackResult = await supabase.from('holidays').insert([fallback]);
-    return { error: fallbackResult.error };
-  }
-
+      date: holiday.date || holiday.holiday_date,
+      type: holiday.type || holiday.description || 'Public Holiday',
+    }]);
   return { error };
 }
 
 export async function importHolidays(tenantId, holidays) {
-  let { error } = await supabase
+  const rows = holidays.map((h) => ({
+    tenant_id: tenantId,
+    name: h.name,
+    date: h.date || h.holiday_date,
+    type: h.type || h.description || 'Public Holiday',
+  }));
+  const { error } = await supabase
     .from('holidays')
-    .insert(holidays.map((holiday) => ({ ...holiday, tenant_id: tenantId })))
-    .onConflict('tenant_id,holiday_date');
-
-  if (error && /holiday_date/i.test(error.message)) {
-    const fallback = holidays.map((holiday) => ({
-      tenant_id: tenantId,
-      name: holiday.name,
-      date: holiday.holiday_date || holiday.date,
-      type: holiday.description || 'Public Holiday',
-      created_at: new Date().toISOString(),
-    }));
-    const fallbackResult = await supabase
-      .from('holidays')
-      .insert(fallback)
-      .onConflict('tenant_id,date');
-    return { error: fallbackResult.error };
-  }
-
+    .upsert(rows, { onConflict: 'tenant_id,date', ignoreDuplicates: true });
   return { error };
 }
 
-export async function updateHolidayStatus(holidayId, status, approverId) {
-  let { error } = await supabase
+export async function updateHolidayStatus(holidayId, status) {
+  const { error } = await supabase
     .from('holidays')
-    .update({ status, approved_by: approverId, approved_at: new Date().toISOString() })
+    .update({ status })
     .eq('id', holidayId);
-
-  if (error && /approved_at|approved_by|status/i.test(error.message)) {
-    const fallbackResult = await supabase
-      .from('holidays')
-      .update({ status })
-      .eq('id', holidayId);
-    return { error: fallbackResult.error || error };
-  }
-
   return { error };
 }
 
 export async function initializeMajorHolidays(tenantId) {
-  const { error } = await supabase.rpc('initialize_major_holidays', { p_tenant_id: tenantId });
-  if (error && /initialize_major_holidays/i.test(error.message)) {
-    const rows = [
-      { tenant_id: tenantId, name: 'Republic Day', date: `${new Date().getFullYear()}-01-26`, type: 'Public Holiday' },
-      { tenant_id: tenantId, name: 'Holi', date: `${new Date().getFullYear()}-03-14`, type: 'Festival of colors' },
-      { tenant_id: tenantId, name: 'Labour Day', date: `${new Date().getFullYear()}-05-01`, type: 'International Workers\' Day' },
-      { tenant_id: tenantId, name: 'Independence Day', date: `${new Date().getFullYear()}-08-15`, type: 'National holiday' },
-      { tenant_id: tenantId, name: 'Gandhi Jayanti', date: `${new Date().getFullYear()}-10-02`, type: 'National holiday' },
-      { tenant_id: tenantId, name: 'Diwali', date: `${new Date().getFullYear()}-10-31`, type: 'Festival of lights' },
-      { tenant_id: tenantId, name: 'Christmas Day', date: `${new Date().getFullYear()}-12-25`, type: 'Major festival' },
-    ];
-    const fallbackResult = await supabase
-      .from('holidays')
-      .insert(rows)
-      .onConflict('tenant_id,date');
-    return { error: fallbackResult.error || error };
-  }
-
+  // The initialize_major_holidays RPC does not exist in the DB — insert directly.
+  const year = new Date().getFullYear();
+  const rows = [
+    { tenant_id: tenantId, name: 'Republic Day',    date: `${year}-01-26`, type: 'Public Holiday' },
+    { tenant_id: tenantId, name: 'Holi',            date: `${year}-03-14`, type: 'Festival of colors' },
+    { tenant_id: tenantId, name: 'Labour Day',      date: `${year}-05-01`, type: "International Workers' Day" },
+    { tenant_id: tenantId, name: 'Independence Day',date: `${year}-08-15`, type: 'National holiday' },
+    { tenant_id: tenantId, name: 'Gandhi Jayanti',  date: `${year}-10-02`, type: 'National holiday' },
+    { tenant_id: tenantId, name: 'Diwali',          date: `${year}-10-31`, type: 'Festival of lights' },
+    { tenant_id: tenantId, name: 'Christmas Day',   date: `${year}-12-25`, type: 'Major festival' },
+  ];
+  const { error } = await supabase
+    .from('holidays')
+    .upsert(rows, { onConflict: 'tenant_id,date', ignoreDuplicates: true });
   return { error };
 }
 

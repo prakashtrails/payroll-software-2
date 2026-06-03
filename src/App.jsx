@@ -35,19 +35,25 @@ import MySpecialRequestsPage from './pages/employee/MySpecialRequestsPage';
 import DashboardLayout from './layouts/DashboardLayout';
 import AuthLayout from './layouts/AuthLayout';
 
+function homeFor(role) {
+  if (role === 'employee') return '/my-dashboard';
+  if (role === 'manager')  return '/manager-dashboard';
+  return '/dashboard';
+}
+
 function PrivateRoute({ children, allowedRoles }) {
   const { user, profile, loading } = useAuth();
-  
+
   if (loading) {
     return <div style={{ height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><div className="spinner"></div></div>;
   }
-  
+
   if (!user || !profile) {
     return <Navigate to="/login" replace />;
   }
 
   if (allowedRoles && !allowedRoles.includes(profile.role)) {
-    return <Navigate to="/dashboard" replace />;
+    return <Navigate to={homeFor(profile.role)} replace />;
   }
 
   return children;
