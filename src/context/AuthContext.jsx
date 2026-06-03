@@ -12,24 +12,34 @@ export function AuthProvider({ children }) {
 
   const fetchProfile = useCallback(async (userId) => {
     if (!userId) return null;
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 8000);
     try {
       const { data, error } = await supabase
         .from('profiles')
         .select('*, tenants(*)')
         .eq('id', userId)
-        .maybeSingle()
-        .abortSignal(controller.signal);
+        .maybeSingle();
 
-      clearTimeout(timer);
-      if (error) { console.error('fetchProfile error:', error.message); return null; }
-      setProfile(data);
-      setTenant(data?.tenants ?? null);
+      if (error) {
+        console.error('fetchProfile error:', error.message);
+        return null;
+      }
+
+      // Guard against stale callbacks: if the active session already belongs to a
+      // different user (e.g., admin restored session after creating an employee via
+      // signUp()), discard this result rather than wiping out the correct state.
+      const { data: { session: current } } = await supabase.auth.getSession();
+      if (current?.user?.id !== userId) return null;
+
+      if (data) {
+        setProfile(data);
+        setTenant(data.tenants);
+      } else {
+        setProfile(null);
+        setTenant(null);
+      }
       return data;
     } catch (err) {
-      clearTimeout(timer);
-      console.error('fetchProfile exception:', err.message);
+      console.error('fetchProfile exception:', err);
       return null;
     }
   }, []);
@@ -38,33 +48,22 @@ export function AuthProvider({ children }) {
     let mounted = true;
 
     const init = async () => {
-      // Safety net — releases loading if nothing else does within 10 s.
-      const timeoutId = setTimeout(() => { if (mounted) setLoading(false); }, 10000);
-      const release = () => { clearTimeout(timeoutId); if (mounted) setLoading(false); };
+      // Hard timeout — never show spinner forever
+      const timeoutId = setTimeout(() => {
+        if (mounted) setLoading(false);
+      }, 8000);
 
       try {
         const { data: { session } } = await supabase.auth.getSession();
-        if (!mounted) { clearTimeout(timeoutId); return; }
+        if (!mounted) return;
 
-        if (!session?.user) { release(); return; }
-
-        setUser(session.user);
-        const profileData = await fetchProfile(session.user.id);
-
-        if (profileData) {
-          release();
-        } else {
-          // Profile fetch failed (DB timeout / RLS issue / stale token).
-          // Clear the user so PrivateRoute redirects to /login cleanly and the
-          // user can re-authenticate. Without this, the user gets stuck on a
-          // spinner that never resolves because TOKEN_REFRESHED may not fire
-          // (the token might still be valid, just the DB query timed out).
-          setUser(null);
-          release();
+        if (session?.user) {
+          setUser(session.user);
+          await fetchProfile(session.user.id);
         }
-      } catch (err) {
-        console.error('init error:', err);
-        release();
+      } finally {
+        clearTimeout(timeoutId);
+        if (mounted) setLoading(false);
       }
     };
 
@@ -74,22 +73,18 @@ export function AuthProvider({ children }) {
       async (event, session) => {
         if (!mounted) return;
 
-        // INITIAL_SESSION fires immediately on registration with the same session
-        // init() already reads — skip it to avoid calling setLoading(false) with
-        // user=null before init() finishes and bouncing logged-in users to /login.
-        if (event === 'INITIAL_SESSION') return;
-
         if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
           if (session?.user) {
             setUser(session.user);
-            if (mounted) await fetchProfile(session.user.id);
+            setTimeout(async () => {
+              if (mounted) await fetchProfile(session.user.id);
+            }, 300);
           }
         } else if (event === 'SIGNED_OUT') {
           setUser(null);
           setProfile(null);
           setTenant(null);
         }
-
         if (mounted) setLoading(false);
       }
     );
@@ -113,12 +108,10 @@ export function AuthProvider({ children }) {
   }, []);
 
   const signOut = useCallback(async () => {
-    // Clear local state immediately so the UI responds at once even if the
-    // server call is queued behind hung DB connections.
+    await supabase.auth.signOut();
     setUser(null);
     setProfile(null);
     setTenant(null);
-    supabase.auth.signOut().catch(console.error);
   }, []);
 
   const refreshProfile = useCallback(() => {
@@ -126,6 +119,7 @@ export function AuthProvider({ children }) {
     return Promise.resolve(null);
   }, [user, fetchProfile]);
 
+  // ── OTP helpers (delegated to otpService) ──────────────────────────────────
   const sendOtp = useCallback((identifier, options) => svcSendOtp(identifier, options), []);
   const verifyOtp = useCallback(
     (identifier, token, isSignup, password, firstName, lastName) =>
