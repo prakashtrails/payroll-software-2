@@ -1,11 +1,12 @@
 import { createClient } from '@supabase/supabase-js';
 import { supabase } from '@/lib/supabase';
 
-// Admin client uses service-role key — can create auth users without sending emails
+// Admin client uses service-role key — can create auth users without sending emails.
+// storageKey is unique so it doesn't conflict with the main anon client's session.
 const supabaseAdmin = createClient(
   import.meta.env.VITE_SUPABASE_URL,
   import.meta.env.VITE_SUPABASE_SERVICE_ROLE_KEY,
-  { auth: { autoRefreshToken: false, persistSession: false } }
+  { auth: { autoRefreshToken: false, persistSession: false, storageKey: 'sb-admin-auth' } }
 );
 
 export const EMPLOYEE_PAGE_SIZE = 25;

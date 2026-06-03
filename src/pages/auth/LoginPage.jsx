@@ -283,7 +283,10 @@ export default function LoginPage() {
 
   useEffect(() => {
     if (!loading && user && profile) {
-      navigate(profile.role==='employee'?'/my-dashboard':'/dashboard', { replace:true });
+      const dest = profile.role === 'employee' ? '/my-dashboard'
+                 : profile.role === 'manager'  ? '/manager-dashboard'
+                 : '/dashboard';
+      navigate(dest, { replace: true });
     }
   }, [user, profile, loading, navigate]);
 

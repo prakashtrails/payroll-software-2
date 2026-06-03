@@ -38,7 +38,7 @@ export default function ManagerDashboard() {
   }, [profile, tenant]);
 
   useEffect(() => {
-    if (!tenant) return;
+    if (!tenant) { setLoading(false); return; }
     Promise.all([
       fetchDashboardStats(tenant.id),
       fetchTodayAttendanceSummary(tenant.id, `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}-${String(new Date().getDate()).padStart(2, '0')}`),
@@ -46,7 +46,7 @@ export default function ManagerDashboard() {
       if (!statsRes.error) setStats({ activeEmployees: statsRes.activeEmployees, processedPayrolls: statsRes.processedPayrolls });
       if (!attendanceRes.error) setAttendance(attendanceRes);
       setLoading(false);
-    });
+    }).catch(() => setLoading(false));
   }, [tenant]);
 
   useEffect(() => {

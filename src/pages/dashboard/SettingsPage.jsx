@@ -127,7 +127,7 @@ export default function SettingsPage() {
   const handleUpdateHolidayStatus = async (holidayId, status) => {
     if (!profile) return showToast('Unable to update status', 'error');
     setHolidayLoading(true);
-    const { error } = await updateHolidayStatus(holidayId, status, profile.id);
+    const { error } = await updateHolidayStatus(holidayId, status);
     setHolidayLoading(false);
     if (error) return showToast('Status update failed: ' + error.message, 'error');
     showToast(`Holiday ${status.toLowerCase()}`, 'success');
