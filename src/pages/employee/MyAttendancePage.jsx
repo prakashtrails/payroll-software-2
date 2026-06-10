@@ -1,9 +1,14 @@
 import React from 'react';
 import { useEffect, useState, useCallback } from 'react';
 import Header from '@/components/Header';
+import Modal from '@/components/Modal';
 import { showToast } from '@/components/Toast';
 import { useAuth } from '@/context/AuthContext';
-import { fetchMyMonthAttendance } from '@/services/attendanceService';
+import {
+  fetchMyMonthAttendance,
+  submitRegularizeRequest,
+  listMyRegularizeRequests,
+} from '@/services/attendanceService';
 import { listHolidays } from '@/services/tenantService';
 import { todayStr, dateStr, fmtTime12, fmtDuration, monthLabel } from '@/lib/helpers';
 
@@ -15,6 +20,12 @@ export default function MyAttendancePage() {
   const [holidays, setHolidays]       = useState([]);
   const [selectedDate, setSelectedDate] = useState(todayStr());
 
+  // Regularization request state
+  const [showReqModal, setShowReqModal]       = useState(false);
+  const [myRequests, setMyRequests]           = useState([]);
+  const [reqForm, setReqForm]                 = useState({ clockInTime: '', clockOutTime: '', reason: '' });
+  const [submittingReq, setSubmittingReq]     = useState(false);
+
   const fetchMyAttendance = useCallback(async () => {
     if (!profile || !tenant) return;
     const { data } = await fetchMyMonthAttendance(profile.id, attYear, attMonth);
@@ -22,6 +33,14 @@ export default function MyAttendancePage() {
   }, [profile, tenant, attMonth, attYear]);
 
   useEffect(() => { fetchMyAttendance(); }, [fetchMyAttendance]);
+
+  const fetchMyReqs = useCallback(async () => {
+    if (!profile) return;
+    const { data } = await listMyRegularizeRequests(profile.id);
+    setMyRequests(data || []);
+  }, [profile]);
+
+  useEffect(() => { fetchMyReqs(); }, [fetchMyReqs]);
 
   const fetchHolidayData = useCallback(async () => {
     if (!tenant) return;
@@ -33,6 +52,37 @@ export default function MyAttendancePage() {
   useEffect(() => { fetchHolidayData(); }, [fetchHolidayData]);
 
   const getHolidayDate = (h) => h.holiday_date || h.date;
+
+  const openReqModal = () => {
+    setReqForm({
+      clockInTime:  tenant?.shift_start || '',
+      clockOutTime: tenant?.shift_end   || '',
+      reason: '',
+    });
+    setShowReqModal(true);
+  };
+
+  const handleSubmitReq = async () => {
+    if (!reqForm.clockInTime || !reqForm.clockOutTime) return showToast('Please provide both clock-in and clock-out times', 'error');
+    if (!reqForm.reason.trim()) return showToast('Reason is required', 'error');
+    setSubmittingReq(true);
+    try {
+      const { error } = await submitRegularizeRequest(tenant.id, profile.id, {
+        date:         selectedDate,
+        clockInTime:  reqForm.clockInTime,
+        clockOutTime: reqForm.clockOutTime,
+        reason:       reqForm.reason.trim(),
+      });
+      if (error) throw error;
+      showToast('Regularization request submitted', 'success');
+      setShowReqModal(false);
+      fetchMyReqs();
+    } catch (err) {
+      showToast('Failed: ' + err.message, 'error');
+    } finally {
+      setSubmittingReq(false);
+    }
+  };
 
   const changeMonth = (delta) => {
     let m = attMonth + delta, y = attYear;
@@ -152,6 +202,11 @@ export default function MyAttendancePage() {
           <div className="card">
             <div className="card-header">
               <h3>Day Timeline</h3>
+              {selectedDate && selectedDate <= todayStr() && (
+                <button className="btn btn-outline btn-sm" onClick={openReqModal}>
+                  <i className="fas fa-pen" /> Request Regularization
+                </button>
+              )}
             </div>
             <div className="card-body">
               {selectedDate && (
@@ -189,7 +244,90 @@ export default function MyAttendancePage() {
           </div>
 
         </div>
+
+        {/* My Regularization Requests */}
+        {myRequests.length > 0 && (
+          <div className="card" style={{ marginTop: 16 }}>
+            <div className="card-header"><h3>My Regularization Requests</h3></div>
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr><th>Date</th><th>Requested Time</th><th>Reason</th><th>Status</th></tr>
+                </thead>
+                <tbody>
+                  {myRequests.map(req => (
+                    <tr key={req.id}>
+                      <td>{new Date(req.date + 'T00:00:00').toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}</td>
+                      <td style={{ fontSize: 13 }}>
+                        {req.clock_in_time ? fmtTime12(req.clock_in_time) : '—'} → {req.clock_out_time ? fmtTime12(req.clock_out_time) : '—'}
+                      </td>
+                      <td style={{ fontSize: 12, color: 'var(--text-secondary)', maxWidth: 200 }}>{req.reason}</td>
+                      <td>
+                        <span className={`badge ${
+                          req.status === 'Approved' ? 'badge-success'
+                            : req.status === 'Rejected' ? 'badge-danger'
+                            : 'badge-warning'
+                        }`}>{req.status}</span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
       </div>
+
+      {/* Request Regularization Modal */}
+      <Modal
+        show={showReqModal}
+        onClose={() => setShowReqModal(false)}
+        title="Request Attendance Regularization"
+        width="460px"
+        footer={
+          <>
+            <button className="btn btn-outline" onClick={() => setShowReqModal(false)} disabled={submittingReq}>Cancel</button>
+            <button className="btn btn-primary" onClick={handleSubmitReq} disabled={submittingReq}>
+              {submittingReq
+                ? <><div className="spinner" style={{ width: 16, height: 16, borderWidth: 2 }} /> Submitting…</>
+                : <><i className="fas fa-paper-plane" /> Submit Request</>}
+            </button>
+          </>
+        }
+      >
+        <div className="form-group">
+          <label className="form-label">Date</label>
+          <input
+            className="form-input"
+            value={selectedDate ? new Date(selectedDate + 'T00:00:00').toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'long', year: 'numeric' }) : ''}
+            readOnly
+            style={{ background: 'var(--bg)', color: 'var(--text-muted)' }}
+          />
+        </div>
+        <div className="form-row">
+          <div className="form-group">
+            <label className="form-label">Correct Clock-In Time *</label>
+            <input type="time" className="form-input" value={reqForm.clockInTime}
+              onChange={e => setReqForm({ ...reqForm, clockInTime: e.target.value })} />
+          </div>
+          <div className="form-group">
+            <label className="form-label">Correct Clock-Out Time *</label>
+            <input type="time" className="form-input" value={reqForm.clockOutTime}
+              onChange={e => setReqForm({ ...reqForm, clockOutTime: e.target.value })} />
+          </div>
+        </div>
+        <div className="form-group">
+          <label className="form-label">Reason *</label>
+          <textarea
+            className="form-input"
+            rows={3}
+            style={{ resize: 'none', fontSize: 13 }}
+            placeholder="e.g. Forgot to clock in, worked from client site…"
+            value={reqForm.reason}
+            onChange={e => setReqForm({ ...reqForm, reason: e.target.value })}
+          />
+        </div>
+      </Modal>
     </>
   );
 }

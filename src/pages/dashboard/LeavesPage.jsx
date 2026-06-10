@@ -18,10 +18,13 @@ export default function LeavesPage() {
   const fetchRequests = async () => {
     if (!tenant) return;
     setLoading(true);
-    const { data, error } = await listAllLeaveRequests(tenant.id);
-    if (error) showToast(error.message, 'error');
-    else setRequests(data);
-    setLoading(false);
+    try {
+      const { data, error } = await listAllLeaveRequests(tenant.id);
+      if (error) showToast(error.message, 'error');
+      else setRequests(data);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleStatusChange = async (id, status) => {

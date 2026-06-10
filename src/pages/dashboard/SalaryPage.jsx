@@ -18,10 +18,13 @@ export default function SalaryStructurePage() {
   const fetchComponents = useCallback(async () => {
     if (!tenant) return;
     setLoading(true);
-    const { data, error } = await listComponents(tenant.id);
-    if (error) console.error(error);
-    setComponents(data);
-    setLoading(false);
+    try {
+      const { data, error } = await listComponents(tenant.id);
+      if (error) console.error(error);
+      setComponents(data);
+    } finally {
+      setLoading(false);
+    }
   }, [tenant]);
 
   useEffect(() => { fetchComponents(); }, [fetchComponents]);

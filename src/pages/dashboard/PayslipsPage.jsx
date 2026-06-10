@@ -18,13 +18,16 @@ export default function PayslipsPage() {
   const fetchPayslips = useCallback(async () => {
     if (!tenant) return;
     setLoading(true);
-    const [slipsRes, empsRes] = await Promise.all([
-      fetchPayslipsByMonth(tenant.id, month, year),
-      listActiveEmployees(tenant.id),
-    ]);
-    setPayslips(slipsRes.data);
-    setEmployees(empsRes.data);
-    setLoading(false);
+    try {
+      const [slipsRes, empsRes] = await Promise.all([
+        fetchPayslipsByMonth(tenant.id, month, year),
+        listActiveEmployees(tenant.id),
+      ]);
+      setPayslips(slipsRes.data);
+      setEmployees(empsRes.data);
+    } finally {
+      setLoading(false);
+    }
   }, [tenant, month, year]);
 
   useEffect(() => { fetchPayslips(); }, [fetchPayslips]);

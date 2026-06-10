@@ -24,6 +24,7 @@ const NAV_CONFIG = {
         { label: 'Leave Requests', icon: 'fa-calendar-check', href: '/leaves' },
         { label: 'Special Requests', icon: 'fa-star-half-alt', href: '/special-requests' },
         { label: 'Employee Calendar', icon: 'fa-calendar-day', href: '/employee-calendar' },
+        { label: 'Master Report', icon: 'fa-file-alt', href: '/master-report' },
       ],
     },
     {
@@ -56,9 +57,11 @@ const NAV_CONFIG = {
       ],
     },
     {
-      title: 'System',
+      title: 'Payroll',
       items: [
-        { label: 'Settings', icon: 'fa-cog', href: '/manager-settings' },
+        { label: 'Payroll', icon: 'fa-money-bill-wave', href: '/manager-payroll' },
+        { label: 'Payslips', icon: 'fa-file-invoice-dollar', href: '/manager-payslips' },
+        { label: 'Advances & Loans', icon: 'fa-hand-holding-usd', href: '/manager-advances' },
       ],
     },
   ],

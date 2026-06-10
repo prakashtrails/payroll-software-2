@@ -22,6 +22,7 @@ import TenantsPage from './pages/dashboard/TenantsPage';
 import RegularizeAttendancePage from './pages/dashboard/RegularizeAttendancePage';
 import SpecialRequestsPage from './pages/dashboard/SpecialRequestsPage';
 import EmployeeCalendarPage from './pages/dashboard/EmployeeCalendarPage';
+import MasterReportPage from './pages/dashboard/MasterReportPage';
 
 import ManagerDashboardPage from './pages/dashboard/ManagerDashboardPage';
 
@@ -82,6 +83,7 @@ export default function App() {
         <Route path="/advances" element={<PrivateRoute allowedRoles={['admin', 'superadmin']}><AdvancesPage /></PrivateRoute>} />
         <Route path="/special-requests" element={<PrivateRoute allowedRoles={['admin', 'superadmin']}><SpecialRequestsPage /></PrivateRoute>} />
         <Route path="/employee-calendar" element={<PrivateRoute allowedRoles={['admin', 'superadmin']}><EmployeeCalendarPage /></PrivateRoute>} />
+        <Route path="/master-report" element={<PrivateRoute allowedRoles={['admin', 'superadmin']}><MasterReportPage /></PrivateRoute>} />
         <Route path="/settings" element={<PrivateRoute allowedRoles={['admin', 'superadmin']}><SettingsPage /></PrivateRoute>} />
         <Route path="/regularize" element={<PrivateRoute allowedRoles={['admin', 'superadmin']}><RegularizeAttendancePage /></PrivateRoute>} />
         
@@ -92,8 +94,10 @@ export default function App() {
         <Route path="/manager-leaves" element={<PrivateRoute allowedRoles={['manager']}><LeavesPage /></PrivateRoute>} />
         <Route path="/manager-special-requests" element={<PrivateRoute allowedRoles={['manager']}><SpecialRequestsPage /></PrivateRoute>} />
         <Route path="/manager-employee-calendar" element={<PrivateRoute allowedRoles={['manager']}><EmployeeCalendarPage /></PrivateRoute>} />
-        <Route path="/manager-settings" element={<PrivateRoute allowedRoles={['manager']}><SettingsPage /></PrivateRoute>} />
         <Route path="/manager-regularize" element={<PrivateRoute allowedRoles={['manager']}><RegularizeAttendancePage /></PrivateRoute>} />
+        <Route path="/manager-payroll" element={<PrivateRoute allowedRoles={['manager']}><PayrollPage /></PrivateRoute>} />
+        <Route path="/manager-payslips" element={<PrivateRoute allowedRoles={['manager']}><PayslipsPage /></PrivateRoute>} />
+        <Route path="/manager-advances" element={<PrivateRoute allowedRoles={['manager']}><AdvancesPage /></PrivateRoute>} />
         
         {/* Superadmin specific */}
         <Route path="/tenants" element={<PrivateRoute allowedRoles={['superadmin']}><TenantsPage /></PrivateRoute>} />

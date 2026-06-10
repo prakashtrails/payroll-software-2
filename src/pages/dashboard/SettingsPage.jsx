@@ -27,6 +27,7 @@ export default function SettingsPage() {
     shift_start: '09:00', shift_end: '18:00', late_threshold: 15,
     min_half_day_hours: 4, min_full_day_hours: 8,
     geofence_lat: '', geofence_lng: '', geofence_radius: 200,
+    weekly_off_day: 0,
   });
   const [departments, setDepartments] = useState([]);
   const [shifts, setShifts]           = useState([]);
@@ -158,6 +159,7 @@ export default function SettingsPage() {
       geofence_lat: tenant.geofence_lat || '',
       geofence_lng: tenant.geofence_lng || '',
       geofence_radius: tenant.geofence_radius || 200,
+      weekly_off_day: tenant.weekly_off_day ?? 0,
     });
     fetchData();
   }, [tenant, fetchData]);
@@ -177,6 +179,7 @@ export default function SettingsPage() {
       geofence_lat: form.geofence_lat ? parseFloat(form.geofence_lat) : null,
       geofence_lng: form.geofence_lng ? parseFloat(form.geofence_lng) : null,
       geofence_radius: parseInt(form.geofence_radius) || 200,
+      weekly_off_day: parseInt(form.weekly_off_day) || 0,
     });
     setSaving(false);
     if (error) return showToast('Save failed: ' + error.message, 'error');
@@ -301,12 +304,8 @@ export default function SettingsPage() {
         <div className="form-row">
           <div className="form-group">
             <label className="form-label">Date</label>
-            <input
-              className="form-input"
-              type="date"
-              value={newHolidayDate}
-              onChange={(e) => setNewHolidayDate(e.target.value)}
-            />
+            <input className="form-input" type="date" value={newHolidayDate}
+              onChange={(e) => setNewHolidayDate(e.target.value)} />
           </div>
           <div className="form-group">
             <label className="form-label">Description</label>
@@ -343,21 +342,13 @@ export default function SettingsPage() {
         <div className="form-row">
           <div className="form-group">
             <label className="form-label">Start time</label>
-            <input
-              className="form-input"
-              type="time"
-              value={newShiftStart}
-              onChange={(e) => setNewShiftStart(e.target.value)}
-            />
+            <input className="form-input" type="time" value={newShiftStart}
+              onChange={(e) => setNewShiftStart(e.target.value)} />
           </div>
           <div className="form-group">
             <label className="form-label">End time</label>
-            <input
-              className="form-input"
-              type="time"
-              value={newShiftEnd}
-              onChange={(e) => setNewShiftEnd(e.target.value)}
-            />
+            <input className="form-input" type="time" value={newShiftEnd}
+              onChange={(e) => setNewShiftEnd(e.target.value)} />
           </div>
         </div>
         <div className="form-hint">Leave end time earlier than start time for overnight shifts.</div>
@@ -418,6 +409,15 @@ export default function SettingsPage() {
                 <div className="form-group">
                   <label className="form-label">Working Days / Month</label>
                   <input className="form-input" type="number" min="1" max="31" value={form.work_days} onChange={(e) => setForm({ ...form, work_days: e.target.value })} />
+                </div>
+                <div className="form-group">
+                  <label className="form-label">Weekly Off Day</label>
+                  <select className="form-select" value={form.weekly_off_day} onChange={(e) => setForm({ ...form, weekly_off_day: e.target.value })}>
+                    {['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'].map((d, i) => (
+                      <option key={i} value={i}>{d}</option>
+                    ))}
+                  </select>
+                  <div className="form-hint">Used for comp off settlement (employees with CTC ≥ ₹30,000)</div>
                 </div>
               </div>
               <div className="form-group">

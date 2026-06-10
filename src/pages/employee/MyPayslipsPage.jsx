@@ -23,9 +23,12 @@ export default function MyPayslipsPage() {
   const fetchData = useCallback(async () => {
     if (!profile || !tenant) return;
     setLoading(true);
-    const { data } = await fetchMyPayslip(tenant.id, profile.id, month, year);
-    setSlip(data);
-    setLoading(false);
+    try {
+      const { data } = await fetchMyPayslip(tenant.id, profile.id, month, year);
+      setSlip(data);
+    } finally {
+      setLoading(false);
+    }
   }, [profile, tenant, month, year]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
