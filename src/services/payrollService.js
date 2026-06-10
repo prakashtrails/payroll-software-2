@@ -1,8 +1,8 @@
 import { supabase } from '@/lib/supabase';
-import { calcSalary, calcPfEsic, calcOtPay } from '@/lib/helpers';
+import { calcSalary, calcPfEsic, calcOtPay, HIGH_SALARY_THRESHOLD } from '@/lib/helpers';
 
 /** Fetch one payroll run (with all its payslips) for a given month/year and country group. */
-export async function fetchPayroll(tenantId, month, year, countryGroup = 'India') {
+export async function fetchPayroll(tenantId, month, year, countryGroup = 'Compliance') {
   const { data, error } = await supabase
     .from('payrolls')
     .select('*, payslips(*)')
@@ -21,15 +21,16 @@ export async function fetchPayroll(tenantId, month, year, countryGroup = 'India'
 export async function processPayroll({ tenantId, month, year, countryGroup, employees, components, advances, workDays, workDayOverrides, overtimeRequests = [], shiftHours = 8 }) {
   const payrollMonth = month + 1;
 
-  // Build a map: profile_id → total approved overtime pay this month
+  // Build a map: profile_id → total approved overtime pay this month.
+  // Overtime cash is only for employees whose CTC is below the threshold.
   const otByEmployee = {};
   overtimeRequests.forEach((req) => {
     const pid = req.profile_id;
-    // Use pre-stored overtime_pay if available, otherwise recalculate
-    const emp     = employees.find(e => e.id === pid);
-    const pay     = req.overtime_pay > 0
+    const emp = employees.find(e => e.id === pid);
+    if (!emp || (emp.ctc || 0) >= HIGH_SALARY_THRESHOLD) return;
+    const pay = req.overtime_pay > 0
       ? Number(req.overtime_pay)
-      : calcOtPay(emp?.ctc || 0, shiftHours, req.overtime_hours || 0);
+      : calcOtPay(emp.ctc, shiftHours, req.overtime_hours || 0);
     otByEmployee[pid] = (otByEmployee[pid] || 0) + pay;
   });
 
