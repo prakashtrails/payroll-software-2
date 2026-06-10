@@ -26,7 +26,7 @@ serve(async (req) => {
     const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
     const adminClient = createClient(supabaseUrl, serviceRoleKey, {
-      auth: { autoRefreshToken: false, persistSession: false },
+      auth: { autoRefreshToken: true, persistSession: true },
     });
 
     // email_confirm: true creates the user without sending a confirmation email

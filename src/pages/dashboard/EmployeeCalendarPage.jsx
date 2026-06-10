@@ -63,8 +63,7 @@ export default function EmployeeCalendarPage() {
     fetchMyMonthAttendance(selectedId, viewYear, viewMonth).then(({ data, error }) => {
       if (error) showToast(error.message, 'error');
       else setRecords(data || []);
-      setLoading(false);
-    });
+    }).finally(() => setLoading(false));
   }, [selectedId, viewMonth, viewYear]);
 
   // Build month options from join date (or 12 months back) to current month, newest first

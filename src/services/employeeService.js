@@ -42,7 +42,7 @@ export async function listEmployees(tenantId, { page = 1, search = '', departmen
 export async function listActiveEmployees(tenantId) {
   const { data, error } = await supabase
     .from('profiles')
-    .select('id, first_name, last_name, department, designation, ctc, role, country')
+    .select('id, first_name, last_name, department, designation, ctc, role, country, join_date, pf_enabled, pf_amount, esic_enabled, esic_amount, leave_allocation')
     .eq('tenant_id', tenantId)
     .eq('status', 'Active')
     .in('role', ['employee', 'admin', 'manager'])
@@ -129,6 +129,13 @@ export async function createEmployee(tenantId, profileData) {
         work_permit_expiry: profileData.work_permit_expiry || null,
         weekly_holiday: profileData.weekly_holiday || 'Sunday',
         leave_allocation: profileData.leave_allocation || 0,
+        compliance_enabled: profileData.compliance_enabled || false,
+        pf_enabled:         profileData.pf_enabled         || false,
+        pf_number:          profileData.pf_number          || '',
+        pf_amount:          profileData.pf_amount          || 0,
+        esic_enabled:       profileData.esic_enabled        || false,
+        esic_number:        profileData.esic_number         || '',
+        esic_amount:        profileData.esic_amount         || 0,
         temp_password: tempPassword,
         status: 'Active',
         must_change_password: true,
@@ -177,6 +184,13 @@ export async function createEmployee(tenantId, profileData) {
     weekly_holiday:      profileData.weekly_holiday    || 'Sunday',
     leave_allocation:    profileData.leave_allocation || 0,
     shift_id:            profileData.shift_id     || null,
+    compliance_enabled:  profileData.compliance_enabled || false,
+    pf_enabled:          profileData.pf_enabled         || false,
+    pf_number:           profileData.pf_number          || '',
+    pf_amount:           profileData.pf_amount          || 0,
+    esic_enabled:        profileData.esic_enabled        || false,
+    esic_number:         profileData.esic_number         || '',
+    esic_amount:         profileData.esic_amount         || 0,
     temp_password:       tempPassword,
     role:                profileData.role         || 'employee',
     status:              profileData.status || 'Active',

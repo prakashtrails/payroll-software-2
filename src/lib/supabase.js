@@ -7,16 +7,17 @@ if (!supabaseUrl || !supabaseAnonKey) {
   throw new Error('Missing Supabase environment variables');
 }
 
-// Apply an 8-second timeout to every database (REST) request.
-// Auth requests (/auth/) are excluded — they handle their own retries.
-// Without this, hanging RLS queries consume all 6 browser connections to
-// the Supabase domain, making every subsequent request (including sign-out
-// and navigation) queue indefinitely and freeze the UI.
+// Timeout every outbound fetch:
+//   DB / REST  →  8 s  (prevents hung RLS queries consuming all 6 browser connections)
+//   Auth       → 15 s  (longer, because token-refresh is legitimate and usually fast;
+//                       without ANY timeout a slow auth server holds Supabase's internal
+//                       lock indefinitely, making signInWithPassword appear frozen)
+// Requests that already carry a caller-supplied AbortSignal pass through unchanged.
 const fetchWithTimeout = (url, options = {}) => {
   if (options.signal) return fetch(url, options);
-  if (typeof url === 'string' && url.includes('/auth/')) return fetch(url, options);
+  const isAuth = typeof url === 'string' && url.includes('/auth/');
   const controller = new AbortController();
-  const id = setTimeout(() => controller.abort(), 8000);
+  const id = setTimeout(() => controller.abort(), isAuth ? 15000 : 8000);
   return fetch(url, { ...options, signal: controller.signal })
     .finally(() => clearTimeout(id));
 };
@@ -34,8 +35,8 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   },
 });
 
-// Disconnect the Supabase realtime WebSocket when the page enters bfcache
-// (back/forward cache) so the browser can cache it. Reconnect on restore.
+// Disconnect realtime WebSocket when the page enters bfcache so the browser
+// can cache the page, reconnect on restore.
 window.addEventListener('pagehide', (event) => {
   if (event.persisted) supabase.realtime.disconnect();
 });

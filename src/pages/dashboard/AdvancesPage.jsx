@@ -9,7 +9,8 @@ import { listActiveEmployees } from '@/services/employeeService';
 import { fmt, getInitials, getAvatarColor } from '@/lib/helpers';
 
 export default function AdvancesPage() {
-  const { tenant } = useAuth();
+  const { tenant, profile } = useAuth();
+  const isManager = profile?.role === 'manager';
   const [advances, setAdvances]     = useState([]);
   const [employees, setEmployees]   = useState([]);
   const [filterStatus, setFilterStatus] = useState('');
@@ -21,13 +22,16 @@ export default function AdvancesPage() {
   const fetchData = useCallback(async () => {
     if (!tenant) return;
     setLoading(true);
-    const [advsRes, empsRes] = await Promise.all([
-      listAdvances(tenant.id),
-      listActiveEmployees(tenant.id),
-    ]);
-    setAdvances(advsRes.data);
-    setEmployees(empsRes.data);
-    setLoading(false);
+    try {
+      const [advsRes, empsRes] = await Promise.all([
+        listAdvances(tenant.id),
+        listActiveEmployees(tenant.id),
+      ]);
+      setAdvances(advsRes.data);
+      setEmployees(empsRes.data);
+    } finally {
+      setLoading(false);
+    }
   }, [tenant]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
@@ -91,11 +95,13 @@ export default function AdvancesPage() {
             <option value="Active">Active</option>
             <option value="Completed">Completed</option>
           </select>
-          <div style={{ marginLeft: 'auto' }}>
-            <button className="btn btn-primary" onClick={() => openModal()}>
-              <i className="fas fa-plus" /> New Advance
-            </button>
-          </div>
+          {!isManager && (
+            <div style={{ marginLeft: 'auto' }}>
+              <button className="btn btn-primary" onClick={() => openModal()}>
+                <i className="fas fa-plus" /> New Advance
+              </button>
+            </div>
+          )}
         </div>
 
         {loading ? (
@@ -136,8 +142,10 @@ export default function AdvancesPage() {
                           <td>{fmt(a.balance)}</td>
                           <td><span className={`badge ${a.status === 'Active' ? 'badge-warning' : 'badge-success'}`}>{a.status}</span></td>
                           <td>
-                            <button className="btn btn-outline btn-icon btn-sm" onClick={() => openModal(a)}><i className="fas fa-edit" /></button>{' '}
-                            <button className="btn btn-outline btn-icon btn-sm" style={{ color: 'var(--danger)' }} onClick={() => handleDelete(a.id)}><i className="fas fa-trash" /></button>
+                            {!isManager && <>
+                              <button className="btn btn-outline btn-icon btn-sm" onClick={() => openModal(a)}><i className="fas fa-edit" /></button>{' '}
+                              <button className="btn btn-outline btn-icon btn-sm" style={{ color: 'var(--danger)' }} onClick={() => handleDelete(a.id)}><i className="fas fa-trash" /></button>
+                            </>}
                           </td>
                         </tr>
                       );

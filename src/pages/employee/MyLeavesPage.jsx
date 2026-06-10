@@ -4,7 +4,7 @@ import Modal from '@/components/Modal';
 import { showToast } from '@/components/Toast';
 import { useAuth } from '@/context/AuthContext';
 import { listMyLeaveRequests, requestLeave } from '@/services/leaveService';
-import { fmt, todayStr } from '@/lib/helpers';
+import { fmt, todayStr, HIGH_SALARY_THRESHOLD } from '@/lib/helpers';
 
 const EMPTY_REQUEST = {
   leave_type: 'Casual Leave',
@@ -28,10 +28,13 @@ export default function MyLeavesPage() {
   const fetchRequests = async () => {
     if (!profile) return;
     setLoading(true);
-    const { data, error } = await listMyLeaveRequests(profile.id);
-    if (error) showToast(error.message, 'error');
-    else setRequests(data);
-    setLoading(false);
+    try {
+      const { data, error } = await listMyLeaveRequests(profile.id);
+      if (error) showToast(error.message, 'error');
+      else setRequests(data);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleRequest = async (e) => {
@@ -88,7 +91,21 @@ export default function MyLeavesPage() {
         }
       />
 
-      <div className="card" style={{ marginTop: 24 }}>
+      {(profile?.ctc || 0) >= HIGH_SALARY_THRESHOLD && (profile?.comp_off_balance || 0) > 0 && (
+        <div style={{
+          background: 'var(--primary-light, #eff6ff)',
+          border: '1px solid var(--primary)',
+          borderRadius: 8, padding: '10px 16px', marginTop: 16,
+          fontSize: 13, color: 'var(--primary)',
+          display: 'flex', alignItems: 'center', gap: 8,
+        }}>
+          <i className="fas fa-gift" />
+          You have <strong>{profile.comp_off_balance}</strong> Comp Off{profile.comp_off_balance > 1 ? 's' : ''} available.
+          Select <em>Comp Off</em> as the leave type to use them.
+        </div>
+      )}
+
+      <div className="card" style={{ marginTop: 16 }}>
         <div className="table-responsive">
           <table className="table">
             <thead>
@@ -156,7 +173,16 @@ export default function MyLeavesPage() {
             <option>Paid Leave</option>
             <option>Maternity/Paternity Leave</option>
             <option>Loss of Pay</option>
+            {(profile?.ctc || 0) >= HIGH_SALARY_THRESHOLD && (
+              <option value="Comp Off">Comp Off (Weekly Off Compensation)</option>
+            )}
           </select>
+          {form.leave_type === 'Comp Off' && (
+            <div style={{ marginTop: 6, fontSize: 12, color: 'var(--primary)' }}>
+              <i className="fas fa-info-circle" style={{ marginRight: 4 }} />
+              Balance: <strong>{profile?.comp_off_balance || 0}</strong> comp off{(profile?.comp_off_balance || 0) !== 1 ? 's' : ''} available.
+            </div>
+          )}
         </div>
         <div className="form-row">
           <div className="form-group">

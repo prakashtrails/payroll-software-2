@@ -7,9 +7,17 @@ import { fmt } from '@/lib/helpers';
 
 const TYPE_BADGE = {
   Overtime: 'badge-info',
+  'Salary Overtime': 'badge-purple',
   'Late Arrival': 'badge-warning',
-  'Comp Off': 'badge-success',
 };
+
+function getOtPay(req) {
+  if (req.overtime_pay > 0) return Number(req.overtime_pay);
+  const payable = req.overtime_hours || 0;
+  const ctc     = req.profile?.ctc   || 0;
+  if (!payable || !ctc) return 0;
+  return Math.round((ctc * 0.5) / 30 / 8 * payable);
+}
 
 export default function SpecialRequestsPage() {
   const { tenant, profile } = useAuth();
@@ -21,10 +29,13 @@ export default function SpecialRequestsPage() {
   const fetchRequests = useCallback(async () => {
     if (!tenant) return;
     setLoading(true);
-    const { data, error } = await listAllSpecialRequests(tenant.id);
-    if (error) showToast(error.message, 'error');
-    else setRequests(data);
-    setLoading(false);
+    try {
+      const { data, error } = await listAllSpecialRequests(tenant.id);
+      if (error) showToast(error.message, 'error');
+      else setRequests(data);
+    } finally {
+      setLoading(false);
+    }
   }, [tenant]);
 
   useEffect(() => { fetchRequests(); }, [fetchRequests]);
@@ -40,7 +51,7 @@ export default function SpecialRequestsPage() {
 
   const filtered = requests.filter(r => {
     const matchStatus = statusFilter === 'All' || r.status === statusFilter;
-    const matchType = typeFilter === 'All' || r.request_type === typeFilter;
+    const matchType   = typeFilter   === 'All' || r.request_type === typeFilter;
     return matchStatus && matchType;
   });
 
@@ -48,10 +59,7 @@ export default function SpecialRequestsPage() {
 
   return (
     <div className="page-container">
-      <Header
-        title="Special Requests"
-        breadcrumb="Dashboard / Special Requests"
-      />
+      <Header title="Special Requests" breadcrumb="Dashboard / Special Requests" />
 
       {pending > 0 && (
         <div style={{
@@ -68,7 +76,7 @@ export default function SpecialRequestsPage() {
         }}>
           <i className="fas fa-clock" />
           {pending} pending request{pending !== 1 ? 's' : ''} awaiting your approval.
-          {' '}Approving Overtime credits 1 comp-off day. Approving Late Arrival = full-day pay. Approving Comp Off deducts 1 comp-off day.
+          {' '}Late Arrival → full-day pay. Salary Overtime → overtime pay added to payroll.
         </div>
       )}
 
@@ -91,7 +99,7 @@ export default function SpecialRequestsPage() {
               ))}
             </div>
             <div className="flex gap-1" style={{ borderLeft: '1px solid var(--border)', paddingLeft: 8 }}>
-              {['All', 'Overtime', 'Late Arrival', 'Comp Off'].map(t => (
+              {['All', 'Overtime', 'Salary Overtime', 'Late Arrival'].map(t => (
                 <button
                   key={t}
                   className={`btn btn-sm ${typeFilter === t ? 'btn-secondary' : 'btn-outline'}`}
@@ -129,12 +137,6 @@ export default function SpecialRequestsPage() {
                       {req.profile?.first_name} {req.profile?.last_name}
                     </div>
                     <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{req.profile?.department}</div>
-                    {req.profile?.comp_off_balance > 0 && (
-                      <div style={{ fontSize: 10, color: 'var(--success)', marginTop: 2 }}>
-                        <i className="fas fa-umbrella-beach" style={{ marginRight: 3 }} />
-                        {req.profile.comp_off_balance} comp off
-                      </div>
-                    )}
                   </td>
                   <td>
                     <span className={`badge ${TYPE_BADGE[req.request_type] || 'badge-info'}`}>
@@ -143,11 +145,27 @@ export default function SpecialRequestsPage() {
                   </td>
                   <td>{fmt.date(req.request_date)}</td>
                   <td style={{ fontSize: 12 }}>
-                    {req.request_type === 'Late Arrival'
-                      ? <span><i className="fas fa-clock" style={{ marginRight: 4 }} />{req.late_hours}</span>
-                      : req.request_type === 'Overtime'
-                        ? <span><i className="fas fa-business-time" style={{ marginRight: 4 }} />{req.overtime_hours}h overtime</span>
-                        : <span><i className="fas fa-umbrella-beach" style={{ marginRight: 4 }} />Comp off day</span>}
+                    {req.request_type === 'Late Arrival' ? (
+                      <span><i className="fas fa-clock" style={{ marginRight: 4 }} />{req.late_hours}</span>
+                    ) : req.request_type === 'Salary Overtime' ? (() => {
+                      const m       = req.overtime_minutes || 0;
+                      const h       = Math.floor(m / 60), min = m % 60;
+                      const payable = req.overtime_hours || 0;
+                      const otPay   = getOtPay(req);
+                      return (
+                        <span>
+                          <i className="fas fa-business-time" style={{ marginRight: 4 }} />
+                          {h}h {min}m worked → {payable}h payable
+                          {otPay > 0 && (
+                            <span style={{ display: 'block', color: 'var(--primary)', fontWeight: 600, marginTop: 2 }}>
+                              Est. {fmt(otPay)}
+                            </span>
+                          )}
+                        </span>
+                      );
+                    })() : (
+                      <span><i className="fas fa-business-time" style={{ marginRight: 4 }} />Overtime day</span>
+                    )}
                   </td>
                   <td style={{ maxWidth: 200, fontSize: 12 }} title={req.reason}>{req.reason}</td>
                   <td>
@@ -163,6 +181,11 @@ export default function SpecialRequestsPage() {
                         By: {req.approver.first_name}
                       </div>
                     )}
+                    {req.status === 'Approved' && req.request_type === 'Salary Overtime' && (
+                      <div style={{ fontSize: 10, color: 'var(--primary)', marginTop: 2 }}>
+                        {fmt(getOtPay(req))} added to payroll
+                      </div>
+                    )}
                   </td>
                   <td>
                     {req.status === 'Pending' && (
@@ -170,11 +193,11 @@ export default function SpecialRequestsPage() {
                         <button
                           className="btn btn-sm btn-success"
                           title={
-                            req.request_type === 'Overtime'
-                              ? 'Approve — credits 1 comp-off day'
-                              : req.request_type === 'Comp Off'
-                                ? 'Approve — deducts 1 comp-off day'
-                                : 'Approve — full day, no deduction'
+                            req.request_type === 'Salary Overtime'
+                              ? `Approve — ${req.overtime_hours || 0}h overtime pay (est. ${fmt(getOtPay(req))})`
+                              : req.request_type === 'Late Arrival'
+                                ? 'Approve — full day, no deduction'
+                                : 'Approve'
                           }
                           onClick={() => handleStatusChange(req.id, 'Approved')}
                         >

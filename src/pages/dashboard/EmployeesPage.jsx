@@ -71,31 +71,26 @@ const EMPTY_FORM = {
   bank_acc: '', pan: '', aadhar: '', role: 'employee',
   weekly_holiday: 'Sunday', shift_id: '', leave_allocation: 0,
   country: 'India', passport_number: '', work_permit_number: '', work_permit_expiry: '',
+  compliance_enabled: false,
+  pf_enabled: false, pf_number: '', pf_amount: '',
+  esic_enabled: false, esic_number: '', esic_amount: '',
 };
 
-const isIndia = (country) => !country || country.trim().toLowerCase() === 'india';
-
 function getComplianceStatus(emp) {
-  if (isIndia(emp.country)) {
-    const hasPan = !!emp.pan;
-    const hasAadhar = !!emp.aadhar;
-    if (hasPan && hasAadhar) return 'compliant';
-    if (hasPan || hasAadhar) return 'partial';
-    return 'missing';
-  }
-  // International employee
-  if (emp.passport_number) return 'compliant';
-  return 'missing';
+  if (!emp.compliance_enabled) return 'na';
+  if (emp.pf_enabled && emp.pf_number) return 'compliant';
+  return 'partial';
 }
 
 const COMPLIANCE_BADGE = {
-  compliant: { label: 'Compliant', cls: 'badge-success' },
-  partial:   { label: 'Partial',   cls: 'badge-warning' },
-  missing:   { label: 'Docs Missing', cls: 'badge-danger' },
+  compliant: { label: 'PF Enrolled', cls: 'badge-success' },
+  partial:   { label: 'Compliance',  cls: 'badge-warning' },
+  na:        { label: 'N/A',         cls: 'badge-secondary' },
 };
 
 export default function EmployeesPage() {
-  const { tenant } = useAuth();
+  const { tenant, profile } = useAuth();
+  const isManager = profile?.role === 'manager';
 
   // ---- filter state ----
   const [search, setSearch] = useState('');
@@ -128,31 +123,33 @@ export default function EmployeesPage() {
   const fetchData = useCallback(async () => {
     if (!tenant) return;
     setLoading(true);
-    const [empRes, deptRes, shiftRes, attRes] = await Promise.all([
-      listEmployees(tenant.id, { page, search: debouncedSearch, department: deptFilter, status: statusFilter }),
-      listDepartments(tenant.id),
-      listShifts(tenant.id),
-      supabase
-        .from('attendance')
-        .select('profile_id, punches(punch_type)')
-        .eq('tenant_id', tenant.id)
-        .eq('date', todayStr()),
-    ]);
-    setEmployees(empRes.data);
-    setTotalCount(empRes.count);
-    setDepartments((deptRes.data || []).map((d) => d.name));
-    setShifts(shiftRes.data || []);
+    try {
+      const [empRes, deptRes, shiftRes, attRes] = await Promise.all([
+        listEmployees(tenant.id, { page, search: debouncedSearch, department: deptFilter, status: statusFilter }),
+        listDepartments(tenant.id),
+        listShifts(tenant.id),
+        supabase
+          .from('attendance')
+          .select('profile_id, punches(punch_type)')
+          .eq('tenant_id', tenant.id)
+          .eq('date', todayStr()),
+      ]);
+      setEmployees(empRes.data);
+      setTotalCount(empRes.count);
+      setDepartments((deptRes.data || []).map((d) => d.name));
+      setShifts(shiftRes.data || []);
 
-    // Build set of profile_ids who are currently clocked in (more ins than outs today)
-    const working = new Set();
-    (attRes.data || []).forEach((rec) => {
-      const ins  = (rec.punches || []).filter((p) => p.punch_type === 'in').length;
-      const outs = (rec.punches || []).filter((p) => p.punch_type === 'out').length;
-      if (ins > outs) working.add(rec.profile_id);
-    });
-    setClockedInSet(working);
-
-    setLoading(false);
+      // Build set of profile_ids who are currently clocked in (more ins than outs today)
+      const working = new Set();
+      (attRes.data || []).forEach((rec) => {
+        const ins  = (rec.punches || []).filter((p) => p.punch_type === 'in').length;
+        const outs = (rec.punches || []).filter((p) => p.punch_type === 'out').length;
+        if (ins > outs) working.add(rec.profile_id);
+      });
+      setClockedInSet(working);
+    } finally {
+      setLoading(false);
+    }
   }, [tenant, page, debouncedSearch, deptFilter, statusFilter]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
@@ -179,6 +176,13 @@ export default function EmployeesPage() {
       passport_number: emp.passport_number || '',
       work_permit_number: emp.work_permit_number || '',
       work_permit_expiry: emp.work_permit_expiry || '',
+      compliance_enabled: emp.compliance_enabled || false,
+      pf_enabled:  emp.pf_enabled  || false,
+      pf_number:   emp.pf_number   || '',
+      pf_amount:   emp.pf_amount   || '',
+      esic_enabled: emp.esic_enabled || false,
+      esic_number:  emp.esic_number  || '',
+      esic_amount:  emp.esic_amount  || '',
     } : EMPTY_FORM);
     setShowModal(true);
   };
@@ -205,17 +209,6 @@ export default function EmployeesPage() {
     if (!form.bank_acc) return showToast('Bank account details are mandatory', 'error');
     if (!form.ctc || parseFloat(form.ctc) <= 0) return showToast('Valid Monthly CTC is required', 'error');
 
-    const empCountry = (form.country || 'India').trim();
-    if (isIndia(empCountry)) {
-      if (!form.pan && !form.aadhar) {
-        showToast('Compliance warning: PAN and Aadhar are missing for an India-based employee. Please add at least one document.', 'warning');
-      }
-    } else {
-      if (!form.passport_number) {
-        showToast('Compliance warning: Passport number is missing for an international employee.', 'warning');
-      }
-    }
-
     const profileData = {
       first_name: form.first_name.trim(),
       last_name: form.last_name.trim(),
@@ -226,16 +219,23 @@ export default function EmployeesPage() {
       join_date: form.join_date || null,
       ctc: parseFloat(form.ctc) || 0,
       bank_acc: form.bank_acc.trim(),
-      pan: isIndia(empCountry) ? form.pan.trim() : '',
-      aadhar: isIndia(empCountry) ? form.aadhar.trim() : '',
-      country: empCountry,
-      passport_number: !isIndia(empCountry) ? (form.passport_number || '').trim() : '',
-      work_permit_number: !isIndia(empCountry) ? (form.work_permit_number || '').trim() : '',
-      work_permit_expiry: !isIndia(empCountry) ? (form.work_permit_expiry || null) : null,
+      pan: form.pan.trim(),
+      aadhar: form.aadhar.trim(),
+      country: (form.country || 'India').trim(),
+      passport_number: (form.passport_number || '').trim(),
+      work_permit_number: (form.work_permit_number || '').trim(),
+      work_permit_expiry: form.work_permit_expiry || null,
       role: form.role || 'employee',
       weekly_holiday: form.weekly_holiday,
       shift_id: form.shift_id || null,
       leave_allocation: parseInt(form.leave_allocation, 10) || 0,
+      compliance_enabled: form.compliance_enabled || false,
+      pf_enabled:  form.compliance_enabled ? (form.pf_enabled || false) : false,
+      pf_number:   form.compliance_enabled && form.pf_enabled ? form.pf_number.trim() : '',
+      pf_amount:   form.compliance_enabled && form.pf_enabled ? (parseFloat(form.pf_amount) || 0) : 0,
+      esic_enabled: form.compliance_enabled && form.pf_enabled ? (form.esic_enabled || false) : false,
+      esic_number:  form.compliance_enabled && form.pf_enabled && form.esic_enabled ? form.esic_number.trim() : '',
+      esic_amount:  form.compliance_enabled && form.pf_enabled && form.esic_enabled ? (parseFloat(form.esic_amount) || 0) : 0,
     };
 
     setSaving(true);
@@ -501,18 +501,20 @@ export default function EmployeesPage() {
             onChange={(e) => setSearch(e.target.value)}
             style={{ minWidth: 220 }}
           />
-          <div style={{ marginLeft: 'auto', display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
-            <button className="btn btn-outline" onClick={() => document.getElementById('import-csv').click()}>
-              <i className="fas fa-file-import" /> Import CSV / XLSX
-            </button>
-            <input id="import-csv" type="file" accept=".csv,.txt,.xlsx,.xls,.xlsm" style={{ display: 'none' }} onChange={handleImport} />
-            <button className="btn btn-outline" onClick={downloadSampleCSV}>
-              <i className="fas fa-file-csv" /> Sample CSV
-            </button>
-            <button className="btn btn-primary" onClick={() => openModal()}>
-              <i className="fas fa-plus" /> Add Employee
-            </button>
-          </div>
+          {!isManager && (
+            <div style={{ marginLeft: 'auto', display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+              <button className="btn btn-outline" onClick={() => document.getElementById('import-csv').click()}>
+                <i className="fas fa-file-import" /> Import CSV / XLSX
+              </button>
+              <input id="import-csv" type="file" accept=".csv,.txt,.xlsx,.xls,.xlsm" style={{ display: 'none' }} onChange={handleImport} />
+              <button className="btn btn-outline" onClick={downloadSampleCSV}>
+                <i className="fas fa-file-csv" /> Sample CSV
+              </button>
+              <button className="btn btn-primary" onClick={() => openModal()}>
+                <i className="fas fa-plus" /> Add Employee
+              </button>
+            </div>
+          )}
         </div>
 
         {loading ? (
@@ -559,9 +561,9 @@ export default function EmployeesPage() {
                         {(() => {
                           const cs = getComplianceStatus(e);
                           const { label, cls } = COMPLIANCE_BADGE[cs];
-                          const tip = isIndia(e.country)
-                            ? `India — PAN: ${e.pan || 'missing'}, Aadhar: ${e.aadhar || 'missing'}`
-                            : `${e.country || 'International'} — Passport: ${e.passport_number || 'missing'}`;
+                          const tip = !e.compliance_enabled
+                            ? 'Compliance not enabled'
+                            : `PF: ${e.pf_enabled ? (e.pf_number || 'no number') : 'N/A'} | ESIC: ${e.esic_enabled ? (e.esic_number || 'no number') : 'N/A'}`;
                           return <span className={`badge ${cls}`} title={tip}>{label}</span>;
                         })()}
                       </td>
@@ -573,10 +575,10 @@ export default function EmployeesPage() {
                       </td>
                       <td>
                         <div style={{ display: 'flex', gap: 4 }}>
-                          <button className="btn btn-outline btn-icon btn-sm" onClick={() => openModal(e)} title="Edit"><i className="fas fa-edit" /></button>
+                          {!isManager && <button className="btn btn-outline btn-icon btn-sm" onClick={() => openModal(e)} title="Edit"><i className="fas fa-edit" /></button>}
                           <button className="btn btn-outline btn-icon btn-sm" onClick={() => showCredentials(e)} title="Show Credentials"><i className="fas fa-key" /></button>
-                          <button className="btn btn-outline btn-icon btn-sm" onClick={() => toggleStatus(e)} title="Toggle Status"><i className="fas fa-power-off" /></button>
-                          <button className="btn btn-outline btn-icon btn-sm" style={{ color: 'var(--danger)' }} onClick={() => deleteEmp(e)} title="Delete"><i className="fas fa-trash" /></button>
+                          {!isManager && <button className="btn btn-outline btn-icon btn-sm" onClick={() => toggleStatus(e)} title="Toggle Status"><i className="fas fa-power-off" /></button>}
+                          {!isManager && <button className="btn btn-outline btn-icon btn-sm" style={{ color: 'var(--danger)' }} onClick={() => deleteEmp(e)} title="Delete"><i className="fas fa-trash" /></button>}
                         </div>
                       </td>
                     </tr>
@@ -631,56 +633,91 @@ export default function EmployeesPage() {
           </div>
 
           {/* Compliance Section */}
-          <div style={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', padding: '14px 16px', marginTop: 8 }}>
-            <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 12 }}>
-              <i className="fas fa-shield-alt" style={{ marginRight: 6, color: 'var(--primary)' }} />
-              Compliance &amp; Identity Documents
-            </div>
-            <div className="form-group" style={{ marginBottom: 12 }}>
-              <label className="form-label">Country of Residence</label>
+          <div className="form-group" style={{ marginTop: 4 }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', userSelect: 'none' }}>
               <input
-                className="form-input"
-                value={form.country}
-                onChange={(e) => setForm({ ...form, country: e.target.value })}
-                placeholder="e.g. India, United Kingdom, USA"
+                type="checkbox"
+                checked={form.compliance_enabled}
+                onChange={(e) => setForm({ ...form, compliance_enabled: e.target.checked, pf_enabled: false, esic_enabled: false })}
               />
-              <div className="form-hint">Set to &quot;India&quot; for Indian employees — PAN &amp; Aadhar will be required. Other countries need Passport details.</div>
-            </div>
-
-            {isIndia(form.country) ? (
-              <div className="form-row">
-                <div className="form-group">
-                  <label className="form-label">PAN Card</label>
-                  <input className="form-input" value={form.pan} onChange={(e) => setForm({ ...form, pan: e.target.value })} placeholder="e.g. ABCDE1234F" />
-                </div>
-                <div className="form-group">
-                  <label className="form-label">Aadhar Number</label>
-                  <input className="form-input" value={form.aadhar} onChange={(e) => setForm({ ...form, aadhar: e.target.value })} placeholder="12-digit Aadhar" />
-                </div>
-              </div>
-            ) : (
-              <>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, padding: '6px 10px', background: 'rgba(var(--primary-rgb, 59,130,246), 0.08)', borderRadius: 'var(--radius-sm)', fontSize: 12, color: 'var(--text-muted)' }}>
-                  <i className="fas fa-info-circle" style={{ color: 'var(--primary)' }} />
-                  International employee — Aadhar &amp; PAN not applicable. Please provide passport details.
-                </div>
-                <div className="form-row">
-                  <div className="form-group">
-                    <label className="form-label">Passport Number</label>
-                    <input className="form-input" value={form.passport_number} onChange={(e) => setForm({ ...form, passport_number: e.target.value })} placeholder="e.g. P1234567" />
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">Work Permit Number</label>
-                    <input className="form-input" value={form.work_permit_number} onChange={(e) => setForm({ ...form, work_permit_number: e.target.value })} placeholder="Optional" />
-                  </div>
-                </div>
-                <div className="form-group">
-                  <label className="form-label">Work Permit Expiry Date</label>
-                  <input className="form-input" type="date" value={form.work_permit_expiry} onChange={(e) => setForm({ ...form, work_permit_expiry: e.target.value })} />
-                </div>
-              </>
-            )}
+              <span className="form-label" style={{ margin: 0 }}>Compliance</span>
+            </label>
           </div>
+
+          {form.compliance_enabled && (
+            <div className="form-group" style={{ marginLeft: 20 }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', userSelect: 'none' }}>
+                <input
+                  type="checkbox"
+                  checked={form.pf_enabled}
+                  onChange={(e) => setForm({ ...form, pf_enabled: e.target.checked, esic_enabled: e.target.checked ? form.esic_enabled : false })}
+                />
+                <span className="form-label" style={{ margin: 0 }}>PF Account</span>
+              </label>
+
+              {form.pf_enabled && (
+                <>
+                  <div className="form-row" style={{ marginTop: 10 }}>
+                    <div className="form-group">
+                      <label className="form-label">PF Amount (₹)</label>
+                      <input
+                        className="form-input"
+                        type="number" min="0"
+                        value={form.pf_amount}
+                        onChange={(e) => setForm({ ...form, pf_amount: e.target.value })}
+                        placeholder="e.g. 1800"
+                      />
+                      <div className="form-hint">Auto at payroll: 12% if CTC ≤ ₹15,000, else ₹1,800</div>
+                    </div>
+                    <div className="form-group">
+                      <label className="form-label">PF Number</label>
+                      <input
+                        className="form-input"
+                        value={form.pf_number}
+                        onChange={(e) => setForm({ ...form, pf_number: e.target.value })}
+                        placeholder="e.g. MH/BAN/1234567/000/0000001"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="form-group" style={{ marginLeft: 20 }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', userSelect: 'none' }}>
+                      <input
+                        type="checkbox"
+                        checked={form.esic_enabled}
+                        onChange={(e) => setForm({ ...form, esic_enabled: e.target.checked })}
+                      />
+                      <span className="form-label" style={{ margin: 0 }}>ESIC</span>
+                    </label>
+
+                    {form.esic_enabled && (
+                      <div className="form-row" style={{ marginTop: 10 }}>
+                        <div className="form-group">
+                          <label className="form-label">ESIC Amount (₹)</label>
+                          <input
+                            className="form-input"
+                            type="number" min="0"
+                            value={form.esic_amount}
+                            onChange={(e) => setForm({ ...form, esic_amount: e.target.value })}
+                            placeholder="e.g. 325"
+                          />
+                        </div>
+                        <div className="form-group">
+                          <label className="form-label">ESIC Number</label>
+                          <input
+                            className="form-input"
+                            value={form.esic_number}
+                            onChange={(e) => setForm({ ...form, esic_number: e.target.value })}
+                            placeholder="ESIC registration number"
+                          />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+          )}
 
           <hr style={{ border: 'none', borderTop: '1px solid var(--border)', margin: '16px 0' }} />
           <div className="form-row">

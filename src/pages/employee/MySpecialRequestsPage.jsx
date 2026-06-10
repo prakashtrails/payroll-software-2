@@ -3,29 +3,39 @@ import Header from '@/components/Header';
 import Modal from '@/components/Modal';
 import { showToast } from '@/components/Toast';
 import { useAuth } from '@/context/AuthContext';
-import { listMySpecialRequests, submitSpecialRequest, getCompOffBalance } from '@/services/specialRequestService';
-import { listHolidays } from '@/services/tenantService';
-import { fmt, todayStr } from '@/lib/helpers';
+import { listMySpecialRequests, submitSpecialRequest } from '@/services/specialRequestService';
+import { fmt, todayStr, calcPayableOvertimeHours, calcOtPay } from '@/lib/helpers';
+
+const SALARY_OT_LIMIT = 30000;
 
 const EMPTY_FORM = {
   request_type: 'Overtime',
   request_date: todayStr(),
   reason: '',
   late_hours: '0-10 min',
-  overtime_hours: 4,
+  ot_hours: 0,
+  ot_minutes: 45,
 };
 
 const TYPE_BADGE = {
   Overtime: 'badge-info',
+  'Salary Overtime': 'badge-purple',
   'Late Arrival': 'badge-warning',
-  'Comp Off': 'badge-success',
 };
+
+function calcShiftHours(tenant) {
+  if (!tenant?.shift_start || !tenant?.shift_end) return 8;
+  const [sh, sm] = tenant.shift_start.split(':').map(Number);
+  const [eh, em] = tenant.shift_end.split(':').map(Number);
+  let from = sh * 60 + sm, to = eh * 60 + em;
+  if (to <= from) to += 1440;
+  return (to - from) / 60;
+}
 
 export default function MySpecialRequestsPage() {
   const { profile, tenant } = useAuth();
+  const isOvertimeEligible = (profile?.ctc || 0) > 0 && (profile?.ctc || 0) < SALARY_OT_LIMIT;
   const [requests, setRequests] = useState([]);
-  const [holidays, setHolidays] = useState([]);
-  const [compOffBalance, setCompOffBalance] = useState(0);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
   const [form, setForm] = useState(EMPTY_FORM);
@@ -35,27 +45,16 @@ export default function MySpecialRequestsPage() {
   const fetchRequests = useCallback(async () => {
     if (!profile) return;
     setLoading(true);
-    const { data, error } = await listMySpecialRequests(profile.id);
-    if (error) showToast(error.message, 'error');
-    else setRequests(data);
-    setLoading(false);
+    try {
+      const { data, error } = await listMySpecialRequests(profile.id);
+      if (error) showToast(error.message, 'error');
+      else setRequests(data);
+    } finally {
+      setLoading(false);
+    }
   }, [profile]);
-
-  const fetchBalance = useCallback(async () => {
-    if (!profile) return;
-    const { balance } = await getCompOffBalance(profile.id);
-    setCompOffBalance(balance);
-  }, [profile]);
-
-  const fetchHolidayList = useCallback(async () => {
-    if (!tenant) return;
-    const { data } = await listHolidays(tenant.id);
-    setHolidays((data || []).filter(h => (h.status === 'Approved' || !h.status)));
-  }, [tenant]);
 
   useEffect(() => { fetchRequests(); }, [fetchRequests]);
-  useEffect(() => { fetchBalance(); }, [fetchBalance]);
-  useEffect(() => { fetchHolidayList(); }, [fetchHolidayList]);
 
   const openModal = () => {
     setForm(EMPTY_FORM);
@@ -66,21 +65,37 @@ export default function MySpecialRequestsPage() {
     e.preventDefault();
     if (!form.reason.trim()) return showToast('Please provide a reason', 'error');
     if (!form.request_date) return showToast('Please select a date', 'error');
-    if (form.request_type === 'Comp Off' && compOffBalance <= 0) {
-      return showToast('You have no comp-off days available', 'error');
-    }
 
     setSaving(true);
     try {
       if (!tenant) throw new Error('You do not belong to any workspace. Please contact your administrator.');
 
+      const totalOtMinutes = form.request_type === 'Salary Overtime'
+        ? (parseInt(form.ot_hours, 10) || 0) * 60 + (parseInt(form.ot_minutes, 10) || 0)
+        : null;
+      const payableHours = totalOtMinutes != null ? calcPayableOvertimeHours(totalOtMinutes) : null;
+
+      if (form.request_type === 'Salary Overtime' && payableHours === 0) {
+        setSaving(false);
+        return showToast('Minimum 45 minutes of overtime is required for this request', 'error');
+      }
+
+      const shiftHrs    = calcShiftHours(tenant);
+      const storedOtPay = form.request_type === 'Salary Overtime'
+        ? calcOtPay(profile?.ctc || 0, shiftHrs, payableHours)
+        : null;
+
       const payload = {
-        ...form,
-        profile_id: profile.id,
-        tenant_id: tenant.id,
-        status: 'Pending',
-        late_hours: form.request_type === 'Late Arrival' ? Number(form.late_hours) : null,
-        overtime_hours: form.request_type === 'Overtime' ? Number(form.overtime_hours) : null,
+        profile_id:       profile.id,
+        tenant_id:        tenant.id,
+        request_type:     form.request_type,
+        request_date:     form.request_date,
+        reason:           form.reason.trim(),
+        status:           'Pending',
+        late_hours:       form.request_type === 'Late Arrival'    ? form.late_hours : null,
+        overtime_hours:   form.request_type === 'Salary Overtime' ? payableHours    : null,
+        overtime_minutes: form.request_type === 'Salary Overtime' ? totalOtMinutes  : null,
+        overtime_pay:     storedOtPay,
       };
 
       const { error } = await submitSpecialRequest(payload);
@@ -109,23 +124,9 @@ export default function MySpecialRequestsPage() {
         title="Special Requests"
         breadcrumb="My Space / Special Requests"
         actions={
-          <div className="flex gap-2" style={{ alignItems: 'center' }}>
-            {compOffBalance > 0 && (
-              <span style={{
-                display: 'inline-flex', alignItems: 'center', gap: 6,
-                background: 'var(--success-light, #d1fae5)',
-                color: 'var(--success)',
-                border: '1px solid var(--success)',
-                borderRadius: 20, padding: '4px 12px', fontSize: 12, fontWeight: 600,
-              }}>
-                <i className="fas fa-umbrella-beach" />
-                {compOffBalance} Comp Off day{compOffBalance !== 1 ? 's' : ''} available
-              </span>
-            )}
-            <button className="btn btn-primary" onClick={openModal}>
-              <i className="fas fa-plus" /> New Request
-            </button>
-          </div>
+          <button className="btn btn-primary" onClick={openModal}>
+            <i className="fas fa-plus" /> New Request
+          </button>
         }
       />
 
@@ -133,7 +134,7 @@ export default function MySpecialRequestsPage() {
         <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
           <h3 style={{ margin: 0 }}>My Requests</h3>
           <div className="flex gap-1" style={{ flexWrap: 'wrap' }}>
-            {['All', 'Pending', 'Approved', 'Rejected', 'Overtime', 'Late Arrival', 'Comp Off'].map(f => (
+            {['All', 'Pending', 'Approved', 'Rejected', 'Overtime', 'Salary Overtime', 'Late Arrival'].map(f => (
               <button
                 key={f}
                 className={`btn btn-sm ${filter === f ? 'btn-primary' : 'btn-outline'}`}
@@ -173,9 +174,14 @@ export default function MySpecialRequestsPage() {
                   <td style={{ fontSize: 12, color: 'var(--text-muted)' }}>
                     {req.request_type === 'Late Arrival'
                       ? req.late_hours
-                      : req.request_type === 'Overtime'
-                        ? `${req.overtime_hours}h overtime`
-                        : 'Comp off day'}
+                      : req.request_type === 'Salary Overtime'
+                        ? (() => {
+                            const m = req.overtime_minutes || 0;
+                            const h = Math.floor(m / 60), min = m % 60;
+                            const payable = req.overtime_hours || 0;
+                            return `${h}h ${min}m worked → ${payable}h payable`;
+                          })()
+                        : 'Overtime day'}
                   </td>
                   <td style={{ maxWidth: 220, fontSize: 12 }}>{req.reason}</td>
                   <td>
@@ -186,19 +192,9 @@ export default function MySpecialRequestsPage() {
                     }`}>
                       {req.status}
                     </span>
-                    {req.status === 'Approved' && req.request_type !== 'Comp Off' && (
-                      <div style={{ fontSize: 10, color: 'var(--success)', marginTop: 2 }}>
-                        Full day — no deduction
-                      </div>
-                    )}
-                    {req.status === 'Approved' && req.request_type === 'Comp Off' && (
-                      <div style={{ fontSize: 10, color: 'var(--success)', marginTop: 2 }}>
-                        Comp off used
-                      </div>
-                    )}
-                    {req.status === 'Approved' && req.request_type === 'Overtime' && (
+                    {req.status === 'Approved' && req.request_type === 'Salary Overtime' && (
                       <div style={{ fontSize: 10, color: 'var(--primary)', marginTop: 2 }}>
-                        +1 comp off credited
+                        {req.overtime_hours}h overtime pay approved
                       </div>
                     )}
                   </td>
@@ -230,76 +226,114 @@ export default function MySpecialRequestsPage() {
             value={form.request_type}
             onChange={e => setForm({ ...form, request_type: e.target.value })}
           >
-            <option value="Overtime">Overtime on Holiday</option>
+            <option value="Overtime">Overtime</option>
+            {isOvertimeEligible && (
+              <option value="Salary Overtime">Salary Overtime (extra hours pay)</option>
+            )}
             <option value="Late Arrival">Late Arrival</option>
-            <option value="Comp Off" disabled={compOffBalance <= 0}>
-              Comp Off{compOffBalance > 0 ? ` (${compOffBalance} available)` : ' (no balance)'}
-            </option>
           </select>
         </div>
 
         {form.request_type === 'Overtime' && (
-          <>
-            <div className="form-group">
-              <label className="form-label">Holiday Date</label>
-              {holidays.length > 0 ? (
-                <select
-                  className="form-select"
-                  value={form.request_date}
-                  onChange={e => setForm({ ...form, request_date: e.target.value })}
-                >
-                  <option value="">— Select a holiday —</option>
-                  {holidays.map(h => (
-                    <option key={h.id} value={h.holiday_date || h.date}>
-                      {fmt.date(h.holiday_date || h.date)} — {h.name}
-                    </option>
-                  ))}
-                </select>
-              ) : (
-                <input
-                  type="date"
-                  className="form-input"
-                  value={form.request_date}
-                  onChange={e => setForm({ ...form, request_date: e.target.value })}
-                />
-              )}
-            </div>
-            <div className="form-group">
-              <label className="form-label">Expected Overtime Hours</label>
-              <select
-                className="form-select"
-                value={form.overtime_hours}
-                onChange={e => setForm({ ...form, overtime_hours: e.target.value })}
-              >
-                {[1, 2, 3, 4, 5, 6, 7, 8].map(h => (
-                  <option key={h} value={h}>{h} hour{h > 1 ? 's' : ''}</option>
-                ))}
-              </select>
-            </div>
-            <div style={{
-              background: 'var(--bg-card)',
-              border: '1px solid var(--border)',
-              borderRadius: 8,
-              padding: '10px 14px',
-              fontSize: 12,
-              color: 'var(--text-muted)',
-            }}>
-              <i className="fas fa-info-circle" style={{ marginRight: 6 }} />
-              If approved, you will earn 1 comp-off day.
-            </div>
-          </>
+          <div className="form-group">
+            <label className="form-label">Date</label>
+            <input type="date" className="form-input" value={form.request_date}
+              onChange={e => setForm({ ...form, request_date: e.target.value })} />
+          </div>
         )}
+
+        {form.request_type === 'Salary Overtime' && (() => {
+          const totalMin = (parseInt(form.ot_hours, 10) || 0) * 60 + (parseInt(form.ot_minutes, 10) || 0);
+          const payable  = calcPayableOvertimeHours(totalMin);
+          const shiftHrs = calcShiftHours(tenant);
+          const otPay    = calcOtPay(profile?.ctc || 0, shiftHrs, payable);
+
+          const shiftEndLabel = (() => {
+            if (!tenant?.shift_end) return null;
+            const [h, m] = tenant.shift_end.split(':').map(Number);
+            const ap = h >= 12 ? 'PM' : 'AM';
+            return `${h % 12 || 12}:${String(m).padStart(2, '0')} ${ap}`;
+          })();
+
+          return (
+            <>
+              {shiftEndLabel && (
+                <div style={{
+                  background: 'var(--primary-light, #eff6ff)',
+                  border: '1px solid var(--primary)',
+                  borderRadius: 8, padding: '9px 13px', fontSize: 12,
+                  color: 'var(--primary)', marginBottom: 4,
+                }}>
+                  <i className="fas fa-info-circle" style={{ marginRight: 6 }} />
+                  Overtime starts after your shift ends at <strong>{shiftEndLabel}</strong>.
+                  Enter only the hours worked <em>after</em> that time.
+                </div>
+              )}
+              <div className="form-group">
+                <label className="form-label">Date of Overtime</label>
+                <input type="date" className="form-input" value={form.request_date}
+                  max={todayStr()}
+                  onChange={e => setForm({ ...form, request_date: e.target.value })} />
+              </div>
+              <div className="form-row">
+                <div className="form-group">
+                  <label className="form-label">Overtime Hours Worked</label>
+                  <select className="form-select" value={form.ot_hours}
+                    onChange={e => setForm({ ...form, ot_hours: e.target.value })}>
+                    {[0,1,2,3,4,5,6,7,8].map(h => (
+                      <option key={h} value={h}>{h} hr{h !== 1 ? 's' : ''}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="form-group">
+                  <label className="form-label">Extra Minutes</label>
+                  <select className="form-select" value={form.ot_minutes}
+                    onChange={e => setForm({ ...form, ot_minutes: e.target.value })}>
+                    {[0,15,30,45].map(m => (
+                      <option key={m} value={m}>{m} min</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div style={{
+                background: payable > 0 ? 'var(--success-light, #d1fae5)' : 'var(--bg)',
+                border: `1px solid ${payable > 0 ? 'var(--success)' : 'var(--border)'}`,
+                borderRadius: 8, padding: '12px 14px', fontSize: 13,
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+                  <span style={{ color: 'var(--text-muted)' }}>Actual time worked:</span>
+                  <strong>{Math.floor(totalMin / 60)}h {totalMin % 60}m</strong>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+                  <span style={{ color: 'var(--text-muted)' }}>Payable hours (rounded):</span>
+                  <strong style={{ color: payable > 0 ? 'var(--success)' : 'var(--danger)' }}>
+                    {payable} hr{payable !== 1 ? 's' : ''}
+                  </strong>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid var(--border)', paddingTop: 6, marginTop: 4 }}>
+                  <span style={{ color: 'var(--text-muted)' }}>Estimated overtime pay:</span>
+                  <strong style={{ color: 'var(--primary)', fontSize: 14 }}>
+                    {payable > 0 ? fmt(otPay) : '—'}
+                  </strong>
+                </div>
+                {payable === 0 && totalMin > 0 && (
+                  <div style={{ marginTop: 8, fontSize: 11, color: 'var(--danger)' }}>
+                    <i className="fas fa-exclamation-triangle" style={{ marginRight: 4 }} />
+                    Minimum 45 minutes required to count as 1 payable hour.
+                  </div>
+                )}
+              </div>
+            </>
+          );
+        })()}
 
         {form.request_type === 'Late Arrival' && (
           <>
             <div className="form-group">
               <label className="form-label">Date of Late Arrival</label>
-              <input
-                type="date"
-                className="form-input"
-                value={form.request_date}
-                onChange={e => setForm({ ...form, request_date: e.target.value })}
-              />
+              <input type="date" className="form-input" value={form.request_date}
+                onChange={e => setForm({ ...form, request_date: e.target.value })} />
             </div>
             <div className="form-group">
               <label className="form-label">How Late?</label>
@@ -324,32 +358,6 @@ export default function MySpecialRequestsPage() {
             }}>
               <i className="fas fa-info-circle" style={{ marginRight: 6 }} />
               If approved, you will be paid for the full day with no deduction.
-            </div>
-          </>
-        )}
-
-        {form.request_type === 'Comp Off' && (
-          <>
-            <div className="form-group">
-              <label className="form-label">Date to Take Off</label>
-              <input
-                type="date"
-                className="form-input"
-                value={form.request_date}
-                onChange={e => setForm({ ...form, request_date: e.target.value })}
-              />
-            </div>
-            <div style={{
-              background: 'var(--success-light, #d1fae5)',
-              border: '1px solid var(--success)',
-              borderRadius: 8,
-              padding: '10px 14px',
-              fontSize: 12,
-              color: 'var(--success)',
-            }}>
-              <i className="fas fa-umbrella-beach" style={{ marginRight: 6 }} />
-              You have <strong>{compOffBalance}</strong> comp-off day{compOffBalance !== 1 ? 's' : ''} available.
-              If approved, 1 day will be deducted from your balance.
             </div>
           </>
         )}

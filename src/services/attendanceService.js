@@ -285,6 +285,16 @@ export async function fetchAttendanceAuditLog(tenantId, date) {
   return { data: data || [], error };
 }
 
+/** Fetch all attendance records with punches for every employee in a tenant — used for master report. */
+export async function fetchAllAttendanceWithPunches(tenantId) {
+  const { data, error } = await supabase
+    .from('attendance')
+    .select('id, profile_id, date, status, total_hours, punches(punch_time, punch_type)')
+    .eq('tenant_id', tenantId)
+    .order('date');
+  return { data: data || [], error };
+}
+
 /** Fetch just the profile info for an employee (join_date, name, etc.) */
 export async function fetchEmployeeProfileInfo(profileId) {
   const { data, error } = await supabase
@@ -321,6 +331,83 @@ export async function fetchEmployeeFullHistory(profileId) {
 
   return { data: allRecords || [], profile: prof, fromDate, error };
 }
+
+// ── Regularization Requests (employee-initiated) ──────────────────────────────
+
+/** Employee submits a request to regularize attendance for a specific day */
+export async function submitRegularizeRequest(tenantId, profileId, { date, clockInTime, clockOutTime, reason }) {
+  const { data, error } = await supabase
+    .from('regularize_requests')
+    .insert([{
+      tenant_id:      tenantId,
+      profile_id:     profileId,
+      date,
+      clock_in_time:  clockInTime  || null,
+      clock_out_time: clockOutTime || null,
+      reason,
+      status: 'Pending',
+    }])
+    .select()
+    .single();
+  return { data, error };
+}
+
+/** Admin/Manager: list all regularization requests for a tenant */
+export async function listRegularizeRequests(tenantId) {
+  const { data, error } = await supabase
+    .from('regularize_requests')
+    .select(`
+      *,
+      profile:profiles!regularize_requests_profile_id_fkey(first_name, last_name, department, designation),
+      reviewer:profiles!regularize_requests_reviewed_by_fkey(first_name, last_name, role)
+    `)
+    .eq('tenant_id', tenantId)
+    .order('created_at', { ascending: false });
+  return { data: data || [], error };
+}
+
+/** Employee: list their own regularization requests */
+export async function listMyRegularizeRequests(profileId) {
+  const { data, error } = await supabase
+    .from('regularize_requests')
+    .select('*')
+    .eq('profile_id', profileId)
+    .order('created_at', { ascending: false })
+    .limit(20);
+  return { data: data || [], error };
+}
+
+/** Approve a request: apply attendance change then mark Approved */
+export async function approveRegularizeRequest(request, reviewerId) {
+  await regularizeAttendance(request.tenant_id, {
+    fromDate:     request.date,
+    toDate:       request.date,
+    employeeIds:  [request.profile_id],
+    status:       'Present',
+    clockInTime:  request.clock_in_time,
+    clockOutTime: request.clock_out_time,
+    reason:       request.reason,
+    changedBy:    reviewerId,
+  });
+  const reviewedAt = new Date().toISOString();
+  const { error } = await supabase
+    .from('regularize_requests')
+    .update({ status: 'Approved', reviewed_by: reviewerId, reviewed_at: reviewedAt })
+    .eq('id', request.id);
+  return { error };
+}
+
+/** Reject a regularization request */
+export async function rejectRegularizeRequest(requestId, reviewerId) {
+  const reviewedAt = new Date().toISOString();
+  const { error } = await supabase
+    .from('regularize_requests')
+    .update({ status: 'Rejected', reviewed_by: reviewerId, reviewed_at: reviewedAt })
+    .eq('id', requestId);
+  return { error };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 /** Bulk regularize attendance for multiple employees across a date range */
 export async function regularizeAttendance(tenantId, {

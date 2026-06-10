@@ -28,7 +28,7 @@ export default function AttendancePage() {
 
   // Manual attendance modal
   const [showManual, setShowManual] = useState(false);
-  const [manualForm, setManualForm] = useState({ profile_id: '', date: todayStr(), clockIn: '09:00', clockOut: '18:00', status: 'Present', reason: '' });
+  const [manualForm, setManualForm] = useState({ profile_id: '', date: todayStr(), clockIn: '', clockOut: '', status: 'Present', reason: '' });
   const [employees, setEmployees] = useState([]);
 
   // Audit log
@@ -290,7 +290,7 @@ export default function AttendancePage() {
               </select>
               <input className="form-input" type="date" value={teamDate} onChange={(e) => setTeamDate(e.target.value)} style={{ width: 'auto' }} />
               <div style={{ marginLeft: 'auto' }}>
-                <button className="btn btn-primary" onClick={() => { setManualForm({ profile_id: '', date: teamDate, clockIn: '09:00', clockOut: '18:00', status: 'Present', reason: '' }); setShowManual(true); }}>
+                <button className="btn btn-primary" onClick={() => { setManualForm({ profile_id: '', date: teamDate, clockIn: tenant?.shift_start || '', clockOut: tenant?.shift_end || '', status: 'Present', reason: '' }); setShowManual(true); }}>
                   <i className="fas fa-plus" /> Mark Attendance
                 </button>
               </div>
@@ -328,7 +328,7 @@ export default function AttendancePage() {
                         <td>{r.hours}</td>
                         <td><span className={`badge ${r.badgeCls}`}>{r.status}</span></td>
                         <td>
-                          <button className="btn btn-outline btn-sm" onClick={() => { setManualForm({ profile_id: r.id, date: teamDate, clockIn: '09:00', clockOut: '18:00', status: 'Present', reason: '' }); setShowManual(true); }}>
+                          <button className="btn btn-outline btn-sm" onClick={() => { setManualForm({ profile_id: r.id, date: teamDate, clockIn: tenant?.shift_start || '', clockOut: tenant?.shift_end || '', status: 'Present', reason: '' }); setShowManual(true); }}>
                             <i className="fas fa-edit" />
                           </button>
                         </td>

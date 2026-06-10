@@ -100,3 +100,71 @@ export function calcSalary(ctc, components, totalWorkDays, actualDays) {
 
   return { earnings, deductions, totalEarning, totalDeduction, net: totalEarning - totalDeduction };
 }
+
+/**
+ * Salary overtime rounding: breakpoint at 45 min.
+ *   0–44 min  → 0 h    45–1h44 → 1 h    1h45–2h44 → 2 h  ...
+ * Formula: floor((minutes + 15) / 60)
+ */
+export function calcPayableOvertimeHours(minutes) {
+  if (!minutes || minutes <= 0) return 0;
+  return Math.floor((minutes + 15) / 60);
+}
+
+/**
+ * Overtime pay = (CTC × 0.5) / (30 days × shift hours) × payable OT hours
+ * i.e. 50 % of the normal hourly rate per overtime hour.
+ */
+export function calcOtPay(ctc, shiftHours, payableHours) {
+  if (!ctc || !payableHours) return 0;
+  return Math.round((ctc * 0.5) / 30 / (shiftHours || 8) * payableHours);
+}
+
+// ── Weekly Off Comp Off helpers ───────────────────────────────────────────────
+
+export const HIGH_SALARY_THRESHOLD = 30000;
+
+/** Returns all calendar dates in a month that fall on the given weekday (0=Sun…6=Sat). */
+export function getWeeklyOffDaysInMonth(year, month, weeklyOffDay) {
+  const days = [];
+  for (let d = new Date(year, month, 1); d.getMonth() === month; d.setDate(d.getDate() + 1)) {
+    if (d.getDay() === weeklyOffDay) days.push(dateStr(d));
+  }
+  return days;
+}
+
+/**
+ * Determines the monthly comp off settlement outcome for a high-salary employee.
+ *
+ * Rules:
+ * - 0 WOs worked        → 'none'     (no impact)
+ * - comp leaves ≥ WOs worked → 'balanced' (leaves offset the missed WOs)
+ * - ALL WOs in month worked AND 0 comp leaves taken → 'credited' (+1 comp off, 1-yr validity)
+ * - All other partial cases → 'expired' (unused comp offs expire, no carry-over)
+ */
+export function calcWeeklyOffSettlement(weeklyOffsWorked, totalWOsInMonth, compLeavesUsed) {
+  if (weeklyOffsWorked === 0) return { type: 'none', credit: 0 };
+  if (compLeavesUsed >= weeklyOffsWorked) return { type: 'balanced', credit: 0 };
+  if (weeklyOffsWorked >= totalWOsInMonth && compLeavesUsed === 0) return { type: 'credited', credit: 1 };
+  return { type: 'expired', credit: 0 };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+// PF deduction: 12% of CTC if CTC ≤ ₹15,000, else ₹1,800 (both pro-rated by work days)
+// ESIC: uses the per-employee esic_amount (pro-rated)
+export function calcPfEsic(emp, ctc, actualDays, totalWorkDays) {
+  const ratio = actualDays / (totalWorkDays || 1);
+  const deductions = [];
+
+  if (emp?.pf_enabled) {
+    const pfBase = ctc <= 15000 ? ctc * 0.12 : 1800;
+    deductions.push({ name: 'PF', amount: Math.round(pfBase * ratio) });
+  }
+
+  if (emp?.esic_enabled && (emp?.esic_amount || 0) > 0) {
+    deductions.push({ name: 'ESIC', amount: Math.round((emp.esic_amount || 0) * ratio) });
+  }
+
+  return deductions;
+}
