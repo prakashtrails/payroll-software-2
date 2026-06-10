@@ -7,7 +7,7 @@ import { listActiveEmployees } from '@/services/employeeService';
 import { fetchAllAttendanceWithPunches } from '@/services/attendanceService';
 import { fetchAllPayslipsForReport } from '@/services/payrollService';
 import { listAllLeaveRequests } from '@/services/leaveService';
-import { fmt, getInitials, getAvatarColor, fmtTime12, dateStr } from '@/lib/helpers';
+import { fmtTime12, dateStr } from '@/lib/helpers';
 
 function getFirstIn(punches) {
   return (punches || [])
@@ -22,21 +22,75 @@ function getLastOut(punches) {
   return outs[outs.length - 1]?.punch_time || null;
 }
 
-function monthLabel(key) {
-  // key = "YYYY-M" (1-based month)
-  const [y, m] = key.split('-').map(Number);
-  return new Date(y, m - 1).toLocaleDateString('en-IN', { month: 'short', year: 'numeric' });
+function colLetter(n) {
+  let s = '';
+  while (n > 0) {
+    const c = (n - 1) % 26;
+    s = String.fromCharCode(65 + c) + s;
+    n = Math.floor((n - 1) / 26);
+  }
+  return s;
+}
+
+function applySheetMeta(ws, colCount, dataRowCount) {
+  ws['!freeze'] = { xSplit: 0, ySplit: 1 };
+  if (dataRowCount > 0) {
+    ws['!autofilter'] = { ref: `A1:${colLetter(colCount)}1` };
+  }
 }
 
 function setColWidths(ws, widths) {
   ws['!cols'] = widths.map(w => ({ wch: w }));
 }
 
+const REPORT_CONFIGS = [
+  {
+    id: 'employee_details',
+    label: 'Employee Details',
+    icon: 'fa-id-card',
+    desc: 'Full employee profiles — department, designation, join date, CTC, PF/ESIC compliance, and leave allocation.',
+    sheetName: 'Employee Details',
+    filename: 'employee_details',
+    iconBg: 'var(--primary-light)',
+    iconFg: 'var(--primary)',
+  },
+  {
+    id: 'attendance_log',
+    label: 'Attendance Log',
+    icon: 'fa-calendar-check',
+    desc: 'Daily attendance records with punch-in/out times, status, and hours worked for all employees.',
+    sheetName: 'Attendance Log',
+    filename: 'attendance_log',
+    iconBg: 'var(--success-light)',
+    iconFg: 'var(--success)',
+  },
+  {
+    id: 'monthly_payroll',
+    label: 'Monthly Payroll',
+    icon: 'fa-file-invoice',
+    desc: 'Month-wise net pay breakdown per employee, sorted newest month first.',
+    sheetName: 'Monthly Payroll',
+    filename: 'monthly_payroll',
+    iconBg: '#ede9fe',
+    iconFg: '#7c3aed',
+  },
+  {
+    id: 'leave_summary',
+    label: 'Leave Summary',
+    icon: 'fa-umbrella-beach',
+    desc: 'Leave allocation vs. approved / pending / rejected counts for the current calendar year.',
+    sheetName: 'Leave Summary',
+    filename: 'leave_summary',
+    iconBg: 'var(--warning-light)',
+    iconFg: 'var(--warning)',
+  },
+];
+
 export default function MasterReportPage() {
   const { tenant } = useAuth();
   const [employees, setEmployees] = useState([]);
   const [loading,   setLoading]   = useState(true);
-  const [exporting, setExporting] = useState(false);
+  const [exporting, setExporting] = useState(null); // null | 'all' | reportId
   const [summary,   setSummary]   = useState([]);
 
   const fetchData = useCallback(async () => {
@@ -55,14 +109,12 @@ export default function MasterReportPage() {
       const payrolls = payRes.data   || [];
       const leaves   = leaveRes.data || [];
 
-      // attendance map: empId → date → record
       const attMap = {};
       attAll.forEach(r => {
         if (!attMap[r.profile_id]) attMap[r.profile_id] = {};
         attMap[r.profile_id][r.date] = r;
       });
 
-      // payslip map: empId → "YYYY-M" → net_pay  (month is 1-based from DB)
       const payMap = {};
       payrolls.forEach(pr => {
         (pr.payslips || []).forEach(ps => {
@@ -72,37 +124,52 @@ export default function MasterReportPage() {
         });
       });
 
-      // leave usage map: empId → days used (approved, current calendar year)
       const thisYear = new Date().getFullYear();
-      const leaveUsed = {};
+      const leaveUsed  = {};
+      const leaveStats = {};
+
       leaves.forEach(lr => {
-        if (lr.status !== 'Approved') return;
         const yr = lr.start_date ? parseInt(lr.start_date.split('-')[0], 10) : 0;
         if (yr !== thisYear) return;
-        if (!leaveUsed[lr.profile_id]) leaveUsed[lr.profile_id] = 0;
-        leaveUsed[lr.profile_id] += lr.days_count || lr.days || 1;
+        const days   = lr.days_count || lr.days || 1;
+        const empId  = lr.profile_id;
+        const status = (lr.status || '').toLowerCase();
+        if (!leaveStats[empId]) leaveStats[empId] = { approved: 0, pending: 0, rejected: 0 };
+        if (status === 'approved') {
+          if (!leaveUsed[empId]) leaveUsed[empId] = 0;
+          leaveUsed[empId] += days;
+          leaveStats[empId].approved += days;
+        } else if (status === 'pending') {
+          leaveStats[empId].pending += days;
+        } else if (status === 'rejected') {
+          leaveStats[empId].rejected += days;
+        }
       });
 
       const rows = emps.map(emp => {
-        const empAtt       = attMap[emp.id] || {};
-        const attRecords   = Object.values(empAtt);
-        const presentDays  = attRecords.filter(r => r.status === 'Present' || r.status === 'Late').length;
-        const lateDays     = attRecords.filter(r => r.status === 'Late').length;
-        const halfDays     = attRecords.filter(r => r.status === 'Half Day').length;
-        const leaveDays    = attRecords.filter(r => r.status === 'Leave').length;
-        const empPayMap    = payMap[emp.id] || {};
-        const payValues    = Object.values(empPayMap);
+        const empAtt      = attMap[emp.id] || {};
+        const attRecords  = Object.values(empAtt);
+        const presentDays = attRecords.filter(r => r.status === 'Present' || r.status === 'Late').length;
+        const lateDays    = attRecords.filter(r => r.status === 'Late').length;
+        const halfDays    = attRecords.filter(r => r.status === 'Half Day').length;
+        const leaveDays   = attRecords.filter(r => r.status === 'Leave').length;
+        const empPayMap   = payMap[emp.id] || {};
+        const payValues   = Object.values(empPayMap);
         const totalNetPaid = payValues.reduce((s, v) => s + (v || 0), 0);
         const sortedKeys   = Object.keys(empPayMap).sort((a, b) => b.localeCompare(a));
         const lastPay      = sortedKeys.length ? empPayMap[sortedKeys[0]] : null;
         const usedThisYear = leaveUsed[emp.id] || 0;
         const leavesRemaining = Math.max(0, (emp.leave_allocation || 0) - usedThisYear);
+        const ls = leaveStats[emp.id] || { approved: 0, pending: 0, rejected: 0 };
 
         return {
           emp,
           presentDays, lateDays, halfDays, leaveDays,
           totalNetPaid, lastPay,
           usedThisYear, leavesRemaining,
+          leaveApproved: ls.approved,
+          leavePending:  ls.pending,
+          leaveRejected: ls.rejected,
           attMap: empAtt,
           payMap: empPayMap,
         };
@@ -119,92 +186,50 @@ export default function MasterReportPage() {
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
-  const handleExport = async () => {
-    if (summary.length === 0) return showToast('No data to export', 'warning');
-    setExporting(true);
-    try {
-      const wb = XLSX.utils.book_new();
-
-      // ── Sheet 1: Employee Summary ──────────────────────────────────────────
-      const s1Headers = [
-        'Employee Name', 'Designation', 'Department', 'Join Date',
-        'Compliance', 'PF Enabled', 'PF Amount (₹)', 'ESIC Enabled', 'ESIC Amount (₹)',
-        'Leave Allocation', 'Leaves Used (This Year)', 'Leaves Remaining',
-        'Total Present Days', 'Total Late Days', 'Total Half Days', 'Total Leave Days',
-        'Months Paid', 'Total Net Paid (₹)', 'Last Month Net Pay (₹)',
+  function buildSheet(reportId) {
+    if (reportId === 'employee_details') {
+      const headers = [
+        '#', 'Employee Name', 'Department', 'Designation', 'Join Date',
+        'CTC (₹)', 'PF Enabled', 'PF Amount (₹)', 'ESIC Enabled', 'ESIC Amount (₹)',
+        'Leave Allocation',
       ];
-      const s1Rows = [s1Headers];
-      summary.forEach(({
-        emp, presentDays, lateDays, halfDays, leaveDays,
-        totalNetPaid, lastPay, usedThisYear, leavesRemaining, payMap: pm,
-      }) => {
-        s1Rows.push([
-          `${emp.first_name} ${emp.last_name}`.trim(),
-          emp.designation    || '',
-          emp.department     || '',
-          emp.join_date      || '',
-          (emp.pf_enabled || emp.esic_enabled) ? 'Yes' : 'No',
-          emp.pf_enabled   ? 'Yes' : 'No',
-          emp.pf_amount    || 0,
-          emp.esic_enabled ? 'Yes' : 'No',
-          emp.esic_amount  || 0,
-          emp.leave_allocation || 0,
-          usedThisYear,
-          leavesRemaining,
-          presentDays,
-          lateDays,
-          halfDays,
-          leaveDays,
-          Object.keys(pm).length,
-          totalNetPaid,
-          lastPay ?? '',
-        ]);
-      });
-      const ws1 = XLSX.utils.aoa_to_sheet(s1Rows);
-      setColWidths(ws1, [22, 18, 16, 12, 12, 12, 14, 14, 16, 16, 20, 16, 16, 14, 14, 14, 12, 18, 20]);
-      XLSX.utils.book_append_sheet(wb, ws1, 'Employee Summary');
+      const dataRows = summary.map(({ emp }, i) => [
+        i + 1,
+        `${emp.first_name} ${emp.last_name}`.trim(),
+        emp.department    || '',
+        emp.designation   || '',
+        emp.join_date     || '',
+        emp.ctc           || 0,
+        emp.pf_enabled    ? 'Yes' : 'No',
+        emp.pf_amount     || 0,
+        emp.esic_enabled  ? 'Yes' : 'No',
+        emp.esic_amount   || 0,
+        emp.leave_allocation || 0,
+      ]);
+      const ws = XLSX.utils.aoa_to_sheet([headers, ...dataRows]);
+      setColWidths(ws, [5, 24, 18, 20, 12, 14, 12, 15, 14, 16, 16]);
+      applySheetMeta(ws, headers.length, dataRows.length);
+      return ws;
+    }
 
-      // ── Sheet 2: Monthly Payroll ───────────────────────────────────────────
-      const s2Headers = ['Employee Name', 'Designation', 'Department', 'Month', 'Year', 'Net Pay (₹)'];
-      const s2Rows = [s2Headers];
-      summary.forEach(({ emp, payMap: pm }) => {
-        const name = `${emp.first_name} ${emp.last_name}`.trim();
-        // Sort months newest first
-        Object.keys(pm).sort((a, b) => b.localeCompare(a)).forEach(key => {
-          const [y, m] = key.split('-').map(Number);
-          s2Rows.push([
-            name,
-            emp.designation || '',
-            emp.department  || '',
-            new Date(y, m - 1).toLocaleDateString('en-IN', { month: 'long' }),
-            y,
-            pm[key] ?? 0,
-          ]);
-        });
-      });
-      const ws2 = XLSX.utils.aoa_to_sheet(s2Rows);
-      setColWidths(ws2, [22, 18, 16, 14, 8, 16]);
-      XLSX.utils.book_append_sheet(wb, ws2, 'Monthly Payroll');
-
-      // ── Sheet 3: Attendance Log ────────────────────────────────────────────
-      const s3Headers = [
-        'Employee Name', 'Designation', 'Department',
+    if (reportId === 'attendance_log') {
+      const headers = [
+        '#', 'Employee Name', 'Department', 'Designation',
         'Date', 'Day', 'Status', 'Clock In', 'Clock Out', 'Hours Worked',
       ];
-      const s3Rows = [s3Headers];
+      const dataRows = [];
       summary.forEach(({ emp, attMap: am }) => {
         const name = `${emp.first_name} ${emp.last_name}`.trim();
-        // Sort dates oldest first for readability
         Object.keys(am).sort().forEach(dt => {
-          const rec    = am[dt];
-          const dayObj = new Date(dt + 'T00:00:00');
-          const dayName = dayObj.toLocaleDateString('en-IN', { weekday: 'short' });
+          const rec      = am[dt];
+          const dayName  = new Date(dt + 'T00:00:00').toLocaleDateString('en-IN', { weekday: 'short' });
           const clockIn  = getFirstIn(rec.punches);
           const clockOut = getLastOut(rec.punches);
-          s3Rows.push([
+          dataRows.push([
+            dataRows.length + 1,
             name,
-            emp.designation || '',
             emp.department  || '',
+            emp.designation || '',
             dt,
             dayName,
             rec.status || '',
@@ -214,37 +239,99 @@ export default function MasterReportPage() {
           ]);
         });
       });
-      const ws3 = XLSX.utils.aoa_to_sheet(s3Rows);
-      setColWidths(ws3, [22, 18, 16, 13, 6, 10, 12, 12, 12]);
-      XLSX.utils.book_append_sheet(wb, ws3, 'Attendance Log');
+      const ws = XLSX.utils.aoa_to_sheet([headers, ...dataRows]);
+      setColWidths(ws, [5, 24, 18, 20, 12, 6, 12, 12, 12, 13]);
+      applySheetMeta(ws, headers.length, dataRows.length);
+      return ws;
+    }
 
-      // ── Sheet 4: Leave Summary ─────────────────────────────────────────────
-      // Build from summary's leave data: show per-employee per-month leave counts
-      const s4Headers = [
-        'Employee Name', 'Department', 'Leave Allocation',
-        'Leaves Used (This Year)', 'Leaves Remaining',
-      ];
-      const s4Rows = [s4Headers];
-      summary.forEach(({ emp, leaveDays, usedThisYear, leavesRemaining }) => {
-        s4Rows.push([
-          `${emp.first_name} ${emp.last_name}`.trim(),
-          emp.department || '',
-          emp.leave_allocation || 0,
-          usedThisYear,
-          leavesRemaining,
-        ]);
+    if (reportId === 'monthly_payroll') {
+      const headers = ['#', 'Employee Name', 'Department', 'Designation', 'Month', 'Year', 'Net Pay (₹)'];
+      const dataRows = [];
+      summary.forEach(({ emp, payMap: pm }) => {
+        const name = `${emp.first_name} ${emp.last_name}`.trim();
+        Object.keys(pm).sort((a, b) => b.localeCompare(a)).forEach(key => {
+          const [y, m] = key.split('-').map(Number);
+          dataRows.push([
+            dataRows.length + 1,
+            name,
+            emp.department  || '',
+            emp.designation || '',
+            new Date(y, m - 1).toLocaleDateString('en-IN', { month: 'long' }),
+            y,
+            pm[key] ?? 0,
+          ]);
+        });
       });
-      const ws4 = XLSX.utils.aoa_to_sheet(s4Rows);
-      setColWidths(ws4, [22, 16, 18, 22, 18]);
-      XLSX.utils.book_append_sheet(wb, ws4, 'Leave Summary');
+      const ws = XLSX.utils.aoa_to_sheet([headers, ...dataRows]);
+      setColWidths(ws, [5, 24, 18, 20, 14, 8, 16]);
+      applySheetMeta(ws, headers.length, dataRows.length);
+      return ws;
+    }
 
-      const today = dateStr(new Date());
-      XLSX.writeFile(wb, `master_report_${today}.xlsx`);
+    if (reportId === 'leave_summary') {
+      const headers = [
+        '#', 'Employee Name', 'Department',
+        'Leave Allocation', 'Approved (This Year)', 'Pending', 'Rejected', 'Leaves Remaining',
+      ];
+      const dataRows = summary.map(({ emp, leavesRemaining, leaveApproved, leavePending, leaveRejected }, i) => [
+        i + 1,
+        `${emp.first_name} ${emp.last_name}`.trim(),
+        emp.department || '',
+        emp.leave_allocation || 0,
+        leaveApproved,
+        leavePending,
+        leaveRejected,
+        leavesRemaining,
+      ]);
+      const ws = XLSX.utils.aoa_to_sheet([headers, ...dataRows]);
+      setColWidths(ws, [5, 24, 18, 17, 22, 12, 12, 18]);
+      applySheetMeta(ws, headers.length, dataRows.length);
+      return ws;
+    }
+
+    return null;
+  }
+
+  function getRowCount(reportId) {
+    if (!summary.length) return 0;
+    if (reportId === 'employee_details') return summary.length;
+    if (reportId === 'attendance_log')   return summary.reduce((s, r) => s + Object.keys(r.attMap).length, 0);
+    if (reportId === 'monthly_payroll')  return summary.reduce((s, r) => s + Object.keys(r.payMap).length, 0);
+    if (reportId === 'leave_summary')    return summary.length;
+    return 0;
+  }
+
+  const handleDownload = async (reportId) => {
+    if (!summary.length) return showToast('No data to export', 'warning');
+    setExporting(reportId);
+    try {
+      const config = REPORT_CONFIGS.find(r => r.id === reportId);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, buildSheet(reportId), config.sheetName);
+      XLSX.writeFile(wb, `${config.filename}_${dateStr(new Date())}.xlsx`);
+      showToast(`${config.label} downloaded`, 'success');
+    } catch (err) {
+      showToast('Export failed: ' + err.message, 'error');
+    } finally {
+      setExporting(null);
+    }
+  };
+
+  const handleExportAll = async () => {
+    if (!summary.length) return showToast('No data to export', 'warning');
+    setExporting('all');
+    try {
+      const wb = XLSX.utils.book_new();
+      REPORT_CONFIGS.forEach(config => {
+        XLSX.utils.book_append_sheet(wb, buildSheet(config.id), config.sheetName);
+      });
+      XLSX.writeFile(wb, `master_report_${dateStr(new Date())}.xlsx`);
       showToast('Master report exported successfully', 'success');
     } catch (err) {
       showToast('Export failed: ' + err.message, 'error');
     } finally {
-      setExporting(false);
+      setExporting(null);
     }
   };
 
@@ -252,12 +339,16 @@ export default function MasterReportPage() {
     <>
       <Header
         title="Master Report"
-        breadcrumb="Employee Calendar / Master Report"
+        breadcrumb="Dashboard / Master Report"
         actions={
-          <button className="btn btn-primary" onClick={handleExport} disabled={exporting || loading}>
-            {exporting
+          <button
+            className="btn btn-primary"
+            onClick={handleExportAll}
+            disabled={exporting !== null || loading}
+          >
+            {exporting === 'all'
               ? <><div className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} /> Generating…</>
-              : <><i className="fas fa-file-excel" /> Export Excel Report</>}
+              : <><i className="fas fa-file-excel" /> Export All Sheets</>}
           </button>
         }
       />
@@ -286,7 +377,7 @@ export default function MasterReportPage() {
                 </div>
                 <div>
                   <div className="stat-value">{employees.filter(e => e.pf_enabled || e.esic_enabled).length}</div>
-                  <div className="stat-label">Compliance</div>
+                  <div className="stat-label">With Compliance</div>
                 </div>
               </div>
               <div className="stat-card">
@@ -313,86 +404,76 @@ export default function MasterReportPage() {
               </div>
             </div>
 
-            {/* Preview table */}
-            <div className="card">
+            {/* Individual Report Download Cards */}
+            <div className="card" style={{ marginBottom: 20 }}>
               <div className="card-header">
-                <h3>Employee Overview</h3>
-                <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                  Exports a 4-sheet Excel file: Summary · Monthly Payroll · Attendance Log · Leave Summary
-                </div>
+                <h3>Download Reports</h3>
+                <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                  Download each report individually, or use <strong>Export All Sheets</strong> above for a combined workbook
+                </span>
               </div>
-              <div className="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Employee</th>
-                      <th>Compliance</th>
-                      <th>PF</th>
-                      <th>ESIC</th>
-                      <th>Join Date</th>
-                      <th>Present Days</th>
-                      <th>Late</th>
-                      <th>Half Day</th>
-                      <th>Leaves Remaining</th>
-                      <th>Months Paid</th>
-                      <th>Total Net Paid</th>
-                      <th>Last Pay</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {summary.length === 0 ? (
-                      <tr>
-                        <td colSpan="12" style={{ textAlign: 'center', padding: 40, color: 'var(--text-muted)' }}>
-                          No active employees found.
-                        </td>
-                      </tr>
-                    ) : summary.map(({ emp, presentDays, lateDays, halfDays, leavesRemaining, totalNetPaid, lastPay, payMap: pm }) => (
-                      <tr key={emp.id}>
-                        <td>
-                          <div className="emp-cell">
-                            <div className="emp-avatar" style={{ background: `linear-gradient(135deg, ${getAvatarColor(emp.id)})` }}>
-                              {getInitials(emp.first_name, emp.last_name)}
-                            </div>
-                            <div>
-                              <div className="emp-name">{emp.first_name} {emp.last_name}</div>
-                              <div className="emp-role">{emp.designation || emp.department || '—'}</div>
-                            </div>
+              <div style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))',
+                gap: 16,
+                padding: '4px 20px 20px',
+              }}>
+                {REPORT_CONFIGS.map(config => {
+                  const count      = getRowCount(config.id);
+                  const isExporting = exporting === config.id;
+                  const busy        = exporting !== null;
+                  return (
+                    <div
+                      key={config.id}
+                      style={{
+                        border: '1px solid var(--border)',
+                        borderRadius: 10,
+                        padding: '16px 18px',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: 10,
+                        background: 'var(--card-bg)',
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                        <div style={{
+                          width: 44, height: 44, borderRadius: 10, flexShrink: 0,
+                          background: config.iconBg, color: config.iconFg,
+                          display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          fontSize: 18,
+                        }}>
+                          <i className={`fas ${config.icon}`} />
+                        </div>
+                        <div>
+                          <div style={{ fontWeight: 600, fontSize: 14, color: 'var(--text)' }}>
+                            {config.label}
                           </div>
-                        </td>
-                        <td>
-                          {(emp.pf_enabled || emp.esic_enabled)
-                            ? <span className="badge badge-success">Yes</span>
-                            : <span className="badge badge-warning">No</span>}
-                        </td>
-                        <td>
-                          {emp.pf_enabled
-                            ? <span className="badge badge-success">Yes</span>
-                            : <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>No</span>}
-                        </td>
-                        <td>
-                          {emp.esic_enabled
-                            ? <span className="badge badge-success">Yes</span>
-                            : <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>No</span>}
-                        </td>
-                        <td style={{ fontSize: 13 }}>{emp.join_date || '—'}</td>
-                        <td><strong>{presentDays}</strong></td>
-                        <td style={{ color: 'var(--warning)' }}>{lateDays}</td>
-                        <td style={{ color: 'var(--accent)' }}>{halfDays}</td>
-                        <td>
-                          <span style={{ fontWeight: 600, color: leavesRemaining > 0 ? 'var(--success)' : 'var(--danger)' }}>
-                            {leavesRemaining}
-                          </span>
-                          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}> / {emp.leave_allocation || 0}</span>
-                        </td>
-                        <td>{Object.keys(pm).length}</td>
-                        <td><strong>{totalNetPaid > 0 ? fmt(totalNetPaid) : '—'}</strong></td>
-                        <td>{lastPay != null ? fmt(lastPay) : <span style={{ color: 'var(--text-muted)' }}>—</span>}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
+                            {count > 0
+                              ? <>{count.toLocaleString()} row{count !== 1 ? 's' : ''}</>
+                              : <span style={{ color: 'var(--warning)' }}>No data</span>}
+                          </div>
+                        </div>
+                      </div>
+                      <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.55, flexGrow: 1 }}>
+                        {config.desc}
+                      </div>
+                      <button
+                        className="btn btn-outline btn-block btn-sm"
+                        style={{ marginTop: 2 }}
+                        onClick={() => handleDownload(config.id)}
+                        disabled={busy || count === 0}
+                      >
+                        {isExporting
+                          ? <><div className="spinner" style={{ width: 11, height: 11, borderWidth: 2 }} /> Downloading…</>
+                          : <><i className="fas fa-download" /> Download .xlsx</>}
+                      </button>
+                    </div>
+                  );
+                })}
               </div>
             </div>
+
           </>
         )}
       </div>
