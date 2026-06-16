@@ -3,8 +3,40 @@ import Header from '@/components/Header';
 import Modal from '@/components/Modal';
 import { showToast } from '@/components/Toast';
 import { useAuth } from '@/context/AuthContext';
-import { listMyLeaveRequests, requestLeave } from '@/services/leaveService';
+import { listMyLeaveRequests, requestLeave, checkProbationStatus } from '@/services/leaveService';
+import { fetchMyQuota } from '@/services/requestQuotaService';
 import { fmt, todayStr, HIGH_SALARY_THRESHOLD } from '@/lib/helpers';
+
+function QuotaBanner({ quota }) {
+  const { selfUsed, selfLimit, managerUsed, managerLimit } = quota;
+  const selfLeft    = selfLimit    - selfUsed;
+  const managerLeft = managerLimit - managerUsed;
+
+  let color, icon, msg;
+  if (selfLeft > 0) {
+    color = 'var(--success)'; icon = 'fa-shield-alt';
+    msg = `${selfLeft} self-approval${selfLeft !== 1 ? 's' : ''} remaining this month — your next request auto-approves instantly.`;
+  } else if (managerLeft > 0) {
+    color = 'var(--warning-dark, #92400e)'; icon = 'fa-user-check';
+    msg = `Self-approvals used (${selfUsed}/${selfLimit}). Next request goes to Manager · ${managerLeft} manager approval${managerLeft !== 1 ? 's' : ''} available.`;
+  } else {
+    color = 'var(--danger)'; icon = 'fa-exclamation-circle';
+    msg = `All quotas used this month (${selfUsed}/${selfLimit} self · ${managerUsed}/${managerLimit} manager). Next request goes to HR.`;
+  }
+
+  return (
+    <div style={{
+      background: selfLeft > 0 ? 'var(--success-light, #d1fae5)' : managerLeft > 0 ? 'var(--warning-light, #fffbeb)' : 'var(--danger-light, #fee2e2)',
+      border: `1px solid ${color}`,
+      borderRadius: 8, padding: '10px 16px', marginTop: 16,
+      fontSize: 13, color,
+      display: 'flex', alignItems: 'center', gap: 10,
+    }}>
+      <i className={`fas ${icon}`} />
+      {msg}
+    </div>
+  );
+}
 
 const EMPTY_REQUEST = {
   leave_type: 'Casual Leave',
@@ -20,10 +52,26 @@ export default function MyLeavesPage() {
   const [showModal, setShowModal] = useState(false);
   const [form, setForm] = useState(EMPTY_REQUEST);
   const [saving, setSaving] = useState(false);
+  const [quota, setQuota] = useState(null);
+  const [probation, setProbation] = useState(null);
 
   useEffect(() => {
     fetchRequests();
+    loadQuota();
+    loadProbation();
   }, [profile]);
+
+  const loadQuota = async () => {
+    if (!profile || !tenant) return;
+    const q = await fetchMyQuota(tenant.id, profile.id);
+    setQuota(q);
+  };
+
+  const loadProbation = async () => {
+    if (!profile) return;
+    const p = await checkProbationStatus(profile.id);
+    setProbation(p);
+  };
 
   const fetchRequests = async () => {
     if (!profile) return;
@@ -48,29 +96,38 @@ export default function MyLeavesPage() {
       if (!tenant) {
         throw new Error('You do not belong to any workspace. Please contact your administrator.');
       }
-      
+
+      // Block leave during probation unless they have earned leaves and it's a probation-earned type
+      if (probation?.inProbation && form.leave_type !== 'Earned (Probation)') {
+        setSaving(false);
+        return showToast(`You are in probation until ${new Date(probation.endsOn + 'T00:00:00').toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}. Only earned probation leaves can be used.`, 'error');
+      }
+      if (probation?.inProbation && form.leave_type === 'Earned (Probation)' && (probation.earnedLeaves || 0) <= 0) {
+        setSaving(false);
+        return showToast('You have no earned probation leaves yet. Work all days in a month to earn one.', 'error');
+      }
+
       const payload = {
         ...form,
         profile_id: profile.id,
         tenant_id: tenant.id,
         status: 'Pending',
       };
-      const { error } = await requestLeave(payload);
+      const { error, tier } = await requestLeave(payload);
 
       if (error) {
         showToast(error.message || 'Failed to submit leave request', 'error');
       } else {
-        // Optimistic update — add to local list immediately, no waiting for re-fetch
-        setRequests(prev => [{
-          ...payload,
-          id: crypto.randomUUID(),
-          created_at: new Date().toISOString(),
-        }, ...prev]);
-        showToast('Leave request submitted', 'success');
+        const msg = tier === 'self'
+          ? 'Auto-approved! (self-approval used)'
+          : tier === 'manager'
+          ? 'Request sent to Manager for approval'
+          : 'Request escalated to HR for approval';
+        showToast(msg, tier === 'self' ? 'success' : 'info');
         setShowModal(false);
         setForm(EMPTY_REQUEST);
-        // Background refresh to get server-assigned id/timestamps
         fetchRequests();
+        loadQuota();
       }
     } catch (err) {
       showToast(err.message || 'Something went wrong', 'error');
@@ -90,6 +147,26 @@ export default function MyLeavesPage() {
           </button>
         }
       />
+
+      {probation?.inProbation && (
+        <div style={{
+          background: 'var(--warning-light, #fffbeb)',
+          border: '1px solid var(--warning)',
+          borderRadius: 8, padding: '10px 16px', marginTop: 16,
+          fontSize: 13, color: 'var(--warning-dark, #92400e)',
+          display: 'flex', alignItems: 'center', gap: 10,
+        }}>
+          <i className="fas fa-hourglass-half" />
+          <span>
+            <strong>Probation period</strong> — ends{' '}
+            {new Date(probation.endsOn + 'T00:00:00').toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}.
+            {' '}Regular leaves are blocked. You have <strong>{probation.earnedLeaves}</strong> earned leave{probation.earnedLeaves !== 1 ? 's' : ''} available
+            (earned by working every day in a month during probation).
+          </span>
+        </div>
+      )}
+
+      {quota && <QuotaBanner quota={quota} />}
 
       {(profile?.ctc || 0) >= HIGH_SALARY_THRESHOLD && (profile?.comp_off_balance || 0) > 0 && (
         <div style={{
@@ -168,13 +245,19 @@ export default function MyLeavesPage() {
         <div className="form-group">
           <label className="form-label">Leave Type</label>
           <select className="form-select" value={form.leave_type} onChange={e => setForm({...form, leave_type: e.target.value})}>
-            <option>Casual Leave</option>
-            <option>Sick Leave</option>
-            <option>Paid Leave</option>
-            <option>Maternity/Paternity Leave</option>
-            <option>Loss of Pay</option>
-            {(profile?.ctc || 0) >= HIGH_SALARY_THRESHOLD && (
-              <option value="Comp Off">Comp Off (Weekly Off Compensation)</option>
+            {probation?.inProbation ? (
+              <option value="Earned (Probation)">Earned Leave (Probation) — {probation.earnedLeaves} available</option>
+            ) : (
+              <>
+                <option>Casual Leave</option>
+                <option>Sick Leave</option>
+                <option>Paid Leave</option>
+                <option>Maternity/Paternity Leave</option>
+                <option>Loss of Pay</option>
+                {(profile?.ctc || 0) >= HIGH_SALARY_THRESHOLD && (
+                  <option value="Comp Off">Comp Off (Weekly Off Compensation)</option>
+                )}
+              </>
             )}
           </select>
           {form.leave_type === 'Comp Off' && (

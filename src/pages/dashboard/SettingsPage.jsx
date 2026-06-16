@@ -19,15 +19,16 @@ import {
   initializeMajorHolidays,
 } from '@/services/tenantService';
 import { monthLabel } from '@/lib/helpers';
+import { createGroup, linkToGroup, leaveGroup } from '@/services/groupService';
 
 export default function SettingsPage() {
   const { tenant, profile, refreshProfile } = useAuth();
   const [form, setForm] = useState({
-    company_name: '', pay_day: 1, work_days: 26, currency: '₹',
+    company_name: '', pay_day: 1, work_days: 30, currency: '₹',
     shift_start: '09:00', shift_end: '18:00', late_threshold: 15,
     min_half_day_hours: 4, min_full_day_hours: 8,
     geofence_lat: '', geofence_lng: '', geofence_radius: 200,
-    weekly_off_day: 0,
+    weekly_off_day: 0, location_code: '',
   });
   const [departments, setDepartments] = useState([]);
   const [shifts, setShifts]           = useState([]);
@@ -48,6 +49,12 @@ export default function SettingsPage() {
   const [newHolidayDesc, setNewHolidayDesc] = useState('');
   const [holidayLoading, setHolidayLoading] = useState(false);
   const [importLoading, setImportLoading] = useState(false);
+
+  // Organization Group state
+  const [groupMode,      setGroupMode]      = useState(null); // null | 'create' | 'join'
+  const [groupName,      setGroupName]      = useState('');
+  const [groupCodeInput, setGroupCodeInput] = useState('');
+  const [groupLoading,   setGroupLoading]   = useState(false);
 
   const fetchData = useCallback(async () => {
     if (!tenant) return;
@@ -149,7 +156,7 @@ export default function SettingsPage() {
     setForm({
       company_name:   tenant.company_name   || '',
       pay_day:        tenant.pay_day        || 1,
-      work_days:      tenant.work_days      || 26,
+      work_days:      tenant.work_days      || 30,
       currency:       tenant.currency       || '₹',
       shift_start:    tenant.shift_start    || '09:00',
       shift_end:      tenant.shift_end      || '18:00',
@@ -160,6 +167,7 @@ export default function SettingsPage() {
       geofence_lng: tenant.geofence_lng || '',
       geofence_radius: tenant.geofence_radius || 200,
       weekly_off_day: tenant.weekly_off_day ?? 0,
+      location_code: tenant.location_code || '',
     });
     fetchData();
   }, [tenant, fetchData]);
@@ -169,7 +177,7 @@ export default function SettingsPage() {
     const { error } = await updateTenant(tenant.id, {
       company_name:   form.company_name   || 'My Company',
       pay_day:        parseInt(form.pay_day)        || 1,
-      work_days:      parseInt(form.work_days)      || 26,
+      work_days:      parseInt(form.work_days)      || 30,
       currency:       form.currency       || '₹',
       shift_start:    form.shift_start    || '09:00',
       shift_end:      form.shift_end      || '18:00',
@@ -180,6 +188,7 @@ export default function SettingsPage() {
       geofence_lng: form.geofence_lng ? parseFloat(form.geofence_lng) : null,
       geofence_radius: parseInt(form.geofence_radius) || 200,
       weekly_off_day: parseInt(form.weekly_off_day) || 0,
+      location_code: (form.location_code || '').toUpperCase().slice(0, 2) || null,
     });
     setSaving(false);
     if (error) return showToast('Save failed: ' + error.message, 'error');
@@ -201,6 +210,40 @@ export default function SettingsPage() {
     showToast('Department added', 'success');
     setShowDepartmentModal(false);
     fetchData();
+  };
+
+  const handleCreateGroup = async () => {
+    if (!groupName.trim()) return showToast('Enter a group name', 'warning');
+    setGroupLoading(true);
+    const { code, error } = await createGroup(tenant.id, groupName);
+    setGroupLoading(false);
+    if (error) return showToast('Failed: ' + error.message, 'error');
+    showToast(`Group created — code: ${code}`, 'success');
+    setGroupMode(null);
+    setGroupName('');
+    refreshProfile();
+  };
+
+  const handleLinkGroup = async () => {
+    if (!groupCodeInput.trim()) return showToast('Enter a group code', 'warning');
+    setGroupLoading(true);
+    const { error } = await linkToGroup(tenant.id, groupCodeInput);
+    setGroupLoading(false);
+    if (error) return showToast('Failed: ' + error.message, 'error');
+    showToast('Outlet linked to group', 'success');
+    setGroupMode(null);
+    setGroupCodeInput('');
+    refreshProfile();
+  };
+
+  const handleLeaveGroup = async () => {
+    if (!confirm('Remove this outlet from the group? You can re-join anytime with the group code.')) return;
+    setGroupLoading(true);
+    const { error } = await leaveGroup(tenant.id);
+    setGroupLoading(false);
+    if (error) return showToast('Failed: ' + error.message, 'error');
+    showToast('Outlet removed from group', 'warning');
+    refreshProfile();
   };
 
   const handleRemoveDepartment = async (id) => {
@@ -397,9 +440,23 @@ export default function SettingsPage() {
           <div className="card">
             <div className="card-header"><h3>Company Settings</h3></div>
             <div className="card-body">
-              <div className="form-group">
-                <label className="form-label">Company Name</label>
-                <input className="form-input" value={form.company_name} onChange={(e) => setForm({ ...form, company_name: e.target.value })} />
+              <div className="form-row">
+                <div className="form-group" style={{ flex: 2 }}>
+                  <label className="form-label">Company Name</label>
+                  <input className="form-input" value={form.company_name} onChange={(e) => setForm({ ...form, company_name: e.target.value })} />
+                </div>
+                <div className="form-group" style={{ flex: 1 }}>
+                  <label className="form-label">Branch Location Code</label>
+                  <input
+                    className="form-input"
+                    value={form.location_code}
+                    onChange={(e) => setForm({ ...form, location_code: e.target.value.toUpperCase().slice(0, 2) })}
+                    placeholder="e.g. MU"
+                    maxLength={2}
+                    style={{ textTransform: 'uppercase', letterSpacing: 2, fontWeight: 700, fontFamily: 'monospace' }}
+                  />
+                  <div className="form-hint">2-letter code for this branch. Used in employee IDs (e.g. <strong>MU</strong> → MCMU1042).</div>
+                </div>
               </div>
               <div className="form-row">
                 <div className="form-group">
@@ -599,6 +656,137 @@ export default function SettingsPage() {
                   </button>
                 </div>
               ))}
+            </div>
+          </div>
+
+          {/* ── Organization Group ──────────────────────────────────────────── */}
+          <div className="card">
+            <div className="card-header">
+              <div>
+                <h3 style={{ margin: 0 }}>Organization Group</h3>
+                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
+                  Link multiple outlets under one group to view combined stats in Group Dashboard
+                </div>
+              </div>
+              {tenant?.group_code && (
+                <span className="badge badge-success">
+                  <i className="fas fa-layer-group" style={{ marginRight: 4 }} />Linked
+                </span>
+              )}
+            </div>
+            <div className="card-body">
+              {tenant?.group_code ? (
+                /* ── Currently in a group ── */
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                    <div>
+                      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 3 }}>GROUP NAME</div>
+                      <div style={{ fontWeight: 600, fontSize: 14 }}>{tenant.group_name || '—'}</div>
+                    </div>
+                    <div>
+                      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 3 }}>GROUP CODE</div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <code style={{
+                          fontWeight: 700, fontSize: 14, letterSpacing: 1,
+                          background: 'var(--primary-light)', color: 'var(--primary)',
+                          padding: '2px 10px', borderRadius: 6,
+                        }}>
+                          {tenant.group_code}
+                        </code>
+                        <button
+                          className="btn btn-outline btn-icon btn-sm"
+                          title="Copy code"
+                          onClick={() => {
+                            navigator.clipboard.writeText(tenant.group_code);
+                            showToast('Group code copied', 'success');
+                          }}
+                        >
+                          <i className="fas fa-copy" />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                  <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: 0 }}>
+                    Share the group code with admins of other outlets so they can link their outlet to this group.
+                    All linked outlets will appear in <strong>Group Dashboard</strong>.
+                  </p>
+                  <div>
+                    <button
+                      className="btn btn-outline btn-sm"
+                      style={{ color: 'var(--danger)', borderColor: 'var(--danger)' }}
+                      onClick={handleLeaveGroup}
+                      disabled={groupLoading}
+                    >
+                      {groupLoading
+                        ? <><div className="spinner" style={{ width: 11, height: 11, borderWidth: 2 }} /> Removing…</>
+                        : <><i className="fas fa-unlink" /> Remove from Group</>}
+                    </button>
+                  </div>
+                </div>
+              ) : groupMode === null ? (
+                /* ── Not in a group – choose action ── */
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                  <p style={{ fontSize: 13, color: 'var(--text-muted)', margin: 0 }}>
+                    This outlet is not part of any group. Create a new group or join an existing one using a group code.
+                  </p>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button className="btn btn-primary btn-sm" onClick={() => setGroupMode('create')}>
+                      <i className="fas fa-plus" /> Create New Group
+                    </button>
+                    <button className="btn btn-outline btn-sm" onClick={() => setGroupMode('join')}>
+                      <i className="fas fa-link" /> Join Existing Group
+                    </button>
+                  </div>
+                </div>
+              ) : groupMode === 'create' ? (
+                /* ── Create group form ── */
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                  <p style={{ fontSize: 13, color: 'var(--text-muted)', margin: 0 }}>
+                    Give your group a name (e.g. "My Restaurant Chain"). A unique code will be generated — share it with other outlet admins.
+                  </p>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <input
+                      className="form-input"
+                      placeholder="Group name, e.g. My Restaurant Chain"
+                      value={groupName}
+                      onChange={e => setGroupName(e.target.value)}
+                      style={{ flex: 1, minWidth: 200 }}
+                    />
+                    <button className="btn btn-primary btn-sm" onClick={handleCreateGroup} disabled={groupLoading}>
+                      {groupLoading
+                        ? <><div className="spinner" style={{ width: 11, height: 11, borderWidth: 2 }} /> Creating…</>
+                        : 'Create Group'}
+                    </button>
+                    <button className="btn btn-outline btn-sm" onClick={() => { setGroupMode(null); setGroupName(''); }}>
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                /* ── Join group form ── */
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                  <p style={{ fontSize: 13, color: 'var(--text-muted)', margin: 0 }}>
+                    Enter the group code from the outlet that created the group (e.g. <code>XKCD-9182</code>).
+                  </p>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <input
+                      className="form-input"
+                      placeholder="Group code, e.g. XKCD-9182"
+                      value={groupCodeInput}
+                      onChange={e => setGroupCodeInput(e.target.value.toUpperCase())}
+                      style={{ flex: 1, minWidth: 200, fontFamily: 'monospace', letterSpacing: 1 }}
+                    />
+                    <button className="btn btn-primary btn-sm" onClick={handleLinkGroup} disabled={groupLoading}>
+                      {groupLoading
+                        ? <><div className="spinner" style={{ width: 11, height: 11, borderWidth: 2 }} /> Linking…</>
+                        : 'Link Outlet'}
+                    </button>
+                    <button className="btn btn-outline btn-sm" onClick={() => { setGroupMode(null); setGroupCodeInput(''); }}>
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 

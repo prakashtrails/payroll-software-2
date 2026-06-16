@@ -61,7 +61,7 @@ export const fmtDuration = (hrs) => {
 
 // Calculate salary breakdown from CTC, components, and working days
 export function calcSalary(ctc, components, totalWorkDays, actualDays) {
-  const ratio = actualDays / (totalWorkDays || 1);
+  const ratio = actualDays / (totalWorkDays || 30);
 
   const basicComp = components.find(
     (c) => c.category === 'earning' && c.calc_type === 'percent_ctc' && c.name.toLowerCase().includes('basic')

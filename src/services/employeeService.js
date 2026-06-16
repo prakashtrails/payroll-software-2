@@ -15,7 +15,7 @@ export const EMPLOYEE_PAGE_SIZE = 25;
  * Paginated, server-side-filtered employee list.
  * Returns { data, count, error } — count is the total matching rows.
  */
-export async function listEmployees(tenantId, { page = 1, search = '', department = '', status = '' } = {}) {
+export async function listEmployees(tenantId, { page = 1, search = '', department = '', status = '', branch = '' } = {}) {
   let q = supabase
     .from('profiles')
     .select('*', { count: 'exact' })
@@ -25,6 +25,7 @@ export async function listEmployees(tenantId, { page = 1, search = '', departmen
 
   if (department) q = q.eq('department', department);
   if (status)     q = q.eq('status', status);
+  if (branch)     q = q.eq('outlet_location', branch);
   if (search) {
     q = q.or(
       `first_name.ilike.%${search}%,last_name.ilike.%${search}%,email.ilike.%${search}%,department.ilike.%${search}%`
@@ -38,11 +39,23 @@ export async function listEmployees(tenantId, { page = 1, search = '', departmen
   return { data: data || [], error, count: count || 0 };
 }
 
+/** Distinct non-empty branch names for the current tenant. */
+export async function listBranches(tenantId) {
+  const { data, error } = await supabase
+    .from('profiles')
+    .select('outlet_location')
+    .eq('tenant_id', tenantId)
+    .neq('outlet_location', '')
+    .not('outlet_location', 'is', null);
+  const branches = [...new Set((data || []).map(r => r.outlet_location))].sort();
+  return { data: branches, error };
+}
+
 /** Lightweight list for dropdowns (id + name only). */
 export async function listActiveEmployees(tenantId) {
   const { data, error } = await supabase
     .from('profiles')
-    .select('id, first_name, last_name, department, designation, ctc, role, country, join_date, pf_enabled, pf_amount, esic_enabled, esic_amount, leave_allocation')
+    .select('id, first_name, last_name, department, designation, ctc, role, country, join_date, pf_enabled, pf_amount, esic_enabled, esic_amount, leave_allocation, employee_id, outlet_location')
     .eq('tenant_id', tenantId)
     .eq('status', 'Active')
     .in('role', ['employee', 'admin', 'manager'])
@@ -112,32 +125,40 @@ export async function createEmployee(tenantId, profileData) {
       }
       // Profile exists but for a different/null tenant — reassign it to this tenant
       await supabaseAdmin.from('profiles').update({
-        tenant_id: tenantId,
-        first_name: profileData.first_name,
-        last_name: profileData.last_name,
-        phone: profileData.phone || '',
-        department: profileData.department || '',
-        designation: profileData.designation || '',
-        ctc: profileData.ctc || 0,
-        join_date: profileData.join_date || null,
-        bank_acc: profileData.bank_acc || '',
-        pan: profileData.pan || '',
-        aadhar: profileData.aadhar || '',
-        country: profileData.country || 'India',
-        passport_number: profileData.passport_number || '',
-        work_permit_number: profileData.work_permit_number || '',
-        work_permit_expiry: profileData.work_permit_expiry || null,
-        weekly_holiday: profileData.weekly_holiday || 'Sunday',
-        leave_allocation: profileData.leave_allocation || 0,
-        compliance_enabled: profileData.compliance_enabled || false,
-        pf_enabled:         profileData.pf_enabled         || false,
-        pf_number:          profileData.pf_number          || '',
-        pf_amount:          profileData.pf_amount          || 0,
-        esic_enabled:       profileData.esic_enabled        || false,
-        esic_number:        profileData.esic_number         || '',
-        esic_amount:        profileData.esic_amount         || 0,
-        temp_password: tempPassword,
-        status: 'Active',
+        tenant_id:           tenantId,
+        first_name:          profileData.first_name,
+        last_name:           profileData.last_name,
+        phone:               profileData.phone               || '',
+        department:          profileData.department          || '',
+        designation:         profileData.designation         || '',
+        ctc:                 profileData.ctc                 || 0,
+        join_date:           profileData.join_date           || null,
+        bank_acc:            profileData.bank_acc            || '',
+        pan:                 profileData.pan                 || '',
+        aadhar:              profileData.aadhar              || '',
+        country:             profileData.country             || 'India',
+        passport_number:     profileData.passport_number     || '',
+        work_permit_number:  profileData.work_permit_number  || '',
+        work_permit_expiry:  profileData.work_permit_expiry  || null,
+        weekly_holiday:      profileData.weekly_holiday      || 'Sunday',
+        leave_allocation:    profileData.leave_allocation    || 0,
+        shift_id:            profileData.shift_id            || null,
+        role:                profileData.role                || 'employee',
+        compliance_enabled:  profileData.compliance_enabled  || false,
+        pf_enabled:          profileData.pf_enabled          || false,
+        pf_number:           profileData.pf_number           || '',
+        pf_amount:           profileData.pf_amount           || 0,
+        esic_enabled:        profileData.esic_enabled        || false,
+        esic_number:         profileData.esic_number         || '',
+        esic_amount:         profileData.esic_amount         || 0,
+        employee_id:         profileData.employee_id         || null,
+        outlet_location:     profileData.outlet_location     || '',
+        probation_months:    profileData.probation_months    || 0,
+        // reset company-specific counters so old company data doesn't bleed in
+        probation_earned_leaves: 0,
+        comp_off_balance:    0,
+        temp_password:       tempPassword,
+        status:              'Active',
         must_change_password: true,
       }).eq('id', existing.id);
 
@@ -191,6 +212,8 @@ export async function createEmployee(tenantId, profileData) {
     esic_enabled:        profileData.esic_enabled        || false,
     esic_number:         profileData.esic_number         || '',
     esic_amount:         profileData.esic_amount         || 0,
+    employee_id:         profileData.employee_id         || null,
+    outlet_location:     profileData.outlet_location     || '',
     temp_password:       tempPassword,
     role:                profileData.role         || 'employee',
     status:              profileData.status || 'Active',

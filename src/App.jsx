@@ -23,6 +23,7 @@ import RegularizeAttendancePage from './pages/dashboard/RegularizeAttendancePage
 import SpecialRequestsPage from './pages/dashboard/SpecialRequestsPage';
 import EmployeeCalendarPage from './pages/dashboard/EmployeeCalendarPage';
 import MasterReportPage from './pages/dashboard/MasterReportPage';
+import GroupDashboardPage from './pages/dashboard/GroupDashboardPage';
 
 import ManagerDashboardPage from './pages/dashboard/ManagerDashboardPage';
 
@@ -31,6 +32,7 @@ import MyAttendancePage from './pages/employee/MyAttendancePage';
 import MyLeavesPage from './pages/employee/MyLeavesPage';
 import MyPayslipsPage from './pages/employee/MyPayslipsPage';
 import MySpecialRequestsPage from './pages/employee/MySpecialRequestsPage';
+import MyRegularizeRequestsPage from './pages/employee/MyRegularizeRequestsPage';
 
 // Layouts
 import DashboardLayout from './layouts/DashboardLayout';
@@ -86,6 +88,7 @@ export default function App() {
         <Route path="/master-report" element={<PrivateRoute allowedRoles={['admin', 'superadmin']}><MasterReportPage /></PrivateRoute>} />
         <Route path="/settings" element={<PrivateRoute allowedRoles={['admin', 'superadmin']}><SettingsPage /></PrivateRoute>} />
         <Route path="/regularize" element={<PrivateRoute allowedRoles={['admin', 'superadmin']}><RegularizeAttendancePage /></PrivateRoute>} />
+        <Route path="/group-dashboard" element={<PrivateRoute allowedRoles={['admin', 'superadmin']}><GroupDashboardPage /></PrivateRoute>} />
         
         {/* Manager Routes */}
         <Route path="/manager-dashboard" element={<PrivateRoute allowedRoles={['manager']}><ManagerDashboardPage /></PrivateRoute>} />
@@ -107,6 +110,7 @@ export default function App() {
         <Route path="/my-attendance" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager']}><MyAttendancePage /></PrivateRoute>} />
         <Route path="/my-leaves" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager']}><MyLeavesPage /></PrivateRoute>} />
         <Route path="/my-special-requests" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager']}><MySpecialRequestsPage /></PrivateRoute>} />
+        <Route path="/my-regularize" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager']}><MyRegularizeRequestsPage /></PrivateRoute>} />
         <Route path="/my-payslips" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager']}><MyPayslipsPage /></PrivateRoute>} />
       </Route>
       

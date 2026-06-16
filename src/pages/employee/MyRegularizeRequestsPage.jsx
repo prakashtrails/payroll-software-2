@@ -4,7 +4,39 @@ import Modal from '@/components/Modal';
 import { showToast } from '@/components/Toast';
 import { useAuth } from '@/context/AuthContext';
 import { submitRegularizeRequest, listMyRegularizeRequests } from '@/services/attendanceService';
+import { fetchMyQuota } from '@/services/requestQuotaService';
 import { todayStr, fmtTime12 } from '@/lib/helpers';
+
+function QuotaBanner({ quota }) {
+  const { selfUsed, selfLimit, managerUsed, managerLimit } = quota;
+  const selfLeft    = selfLimit    - selfUsed;
+  const managerLeft = managerLimit - managerUsed;
+
+  let color, icon, msg;
+  if (selfLeft > 0) {
+    color = 'var(--success)'; icon = 'fa-shield-alt';
+    msg = `${selfLeft} self-approval${selfLeft !== 1 ? 's' : ''} remaining this month — your next request auto-approves instantly.`;
+  } else if (managerLeft > 0) {
+    color = 'var(--warning-dark, #92400e)'; icon = 'fa-user-check';
+    msg = `Self-approvals used (${selfUsed}/${selfLimit}). Next request goes to Manager · ${managerLeft} manager approval${managerLeft !== 1 ? 's' : ''} available.`;
+  } else {
+    color = 'var(--danger)'; icon = 'fa-exclamation-circle';
+    msg = `All quotas used this month (${selfUsed}/${selfLimit} self · ${managerUsed}/${managerLimit} manager). Next request goes to HR.`;
+  }
+
+  return (
+    <div style={{
+      background: selfLeft > 0 ? 'var(--success-light, #d1fae5)' : managerLeft > 0 ? 'var(--warning-light, #fffbeb)' : 'var(--danger-light, #fee2e2)',
+      border: `1px solid ${color}`,
+      borderRadius: 8, padding: '10px 16px', marginBottom: 12,
+      fontSize: 13, color,
+      display: 'flex', alignItems: 'center', gap: 10,
+    }}>
+      <i className={`fas ${icon}`} />
+      {msg}
+    </div>
+  );
+}
 
 const STATUS_BADGE = {
   Pending:  'badge-warning',
@@ -19,6 +51,7 @@ export default function MyRegularizeRequestsPage() {
   const [filter,    setFilter]    = useState('All');
   const [showModal, setShowModal] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [quota, setQuota] = useState(null);
   const [form, setForm] = useState({
     date: todayStr(), clockInTime: '', clockOutTime: '', reason: '',
   });
@@ -35,7 +68,13 @@ export default function MyRegularizeRequestsPage() {
     }
   }, [profile]);
 
-  useEffect(() => { fetchRequests(); }, [fetchRequests]);
+  const loadQuota = useCallback(async () => {
+    if (!profile || !tenant) return;
+    const q = await fetchMyQuota(tenant.id, profile.id);
+    setQuota(q);
+  }, [profile, tenant]);
+
+  useEffect(() => { fetchRequests(); loadQuota(); }, [fetchRequests, loadQuota]);
 
   const openModal = () => {
     setForm({
@@ -57,16 +96,22 @@ export default function MyRegularizeRequestsPage() {
 
     setSubmitting(true);
     try {
-      const { error } = await submitRegularizeRequest(tenant.id, profile.id, {
+      const { error, tier } = await submitRegularizeRequest(tenant.id, profile.id, {
         date:         form.date,
         clockInTime:  form.clockInTime,
         clockOutTime: form.clockOutTime,
         reason:       form.reason.trim(),
       });
       if (error) throw error;
-      showToast('Request submitted successfully', 'success');
+      const msg = tier === 'self'
+        ? 'Auto-approved! Attendance updated instantly.'
+        : tier === 'manager'
+        ? 'Request sent to Manager for approval'
+        : 'Request escalated to HR for approval';
+      showToast(msg, tier === 'self' ? 'success' : 'info');
       setShowModal(false);
       fetchRequests();
+      loadQuota();
     } catch (err) {
       showToast('Failed: ' + err.message, 'error');
     } finally {
@@ -85,7 +130,9 @@ export default function MyRegularizeRequestsPage() {
       />
       <div className="page-content">
 
-        <div className="filter-bar">
+        {quota && <QuotaBanner quota={quota} />}
+
+      <div className="filter-bar">
           {['All', 'Pending', 'Approved', 'Rejected'].map(s => (
             <button
               key={s}

@@ -74,6 +74,7 @@ const NAV_CONFIG = {
         { label: 'My Payslips', icon: 'fa-file-invoice-dollar', href: '/my-payslips' },
         { label: 'My Leaves', icon: 'fa-calendar-alt', href: '/my-leaves' },
         { label: 'Special Requests', icon: 'fa-star-half-alt', href: '/my-special-requests' },
+        { label: 'Attendance Fix', icon: 'fa-clock', href: '/my-regularize' },
       ],
     },
   ],
@@ -89,11 +90,27 @@ export default function Sidebar() {
   if (!profile) return null;
 
   const role = profile.role || 'employee';
-  const sections = NAV_CONFIG[role] || NAV_CONFIG.employee;
+
+  // Inject Group Dashboard link for admin/superadmin when tenant is part of a group
+  const rawSections = NAV_CONFIG[role] || NAV_CONFIG.employee;
+  const sections = (role === 'admin' || role === 'superadmin') && tenant?.group_code
+    ? rawSections.map(section =>
+        section.title === 'Main'
+          ? {
+              ...section,
+              items: [
+                section.items[0], // Dashboard first
+                { label: 'Group Dashboard', icon: 'fa-layer-group', href: '/group-dashboard' },
+                ...section.items.slice(1),
+              ],
+            }
+          : section
+      )
+    : rawSections;
 
   const initials = getInitials(profile.first_name, profile.last_name);
   const displayName = [profile.first_name, profile.last_name].filter(Boolean).join(' ') || 'User';
-  const roleLabel = role === 'superadmin' ? 'Super Admin' : role === 'admin' ? 'Admin' : role === 'manager' ? 'Manager' : 'Employee';
+  const roleLabel = role === 'superadmin' ? 'Super Admin' : role === 'admin' ? 'HR' : role === 'manager' ? 'Manager' : 'Employee';
 
   return (
     <aside className="sidebar">

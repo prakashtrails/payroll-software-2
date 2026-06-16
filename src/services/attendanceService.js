@@ -1,5 +1,6 @@
 import { supabase } from '@/lib/supabase';
 import { todayStr, timeStr, diffHours } from '@/lib/helpers';
+import { getOrCreateQuota, determineApproverRole, incrementSelfCount, incrementManagerCount } from './requestQuotaService';
 
 /** Full month attendance (with punches) for one employee — used in calendar views. */
 export async function fetchMyMonthAttendance(profileId, year, month) {
@@ -261,7 +262,7 @@ export async function fetchAllTenantAttendance(tenantId, year, month) {
 
   const { data, error } = await supabase
     .from('attendance')
-    .select('profile_id, status, date')
+    .select('profile_id, status, date, total_hours')
     .eq('tenant_id', tenantId)
     .gte('date', startDate)
     .lte('date', endDate);
@@ -334,27 +335,55 @@ export async function fetchEmployeeFullHistory(profileId) {
 
 // ── Regularization Requests (employee-initiated) ──────────────────────────────
 
-/** Employee submits a request to regularize attendance for a specific day */
+/**
+ * Employee submits a regularize request with tiered quota routing.
+ * Returns { data, error, tier } where tier is 'self' | 'manager' | 'admin'.
+ * When tier === 'self' the attendance change is applied immediately (no approval wait).
+ */
 export async function submitRegularizeRequest(tenantId, profileId, { date, clockInTime, clockOutTime, reason }) {
+  const quota = await getOrCreateQuota(tenantId, profileId);
+  const tier  = determineApproverRole(quota);
+
+  const payload = {
+    tenant_id:      tenantId,
+    profile_id:     profileId,
+    date,
+    clock_in_time:  clockInTime  || null,
+    clock_out_time: clockOutTime || null,
+    reason,
+    status:                 tier === 'self' ? 'Approved' : 'Pending',
+    required_approver_role: tier,
+    approval_level:         tier === 'self' ? 'self' : null,
+  };
+
+  if (tier === 'self') {
+    await incrementSelfCount(tenantId, profileId);
+    await regularizeAttendance(tenantId, {
+      fromDate:    date,
+      toDate:      date,
+      employeeIds: [profileId],
+      status:      'Present',
+      clockInTime,
+      clockOutTime,
+      reason,
+      changedBy:   profileId,
+    });
+  }
+
   const { data, error } = await supabase
     .from('regularize_requests')
-    .insert([{
-      tenant_id:      tenantId,
-      profile_id:     profileId,
-      date,
-      clock_in_time:  clockInTime  || null,
-      clock_out_time: clockOutTime || null,
-      reason,
-      status: 'Pending',
-    }])
+    .insert([payload])
     .select()
     .single();
-  return { data, error };
+  return { data, error, tier };
 }
 
-/** Admin/Manager: list all regularization requests for a tenant */
-export async function listRegularizeRequests(tenantId) {
-  const { data, error } = await supabase
+/**
+ * Admin/Manager: list all regularization requests for a tenant.
+ * Pass forRole='manager' to restrict to manager-routed requests only.
+ */
+export async function listRegularizeRequests(tenantId, forRole = null) {
+  let query = supabase
     .from('regularize_requests')
     .select(`
       *,
@@ -363,6 +392,12 @@ export async function listRegularizeRequests(tenantId) {
     `)
     .eq('tenant_id', tenantId)
     .order('created_at', { ascending: false });
+
+  if (forRole === 'manager') {
+    query = query.eq('required_approver_role', 'manager');
+  }
+
+  const { data, error } = await query;
   return { data: data || [], error };
 }
 
@@ -377,8 +412,12 @@ export async function listMyRegularizeRequests(profileId) {
   return { data: data || [], error };
 }
 
-/** Approve a request: apply attendance change then mark Approved */
-export async function approveRegularizeRequest(request, reviewerId) {
+/**
+ * Approve a regularize request: apply attendance change and mark Approved.
+ * reviewerRole: 'manager' | 'admin' | 'superadmin'
+ * When manager approves, increments that employee's manager quota.
+ */
+export async function approveRegularizeRequest(request, reviewerId, reviewerRole = 'admin') {
   await regularizeAttendance(request.tenant_id, {
     fromDate:     request.date,
     toDate:       request.date,
@@ -389,11 +428,17 @@ export async function approveRegularizeRequest(request, reviewerId) {
     reason:       request.reason,
     changedBy:    reviewerId,
   });
+
   const reviewedAt = new Date().toISOString();
   const { error } = await supabase
     .from('regularize_requests')
     .update({ status: 'Approved', reviewed_by: reviewerId, reviewed_at: reviewedAt })
     .eq('id', request.id);
+
+  if (!error && reviewerRole === 'manager') {
+    await incrementManagerCount(request.tenant_id, request.profile_id);
+  }
+
   return { error };
 }
 
