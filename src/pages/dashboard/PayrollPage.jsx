@@ -9,7 +9,7 @@ import { listActiveEmployees } from '@/services/employeeService';
 import { listComponents } from '@/services/salaryService';
 import { listActiveAdvances } from '@/services/advanceService';
 import { fetchAllTenantAttendance } from '@/services/attendanceService';
-import { fmt, monthLabel, calcSalary, calcPfEsic, getInitials, getAvatarColor, getWeeklyOffDaysInMonth, calcWeeklyOffSettlement, HIGH_SALARY_THRESHOLD } from '@/lib/helpers';
+import { fmt, monthLabel, calcSalary, calcPfEsic, calcOtPay, calcPayableOvertimeHours, getInitials, getAvatarColor, getWeeklyOffDaysInMonth, calcWeeklyOffSettlement, HIGH_SALARY_THRESHOLD } from '@/lib/helpers';
 import { fetchApprovedCompOffLeavesForMonth } from '@/services/leaveService';
 import { settleWeeklyOffForMonth, fetchMonthlySettlements } from '@/services/compOffService';
 
@@ -37,7 +37,7 @@ export default function RunPayrollPage() {
   const [compOffLeaves, setCompOffLeaves] = useState({});
   const [settlements,   setSettlements]   = useState([]);
 
-  const workDays          = tenant?.work_days || 26;
+  const workDays          = tenant?.work_days || 30;
   const complianceEmps    = employees.filter(isCompliance);
   const nonComplianceEmps = employees.filter(e => !isCompliance(e));
 
@@ -106,6 +106,39 @@ export default function RunPayrollPage() {
     const setProc = group === 'Compliance' ? setProcessingComp : setProcessingNonComp;
     setProc(true);
     try {
+      // Shift duration in hours
+      const shiftHrs = (() => {
+        if (!tenant?.shift_start || !tenant?.shift_end) return 8;
+        const [sh, sm] = tenant.shift_start.split(':').map(Number);
+        const [eh, em] = tenant.shift_end.split(':').map(Number);
+        let from = sh * 60 + sm, to = eh * 60 + em;
+        if (to <= from) to += 1440;
+        return (to - from) / 60;
+      })();
+
+      // Auto-calculate overtime from attendance for employees below the salary threshold.
+      // For each day where total_hours > shift_hours, accumulate the extra minutes
+      // then convert to payable rounded hours.
+      const autoOtRequests = [];
+      emps.forEach(emp => {
+        if ((emp.ctc || 0) >= HIGH_SALARY_THRESHOLD) return;
+        const empAtt = attendanceRaw.filter(a => a.profile_id === emp.id);
+        let totalOtMinutes = 0;
+        empAtt.forEach(a => {
+          if ((a.status === 'Present' || a.status === 'Late') && Number(a.total_hours) > shiftHrs) {
+            totalOtMinutes += Math.round((Number(a.total_hours) - shiftHrs) * 60);
+          }
+        });
+        const payableHours = calcPayableOvertimeHours(totalOtMinutes);
+        if (payableHours > 0) {
+          autoOtRequests.push({
+            profile_id:     emp.id,
+            overtime_hours: payableHours,
+            overtime_pay:   calcOtPay(emp.ctc || 0, shiftHrs, payableHours),
+          });
+        }
+      });
+
       await processPayroll({
         tenantId:         tenant.id,
         month:            payrollMonth,
@@ -116,15 +149,8 @@ export default function RunPayrollPage() {
         advances,
         workDays,
         workDayOverrides,
-        overtimeRequests,
-        shiftHours:       (() => {
-          if (!tenant?.shift_start || !tenant?.shift_end) return 8;
-          const [sh, sm] = tenant.shift_start.split(':').map(Number);
-          const [eh, em] = tenant.shift_end.split(':').map(Number);
-          let from = sh * 60 + sm, to = eh * 60 + em;
-          if (to <= from) to += 1440;
-          return (to - from) / 60;
-        })(),
+        overtimeRequests: autoOtRequests,
+        shiftHours:       shiftHrs,
       });
 
       // Run comp off settlement for high-salary employees in this group

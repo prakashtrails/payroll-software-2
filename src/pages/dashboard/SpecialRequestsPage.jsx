@@ -26,22 +26,25 @@ export default function SpecialRequestsPage() {
   const [statusFilter, setStatusFilter] = useState('Pending');
   const [typeFilter, setTypeFilter] = useState('All');
 
+  const isManager = profile?.role === 'manager';
+
   const fetchRequests = useCallback(async () => {
     if (!tenant) return;
     setLoading(true);
     try {
-      const { data, error } = await listAllSpecialRequests(tenant.id);
+      // Manager only sees requests routed to their level; admin sees all
+      const { data, error } = await listAllSpecialRequests(tenant.id, isManager ? 'manager' : null);
       if (error) showToast(error.message, 'error');
       else setRequests(data);
     } finally {
       setLoading(false);
     }
-  }, [tenant]);
+  }, [tenant, isManager]);
 
   useEffect(() => { fetchRequests(); }, [fetchRequests]);
 
   const handleStatusChange = async (id, status) => {
-    const { error } = await updateSpecialRequestStatus(id, status, profile.id);
+    const { error } = await updateSpecialRequestStatus(id, status, profile.id, profile.role);
     if (error) showToast(error.message, 'error');
     else {
       showToast(`Request ${status.toLowerCase()} successfully`, 'success');

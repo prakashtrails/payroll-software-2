@@ -11,6 +11,8 @@ export default function LeavesPage() {
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('Pending'); // Pending, Approved, Rejected, All
 
+  const isManager = profile?.role === 'manager';
+
   useEffect(() => {
     fetchRequests();
   }, [tenant]);
@@ -19,7 +21,8 @@ export default function LeavesPage() {
     if (!tenant) return;
     setLoading(true);
     try {
-      const { data, error } = await listAllLeaveRequests(tenant.id);
+      // Manager only sees requests routed to their level; admin sees all
+      const { data, error } = await listAllLeaveRequests(tenant.id, isManager ? 'manager' : null);
       if (error) showToast(error.message, 'error');
       else setRequests(data);
     } finally {
@@ -28,7 +31,7 @@ export default function LeavesPage() {
   };
 
   const handleStatusChange = async (id, status) => {
-    const { error } = await updateLeaveStatus(id, status, profile.id);
+    const { error } = await updateLeaveStatus(id, status, profile.id, profile.role);
     if (error) showToast(error.message, 'error');
     else {
       showToast(`Leave ${status.toLowerCase()} successfully`, 'success');

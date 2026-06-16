@@ -39,17 +39,20 @@ export default function RegularizeAttendancePage() {
   };
   const [submitting, setSubmitting] = useState(false);
 
+  const isManager = profile?.role === 'manager';
+
   const fetchRequests = useCallback(async () => {
     if (!tenant) return;
     setLoading(true);
     try {
-      const { data, error } = await listRegularizeRequests(tenant.id);
+      // Manager only sees requests routed to their level; admin sees all
+      const { data, error } = await listRegularizeRequests(tenant.id, isManager ? 'manager' : null);
       if (error) showToast(error.message, 'error');
       else setRequests(data);
     } finally {
       setLoading(false);
     }
-  }, [tenant]);
+  }, [tenant, isManager]);
 
   useEffect(() => { fetchRequests(); }, [fetchRequests]);
 
@@ -61,7 +64,7 @@ export default function RegularizeAttendancePage() {
   const handleApprove = async (req) => {
     setActing(req.id);
     try {
-      const { error } = await approveRegularizeRequest(req, profile.id);
+      const { error } = await approveRegularizeRequest(req, profile.id, profile.role);
       if (error) throw error;
       showToast('Request approved and attendance updated', 'success');
       fetchRequests();

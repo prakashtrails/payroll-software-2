@@ -4,7 +4,39 @@ import Modal from '@/components/Modal';
 import { showToast } from '@/components/Toast';
 import { useAuth } from '@/context/AuthContext';
 import { listMySpecialRequests, submitSpecialRequest } from '@/services/specialRequestService';
+import { fetchMyQuota } from '@/services/requestQuotaService';
 import { fmt, todayStr, calcPayableOvertimeHours, calcOtPay } from '@/lib/helpers';
+
+function QuotaBanner({ quota }) {
+  const { selfUsed, selfLimit, managerUsed, managerLimit } = quota;
+  const selfLeft    = selfLimit    - selfUsed;
+  const managerLeft = managerLimit - managerUsed;
+
+  let color, icon, msg;
+  if (selfLeft > 0) {
+    color = 'var(--success)'; icon = 'fa-shield-alt';
+    msg = `${selfLeft} self-approval${selfLeft !== 1 ? 's' : ''} remaining this month — your next request auto-approves instantly.`;
+  } else if (managerLeft > 0) {
+    color = 'var(--warning-dark, #92400e)'; icon = 'fa-user-check';
+    msg = `Self-approvals used (${selfUsed}/${selfLimit}). Next request goes to Manager · ${managerLeft} manager approval${managerLeft !== 1 ? 's' : ''} available.`;
+  } else {
+    color = 'var(--danger)'; icon = 'fa-exclamation-circle';
+    msg = `All quotas used this month (${selfUsed}/${selfLimit} self · ${managerUsed}/${managerLimit} manager). Next request goes to HR.`;
+  }
+
+  return (
+    <div style={{
+      background: selfLeft > 0 ? 'var(--success-light, #d1fae5)' : managerLeft > 0 ? 'var(--warning-light, #fffbeb)' : 'var(--danger-light, #fee2e2)',
+      border: `1px solid ${color}`,
+      borderRadius: 8, padding: '10px 16px', marginBottom: 8,
+      fontSize: 13, color,
+      display: 'flex', alignItems: 'center', gap: 10,
+    }}>
+      <i className={`fas ${icon}`} />
+      {msg}
+    </div>
+  );
+}
 
 const SALARY_OT_LIMIT = 30000;
 
@@ -41,6 +73,7 @@ export default function MySpecialRequestsPage() {
   const [form, setForm] = useState(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
   const [filter, setFilter] = useState('All');
+  const [quota, setQuota] = useState(null);
 
   const fetchRequests = useCallback(async () => {
     if (!profile) return;
@@ -54,7 +87,13 @@ export default function MySpecialRequestsPage() {
     }
   }, [profile]);
 
-  useEffect(() => { fetchRequests(); }, [fetchRequests]);
+  const loadQuota = useCallback(async () => {
+    if (!profile || !tenant) return;
+    const q = await fetchMyQuota(tenant.id, profile.id);
+    setQuota(q);
+  }, [profile, tenant]);
+
+  useEffect(() => { fetchRequests(); loadQuota(); }, [fetchRequests, loadQuota]);
 
   const openModal = () => {
     setForm(EMPTY_FORM);
@@ -98,14 +137,20 @@ export default function MySpecialRequestsPage() {
         overtime_pay:     storedOtPay,
       };
 
-      const { error } = await submitSpecialRequest(payload);
+      const { error, tier } = await submitSpecialRequest(payload);
       if (error) {
         showToast(error.message || 'Failed to submit request', 'error');
       } else {
-        showToast('Request submitted successfully', 'success');
+        const msg = tier === 'self'
+          ? 'Auto-approved! (self-approval used)'
+          : tier === 'manager'
+          ? 'Request sent to Manager for approval'
+          : 'Request escalated to HR for approval';
+        showToast(msg, tier === 'self' ? 'success' : 'info');
         setShowModal(false);
         setForm(EMPTY_FORM);
         fetchRequests();
+        loadQuota();
       }
     } catch (err) {
       showToast(err.message || 'Something went wrong', 'error');
@@ -130,7 +175,9 @@ export default function MySpecialRequestsPage() {
         }
       />
 
-      <div className="card" style={{ marginTop: 24 }}>
+      {quota && <QuotaBanner quota={quota} />}
+
+      <div className="card" style={{ marginTop: 8 }}>
         <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
           <h3 style={{ margin: 0 }}>My Requests</h3>
           <div className="flex gap-1" style={{ flexWrap: 'wrap' }}>

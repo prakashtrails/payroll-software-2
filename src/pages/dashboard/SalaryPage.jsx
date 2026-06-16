@@ -58,7 +58,14 @@ export default function SalaryStructurePage() {
     fetchComponents();
   };
 
-  const previewSalary = calcSalary(30000, components, tenant?.work_days || 26, tenant?.work_days || 26);
+  const previewSalary = calcSalary(30000, components, tenant?.work_days || 30, tenant?.work_days || 30);
+
+  // Validate that earning % components roughly cover CTC
+  const earningPct = components
+    .filter(c => c.category === 'earning' && c.calc_type === 'percent_ctc')
+    .reduce((sum, c) => sum + (parseFloat(c.percent) || 0), 0);
+  const hasFixedEarnings = components.some(c => c.category === 'earning' && c.calc_type === 'fixed');
+  const earningCoverage  = Math.round((previewSalary.totalEarning / 30000) * 100); // % of sample CTC covered
 
   const renderTable = (category, label) => {
     const items = components.filter((c) => c.category === category);
@@ -106,6 +113,25 @@ export default function SalaryStructurePage() {
           <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)' }}><div className="spinner" style={{ margin: '0 auto 16px' }} />Loading components…</div>
         ) : (
           <>
+            {components.length > 0 && (
+              <div style={{
+                background: earningCoverage === 100 ? 'var(--success-light, #d1fae5)' : earningCoverage > 100 ? 'var(--danger-light, #fee2e2)' : 'var(--warning-light, #fffbeb)',
+                border: `1px solid ${earningCoverage === 100 ? 'var(--success)' : earningCoverage > 100 ? 'var(--danger)' : 'var(--warning)'}`,
+                borderRadius: 8, padding: '10px 16px', marginBottom: 16,
+                fontSize: 13, display: 'flex', alignItems: 'center', gap: 10,
+              }}>
+                <i className={`fas ${earningCoverage === 100 ? 'fa-check-circle' : earningCoverage > 100 ? 'fa-exclamation-circle' : 'fa-exclamation-triangle'}`}
+                   style={{ color: earningCoverage === 100 ? 'var(--success)' : earningCoverage > 100 ? 'var(--danger)' : 'var(--warning-dark, #92400e)' }} />
+                <span style={{ color: earningCoverage === 100 ? 'var(--success)' : earningCoverage > 100 ? 'var(--danger)' : 'var(--warning-dark, #92400e)' }}>
+                  {earningCoverage === 100
+                    ? 'Salary structure is correctly configured — earnings cover 100% of CTC.'
+                    : earningCoverage > 100
+                    ? `Earnings exceed CTC by ${earningCoverage - 100}%. Reduce component percentages.`
+                    : `Earnings cover only ${earningCoverage}% of CTC. Add more components or increase percentages${hasFixedEarnings ? ' (fixed amounts counted in preview)' : ''}.`}
+                </span>
+              </div>
+            )}
+
             <div className="grid-2">
               {renderTable('earning', 'Earning Components')}
               {renderTable('deduction', 'Deduction Components')}
