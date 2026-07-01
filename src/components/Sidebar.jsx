@@ -115,10 +115,10 @@ export default function Sidebar() {
   return (
     <aside className="sidebar">
       <div className="sidebar-logo">
-        <div className="logo-icon">P</div>
+        <div className="logo-icon"><img src="/logo.png" alt="CrewCore" /></div>
         <div>
-          <h2>PayrollPro</h2>
-          <span>{tenant?.company_name || 'Payroll Suite'}</span>
+          <h2>CrewCore</h2>
+          <span>{tenant?.company_name || 'CrewCore'}</span>
         </div>
       </div>
 

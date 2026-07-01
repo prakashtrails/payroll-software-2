@@ -128,8 +128,8 @@ export default function ResetPasswordPage() {
       <div className="auth-container">
         <div className="auth-card" style={{ textAlign: 'center', padding: '48px 36px' }}>
           <div className="auth-logo" style={{ marginBottom: 24 }}>
-            <div className="logo-icon">P</div>
-            <h1>PayrollPro</h1>
+            <div className="logo-icon"><img src="/logo.png" alt="CrewCore" /></div>
+            <h1>CrewCore</h1>
           </div>
           <div className="spinner" style={{ margin: '0 auto 16px' }} />
           <p style={{ color: 'var(--text-muted)', fontSize: 13 }}>Verifying reset link…</p>
@@ -143,9 +143,9 @@ export default function ResetPasswordPage() {
       <div className="auth-card">
         {/* Logo */}
         <div className="auth-logo">
-          <div className="logo-icon">P</div>
-          <h1>PayrollPro</h1>
-          <span className="auth-tagline">Smart Payroll for Modern Teams</span>
+          <div className="logo-icon"><img src="/logo.png" alt="CrewCore" /></div>
+          <h1>CrewCore</h1>
+          <span className="auth-tagline">Smart Workforce Management</span>
         </div>
 
         <div className="auth-title">

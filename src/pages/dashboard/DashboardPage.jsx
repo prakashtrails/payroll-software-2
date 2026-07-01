@@ -195,7 +195,7 @@ export default function GeneralDashboard() {
               <div className="card-header"><h3>System Setup Guide</h3></div>
               <div className="card-body">
                 <p style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-                  Welcome to PayrollPro. Here are the recommended next steps:
+                  Welcome to CrewCore. Here are the recommended next steps:
                 </p>
                 <ul style={{ paddingLeft: 20, marginTop: 12, fontSize: 13, color: 'var(--text)', display: 'grid', gap: 8 }}>
                   <li>Go to <strong>Settings</strong> to configure earning and deduction components.</li>

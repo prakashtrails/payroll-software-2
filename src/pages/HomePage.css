@@ -7,7 +7,7 @@
 
 /* Buttons */
 .btn-primary {
-  background: linear-gradient(135deg, #00AEEF 0%, #0078A8 100%);
+  background: linear-gradient(135deg, #6C5CE7 0%, #5849C2 100%);
   color: white;
   border: none;
   padding: 12px 24px;
@@ -20,7 +20,7 @@
 
 .btn-primary:hover {
   transform: translateY(-2px);
-  box-shadow: 0 10px 25px rgba(0, 174, 239, 0.4);
+  box-shadow: 0 10px 25px rgba(108, 92, 231, 0.4);
 }
 
 .btn-secondary {
@@ -36,14 +36,14 @@
 }
 
 .btn-secondary:hover {
-  border-color: #00AEEF;
-  color: #00AEEF;
+  border-color: #6C5CE7;
+  color: #6C5CE7;
 }
 
 .btn-outline {
   background: transparent;
-  color: #00AEEF;
-  border: 2px solid #00AEEF;
+  color: #6C5CE7;
+  border: 2px solid #6C5CE7;
   padding: 12px 24px;
   border-radius: 8px;
   font-size: 14px;
@@ -53,7 +53,7 @@
 }
 
 .btn-outline:hover {
-  background: #00AEEF;
+  background: #6C5CE7;
   color: white;
 }
 
@@ -85,20 +85,17 @@
   gap: 10px;
   font-size: 20px;
   font-weight: 700;
-  color: #00AEEF;
+  color: #6C5CE7;
   text-decoration: none;
 }
 
-.logo i {
+.logo img {
   width: 32px;
   height: 32px;
-  background: linear-gradient(135deg, #00AEEF 0%, #0078A8 100%);
-  border-radius: 6px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: white;
-  font-size: 18px;
+  border-radius: 8px;
+  object-fit: cover;
+  object-position: center;
+  display: block;
 }
 
 .nav-buttons {
@@ -110,7 +107,7 @@
 /* Hero Section */
 .hero {
   padding: 80px 0;
-  background: linear-gradient(135deg, #E0F5FF 0%, #F0F4F8 100%);
+  background: linear-gradient(135deg, #EDE9FE 0%, #F5F3FF 100%);
 }
 
 .hero-content {
@@ -176,12 +173,12 @@
   align-items: center;
   justify-content: center;
   height: 100%;
-  background: linear-gradient(135deg, #E0F5FF 0%, #F0F4F8 100%);
+  background: linear-gradient(135deg, #EDE9FE 0%, #F5F3FF 100%);
 }
 
 .chart-placeholder {
   font-size: 64px;
-  color: #00AEEF;
+  color: #6C5CE7;
   opacity: 0.3;
 }
 
@@ -224,14 +221,14 @@
 
 .feature-card:hover {
   transform: translateY(-8px);
-  box-shadow: 0 20px 40px rgba(0, 174, 239, 0.15);
+  box-shadow: 0 20px 40px rgba(108, 92, 231, 0.15);
   background: white;
 }
 
 .feature-icon {
   width: 56px;
   height: 56px;
-  background: linear-gradient(135deg, #00AEEF 0%, #0078A8 100%);
+  background: linear-gradient(135deg, #6C5CE7 0%, #5849C2 100%);
   border-radius: 10px;
   display: flex;
   align-items: center;
@@ -257,7 +254,7 @@
 /* Benefits Section */
 .benefits {
   padding: 80px 0;
-  background: linear-gradient(135deg, #E0F5FF 0%, #F0F4F8 100%);
+  background: linear-gradient(135deg, #EDE9FE 0%, #F5F3FF 100%);
 }
 
 .benefits-text h2 {
@@ -287,7 +284,7 @@
   justify-content: center;
   width: 24px;
   height: 24px;
-  background: linear-gradient(135deg, #00AEEF 0%, #0078A8 100%);
+  background: linear-gradient(135deg, #6C5CE7 0%, #5849C2 100%);
   border-radius: 50%;
   color: white;
   font-size: 12px;
@@ -301,10 +298,104 @@
   font-weight: 500;
 }
 
+/* App Download Section */
+.app-download {
+  padding: 80px 0;
+  background: #0A0816;
+}
+
+.app-download-content {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 60px;
+  align-items: center;
+}
+
+.app-download-text h2 {
+  font-size: 36px;
+  font-weight: 700;
+  color: #fff;
+  margin-bottom: 16px;
+}
+
+.app-download-text p {
+  font-size: 16px;
+  color: rgba(255, 255, 255, 0.65);
+  margin-bottom: 28px;
+  max-width: 480px;
+  line-height: 1.6;
+}
+
+.play-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  background: #000;
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 10px;
+  padding: 10px 20px;
+  transition: all 0.3s ease;
+}
+
+.play-badge:hover {
+  border-color: #6C5CE7;
+  transform: translateY(-2px);
+}
+
+.play-badge i {
+  font-size: 28px;
+}
+
+.play-badge span {
+  display: flex;
+  flex-direction: column;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.play-badge small {
+  font-size: 10px;
+  font-weight: 400;
+  letter-spacing: 0.5px;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.app-download-qr {
+  background: #fff;
+  border-radius: 16px;
+  padding: 20px;
+  text-align: center;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.4);
+}
+
+.app-download-qr p {
+  margin-top: 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #1E293B;
+}
+
+@media (max-width: 768px) {
+  .app-download-content {
+    grid-template-columns: 1fr;
+    text-align: center;
+  }
+
+  .app-download-text p {
+    max-width: 100%;
+  }
+
+  .play-badge {
+    margin: 0 auto;
+  }
+}
+
 /* CTA Section */
 .cta {
   padding: 80px 0;
-  background: linear-gradient(135deg, #00AEEF 0%, #0078A8 100%);
+  background: linear-gradient(135deg, #6C5CE7 0%, #5849C2 100%);
   text-align: center;
 }
 
@@ -323,7 +414,7 @@
 
 .cta .btn-primary {
   background: white;
-  color: #00AEEF;
+  color: #6C5CE7;
 }
 
 .cta .btn-primary:hover {

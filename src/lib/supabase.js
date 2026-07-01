@@ -30,7 +30,7 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   },
   realtime: { params: { eventsPerSecond: 0 } },
   global: {
-    headers: { 'x-app-name': 'payrollpro' },
+    headers: { 'x-app-name': 'crewcore' },
     fetch: fetchWithTimeout,
   },
 });
