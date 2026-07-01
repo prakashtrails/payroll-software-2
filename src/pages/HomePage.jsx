@@ -1,5 +1,6 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
+import { QRCodeSVG } from 'qrcode.react';
 import './HomePage.css';
 
 export default function HomePage() {
@@ -12,8 +13,8 @@ export default function HomePage() {
         <div className="container">
           <div className="navbar-content">
             <div className="logo">
-              <i className="fas fa-calculator"></i>
-              <span>PayrollPro</span>
+              <img src="/logo.png" alt="CrewCore" />
+              <span>CrewCore</span>
             </div>
             <div className="nav-buttons">
               <button className="btn-secondary" onClick={() => navigate('/login')}>
@@ -32,10 +33,10 @@ export default function HomePage() {
         <div className="container">
           <div className="hero-content">
             <div className="hero-text">
-              <h1>Payroll Management Made Simple</h1>
+              <h1>Workforce &amp; Payroll, Made Simple</h1>
               <p>
-                Streamline your payroll operations with our intuitive SaaS platform. 
-                Manage employees, attendance, leaves, and salaries all in one place.
+                CrewCore brings your team, attendance, leaves, and payroll together in one
+                intuitive platform — built for modern, fast-moving businesses.
               </p>
               <div className="hero-buttons">
                 <button className="btn-primary btn-lg" onClick={() => navigate('/signup')}>
@@ -129,7 +130,7 @@ export default function HomePage() {
         <div className="container">
           <div className="benefits-content">
             <div className="benefits-text">
-              <h2>Why Choose PayrollPro?</h2>
+              <h2>Why Choose CrewCore?</h2>
               <ul className="benefits-list">
                 <li>
                   <span className="check"><i className="fas fa-check"></i></span>
@@ -161,12 +162,49 @@ export default function HomePage() {
         </div>
       </section>
 
+      {/* Mobile App Section */}
+      <section className="app-download">
+        <div className="container">
+          <div className="app-download-content">
+            <div className="app-download-text">
+              <h2>Take CrewCore With You</h2>
+              <p>
+                Clock in, check payslips, and manage leave requests on the go with the
+                CrewCore mobile app — free to download on the Google Play Store.
+              </p>
+              <a
+                className="play-badge"
+                href="https://play.google.com/store/apps/details?id=com.crewcore.app"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                <i className="fab fa-google-play"></i>
+                <span>
+                  <small>GET IT ON</small>
+                  Google Play
+                </span>
+              </a>
+            </div>
+            <div className="app-download-qr">
+              <QRCodeSVG
+                value="https://play.google.com/store/apps/details?id=com.crewcore.app"
+                size={168}
+                bgColor="#ffffff"
+                fgColor="#1E293B"
+                level="M"
+              />
+              <p>Scan to download</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
       {/* CTA Section */}
       <section className="cta">
         <div className="container">
           <div className="cta-content">
             <h2>Ready to Transform Your Payroll?</h2>
-            <p>Join hundreds of businesses managing their payroll with PayrollPro</p>
+            <p>Join hundreds of businesses managing their payroll with CrewCore</p>
             <button className="btn-primary btn-lg" onClick={() => navigate('/signup')}>
               Register Your Company Today
             </button>
@@ -179,7 +217,7 @@ export default function HomePage() {
         <div className="container">
           <div className="footer-content">
             <div className="footer-section">
-              <h4>PayrollPro</h4>
+              <h4>CrewCore</h4>
               <p>Modern payroll management for the digital age</p>
             </div>
             <div className="footer-section">
@@ -198,7 +236,7 @@ export default function HomePage() {
             </div>
           </div>
           <div className="footer-bottom">
-            <p>&copy; 2024 PayrollPro. All rights reserved.</p>
+            <p>&copy; 2026 CrewCore. All rights reserved.</p>
           </div>
         </div>
       </footer>
