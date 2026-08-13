@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS profiles (
   id                   uuid PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
   tenant_id            uuid REFERENCES tenants(id) ON DELETE CASCADE,
   first_name           text NOT NULL DEFAULT '',
+  middle_name          text NOT NULL DEFAULT '',
   last_name            text NOT NULL DEFAULT '',
   email                text NOT NULL DEFAULT '',
   phone                text NOT NULL DEFAULT '',
@@ -53,6 +54,9 @@ CREATE TABLE IF NOT EXISTS profiles (
 );
 -- Add must_change_password to existing profiles tables created before this column existed
 ALTER TABLE profiles ADD COLUMN IF NOT EXISTS must_change_password boolean NOT NULL DEFAULT false;
+
+-- Add middle_name to existing profiles tables created before this column existed
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS middle_name text NOT NULL DEFAULT '';
 
 -- Compliance fields: country of residence + international employee documents
 ALTER TABLE profiles ADD COLUMN IF NOT EXISTS country             text    NOT NULL DEFAULT 'India';
@@ -455,52 +459,15 @@ BEGIN
 END;
 $$;
 
--- Called by EmployeesPage when a manager creates a new employee account.
--- Inserts the employee profile under the calling manager's tenant.
--- Sets must_change_password = true so the employee is forced to change their
--- temporary password on first login.
-DROP FUNCTION IF EXISTS insert_employee_profile(uuid,uuid,text,text,text,text,text,text,numeric,date,text,text,text,text);
-CREATE OR REPLACE FUNCTION insert_employee_profile(
-  p_user_id     uuid,
-  p_tenant_id   uuid,
-  p_first_name  text,
-  p_last_name   text,
-  p_email       text,
-  p_phone       text DEFAULT '',
-  p_department  text DEFAULT '',
-  p_designation text DEFAULT '',
-  p_ctc         numeric DEFAULT 0,
-  p_join_date   date DEFAULT NULL,
-  p_bank_acc    text DEFAULT '',
-  p_pan         text DEFAULT '',
-  p_aadhar      text DEFAULT '',
-  p_temp_password text DEFAULT NULL
-)
-RETURNS void
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public
-AS $$
-BEGIN
-  INSERT INTO profiles (
-    id, tenant_id,
-    first_name, last_name, email, phone,
-    department, designation, ctc, join_date,
-    bank_acc, pan, aadhar,
-    role, status, must_change_password, temp_password
-  ) VALUES (
-    p_user_id, p_tenant_id,
-    p_first_name, p_last_name, p_email, COALESCE(p_phone,''),
-    COALESCE(p_department,''), COALESCE(p_designation,''),
-    COALESCE(p_ctc, 0), p_join_date,
-    COALESCE(p_bank_acc,''), COALESCE(p_pan,''), COALESCE(p_aadhar,''),
-    'employee', 'Active', true, p_temp_password
-  );
-END;
-$$;
-
-GRANT EXECUTE ON FUNCTION create_workspace(text,text,text,uuid)                            TO anon, authenticated;
-GRANT EXECUTE ON FUNCTION insert_employee_profile(uuid,uuid,text,text,text,text,text,text,numeric,date,text,text,text,text) TO authenticated;
+-- insert_employee_profile() used to be defined here as SECURITY DEFINER with
+-- no caller-authorization check inside its body — any authenticated user could
+-- RPC it directly with an arbitrary p_tenant_id/p_user_id and plant a profile
+-- into a tenant they don't belong to. Fixed for real in migration
+-- 20260714_signup_rpc_hijack_fix.sql, which DROPs this function outright
+-- (employee creation now goes through the create-employee-user Edge Function,
+-- which authorizes the caller first). Removed here too so this bootstrap file
+-- can't be used to reintroduce the hole on a fresh project.
+GRANT EXECUTE ON FUNCTION create_workspace(text,text,text,uuid) TO anon, authenticated;
 
 
 -- =============================================================
@@ -738,46 +705,7 @@ ALTER TABLE attendance ADD COLUMN IF NOT EXISTS punch_in_lng numeric;
 ALTER TABLE attendance ADD COLUMN IF NOT EXISTS punch_out_lat numeric;
 ALTER TABLE attendance ADD COLUMN IF NOT EXISTS punch_out_lng numeric;
 
--- Drop and recreate insert_employee_profile with temp_password support
-DROP FUNCTION IF EXISTS insert_employee_profile(uuid,uuid,text,text,text,text,text,text,numeric,date,text,text,text,text);
-CREATE OR REPLACE FUNCTION insert_employee_profile(
-  p_user_id      uuid,
-  p_tenant_id    uuid,
-  p_first_name   text,
-  p_last_name    text,
-  p_email        text,
-  p_phone        text,
-  p_department   text,
-  p_designation  text,
-  p_ctc          numeric,
-  p_join_date    date,
-  p_bank_acc     text,
-  p_pan          text,
-  p_aadhar       text,
-  p_temp_password text DEFAULT NULL
-)
-RETURNS void
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public
-AS $$
-BEGIN
-  INSERT INTO profiles (
-    id, tenant_id,
-    first_name, last_name, email, phone,
-    department, designation,
-    ctc, join_date,
-    bank_acc, pan, aadhar,
-    role, status, must_change_password, temp_password
-  ) VALUES (
-    p_user_id, p_tenant_id,
-    p_first_name, p_last_name, p_email, COALESCE(p_phone,''),
-    COALESCE(p_department,''), COALESCE(p_designation,''),
-    COALESCE(p_ctc, 0), p_join_date,
-    COALESCE(p_bank_acc,''), COALESCE(p_pan,''), COALESCE(p_aadhar,''),
-    'employee', 'Active', true, p_temp_password
-  );
-END;
-$$;
+-- (insert_employee_profile recreation removed — see note above; superseded by
+-- the create-employee-user Edge Function, which authorizes the caller first.)
 
 GRANT EXECUTE ON FUNCTION insert_employee_profile(uuid,uuid,text,text,text,text,text,text,numeric,date,text,text,text,text) TO authenticated;

@@ -4,6 +4,7 @@ import { useNavigate, Link } from 'react-router-dom';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/context/AuthContext';
 import { detectIdentifierType } from '@/services/otpService';
+import { phoneToPlaceholderEmail } from '@/lib/helpers';
 import {
   ErrorBanner, SuccessBanner,
   OtpInput, ResendTimer,
@@ -37,15 +38,26 @@ function PasswordLoginForm({ onSuccess, onForgotPassword }) {
     e.preventDefault();
     setError('');
     if (!email || !password) {
-      setError('Please enter both email and password.');
+      setError('Please enter both email/phone and password.');
+      return;
+    }
+    // Employees imported with no email sign in with their phone number —
+    // resolve it to the same placeholder identifier their account was
+    // created with (see phoneToPlaceholderEmail / resolveLoginEmail). Unlike
+    // OTP login, tolerate spaces/dashes/country codes here since that's what
+    // the bulk importer already accepts from the sheet's phone column.
+    const trimmed = email.trim();
+    const loginId = trimmed.includes('@') ? trimmed.toLowerCase() : phoneToPlaceholderEmail(trimmed);
+    if (!loginId) {
+      setError('Please enter a valid email address or phone number.');
       return;
     }
     setSubmitting(true);
     try {
-      await signIn(email, password);
+      await signIn(loginId, password);
       onSuccess();
     } catch (err) {
-      setError(err.message || 'Invalid email or password.');
+      setError(err.message || 'Invalid email/phone or password.');
     } finally {
       setSubmitting(false);
     }
@@ -55,11 +67,11 @@ function PasswordLoginForm({ onSuccess, onForgotPassword }) {
     <form onSubmit={handleSubmit}>
       <ErrorBanner message={error} />
       <div className="form-group">
-        <label className="form-label">Email Address</label>
+        <label className="form-label">Email or Phone Number</label>
         <div style={{position:'relative'}}>
-          <input className="form-input" type="email"
-            placeholder="you@company.com" value={email} onChange={e=>setEmail(e.target.value)}
-            autoComplete="email" style={{paddingLeft:38}} />
+          <input className="form-input" type="text" inputMode="email"
+            placeholder="you@company.com or 10-digit phone" value={email} onChange={e=>setEmail(e.target.value)}
+            autoComplete="username" style={{paddingLeft:38}} />
           <i className="fas fa-envelope" style={ICON_STYLE} />
         </div>
       </div>
@@ -283,9 +295,7 @@ export default function LoginPage() {
 
   useEffect(() => {
     if (!loading && user && profile) {
-      const dest = profile.role === 'employee' ? '/my-dashboard'
-                 : profile.role === 'manager'  ? '/manager-dashboard'
-                 : '/dashboard';
+      const dest = profile.role === 'superadmin' ? '/dashboard' : '/home';
       navigate(dest, { replace: true });
     }
   }, [user, profile, loading, navigate]);

@@ -1,5 +1,45 @@
 import { supabase } from '@/lib/supabase';
 
+/**
+ * supabase.functions.invoke() reports any non-2xx response as a generic
+ * FunctionsHttpError without surfacing the JSON body — pull the real
+ * `{ error }` message out of the response so callers can show it.
+ */
+async function invokeMessage(error) {
+  if (!error?.context?.json) return error?.message || 'Request failed';
+  try {
+    const body = await error.context.json();
+    return body?.error || error.message;
+  } catch {
+    return error.message;
+  }
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// This project's Supabase auth server fleet is inconsistently synced on a
+// rotated JWT signing key — some replicas verify a valid session token fine,
+// others intermittently reject it with this exact message. It's transient
+// (confirmed: back-to-back identical calls alternate pass/fail), so a couple
+// of quick retries clears it without the caller ever seeing it.
+const isTransientAuthError = (msg) => /invalid jwt|signature is invalid|unable to (parse|verify) signature/i.test(msg || '');
+
+async function invokeWithRetry(fnName, body, maxRetries = 2) {
+  let lastErr;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const { data, error } = await supabase.functions.invoke(fnName, { body });
+    const msg = error ? await invokeMessage(error) : data?.error;
+    if (!msg) return data;
+    lastErr = new Error(msg);
+    if (attempt < maxRetries && isTransientAuthError(msg)) {
+      await sleep(400 * (attempt + 1));
+      continue;
+    }
+    throw lastErr;
+  }
+  throw lastErr;
+}
+
 const normalizeHoliday = (holiday) => {
   const dateValue = holiday.holiday_date || holiday.date;
   return {
@@ -17,6 +57,17 @@ const normalizeHoliday = (holiday) => {
 
 export async function updateTenant(tenantId, payload) {
   const { error } = await supabase.from('tenants').update(payload).eq('id', tenantId);
+  return { error };
+}
+
+/**
+ * Permanently deletes a tenant (company) — superadmin only (RLS: "tenants:
+ * superadmin_platform_all"). Cascades to every tenant-scoped table
+ * (profiles, departments, payrolls, attendance, leave_requests, outlets,
+ * announcements, policies, etc.) per the FKs in the base schema.
+ */
+export async function deleteTenant(tenantId) {
+  const { error } = await supabase.from('tenants').delete().eq('id', tenantId);
   return { error };
 }
 
@@ -123,12 +174,35 @@ export async function removeShift(id) {
   return { error };
 }
 
-/** Aggregate dashboard stats — all queries run in parallel. */
-export async function fetchDashboardStats(tenantId) {
+/** Grace/threshold config used by the nightly auto-attendance sweep (mark_attendance_from_punches). */
+export async function updateShiftThresholds(id, { grace_minutes, early_exit_threshold_minutes, auto_absent_after_hours }) {
+  const { error } = await supabase.from('shifts').update({
+    grace_minutes: parseInt(grace_minutes) || 0,
+    early_exit_threshold_minutes: parseInt(early_exit_threshold_minutes) || 0,
+    auto_absent_after_hours: parseInt(auto_absent_after_hours) || 0,
+  }).eq('id', id);
+  return { error };
+}
+
+/**
+ * Aggregate dashboard stats — all queries run in parallel. `outletProfileIds`
+ * (a Set, from OutletViewContext) narrows the employee/advances queries to
+ * one outlet's people; `processedPayrolls` stays tenant-wide since a payroll
+ * run is a per-tenant batch, not owned by any single outlet.
+ */
+export async function fetchDashboardStats(tenantId, outletProfileIds = null) {
+  let empsQuery = supabase.from('profiles').select('id, ctc').eq('tenant_id', tenantId).eq('role', 'employee').eq('status', 'Active');
+  let advQuery = supabase.from('advances').select('balance, profile_id').eq('tenant_id', tenantId).eq('status', 'Active');
+  if (outletProfileIds) {
+    const ids = [...outletProfileIds];
+    empsQuery = empsQuery.in('id', ids);
+    advQuery = advQuery.in('profile_id', ids);
+  }
+
   const [empsRes, payrollRes, advRes] = await Promise.all([
-    supabase.from('profiles').select('ctc').eq('tenant_id', tenantId).eq('role', 'employee').eq('status', 'Active'),
+    empsQuery,
     supabase.from('payrolls').select('id', { count: 'exact', head: true }).eq('tenant_id', tenantId).eq('status', 'Processed'),
-    supabase.from('advances').select('balance').eq('tenant_id', tenantId).eq('status', 'Active'),
+    advQuery,
   ]);
 
   const activeEmployees     = empsRes.data?.length || 0;
@@ -147,6 +221,145 @@ export async function listAllTenants() {
     .select('*')
     .order('created_at', { ascending: false });
   return { data: data || [], error };
+}
+
+/**
+ * Creates a new company (tenant) plus its first admin login via the
+ * create-tenant edge function — superadmin only. Returns
+ * { tenantId, joinCode, adminEmail, tempPassword } on success.
+ */
+export async function createTenant(payload) {
+  return invokeWithRetry('create-tenant', payload);
+}
+
+/** Branches ("outlets") for a tenant. */
+export async function listOutlets(tenantId) {
+  const { data, error } = await supabase
+    .from('outlets')
+    .select('*')
+    .eq('tenant_id', tenantId)
+    .order('name');
+  return { data: data || [], error };
+}
+
+export async function createOutlet(tenantId, outlet) {
+  const { error } = await supabase
+    .from('outlets')
+    .insert([{
+      tenant_id: tenantId,
+      name: outlet.name.trim(),
+      address: (outlet.address || '').trim(),
+      city: (outlet.city || '').trim(),
+    }]);
+  return { error };
+}
+
+export async function updateOutlet(id, payload) {
+  const { error } = await supabase.from('outlets').update(payload).eq('id', id);
+  return { error };
+}
+
+export async function removeOutlet(id) {
+  const { error } = await supabase.from('outlets').delete().eq('id', id);
+  return { error };
+}
+
+export async function getOutlet(id) {
+  if (!id) return { data: null, error: null };
+  const { data, error } = await supabase.from('outlets').select('*').eq('id', id).maybeSingle();
+  return { data, error };
+}
+
+/**
+ * Resolves the effective attendance/geofencing settings for an outlet, falling back
+ * to the tenant-level defaults for any field the outlet hasn't overridden (NULL).
+ */
+export function resolveAttendanceSettings(tenant, outlet) {
+  return {
+    geofence_lat: outlet?.geofence_lat ?? tenant?.geofence_lat ?? null,
+    geofence_lng: outlet?.geofence_lng ?? tenant?.geofence_lng ?? null,
+    geofence_radius: outlet?.geofence_radius ?? tenant?.geofence_radius ?? 200,
+    min_half_day_hours: outlet?.min_half_day_hours ?? tenant?.min_half_day_hours ?? 4,
+    min_full_day_hours: outlet?.min_full_day_hours ?? tenant?.min_full_day_hours ?? 8,
+  };
+}
+
+/**
+ * Moves an employee to a different outlet within the same tenant, keeping an
+ * append-only audit trail (outlet_transfers) instead of silently overwriting
+ * the employee's branch — every transfer stays in the history.
+ */
+export async function transferEmployeeOutlet({ tenantId, profileId, toOutletId, toOutletName, fromOutletId, fromOutletName, transferredBy, notes }) {
+  const { error: histErr } = await supabase.from('outlet_transfers').insert([{
+    tenant_id: tenantId,
+    profile_id: profileId,
+    from_outlet_id: fromOutletId || null,
+    from_outlet_name: fromOutletName || '',
+    to_outlet_id: toOutletId,
+    to_outlet_name: toOutletName || '',
+    transferred_by: transferredBy,
+    notes: notes || '',
+  }]);
+  if (histErr) return { error: histErr };
+
+  // Keep outlet_location (the free-text branch field used by listBranches/filters) in sync.
+  const { error } = await supabase
+    .from('profiles')
+    .update({ outlet_id: toOutletId, outlet_location: toOutletName || '' })
+    .eq('id', profileId);
+  return { error };
+}
+
+/** Outlet-transfer history for one employee, newest first. */
+export async function fetchOutletTransferHistory(profileId) {
+  const { data, error } = await supabase
+    .from('outlet_transfers')
+    .select('*, transferred_by_profile:profiles!outlet_transfers_transferred_by_fkey(first_name, middle_name, last_name)')
+    .eq('profile_id', profileId)
+    .order('transferred_at', { ascending: false });
+  return { data: data || [], error };
+}
+
+/** Active employees with no outlet assigned yet (outlet_id IS NULL) — the pool a bulk assignment acts on. */
+export async function listUnassignedEmployees(tenantId) {
+  const { data, error } = await supabase
+    .from('profiles')
+    .select('id, first_name, middle_name, last_name, department, designation, outlet_location')
+    .eq('tenant_id', tenantId)
+    .eq('status', 'Active')
+    .is('outlet_id', null)
+    .in('role', ['employee', 'admin', 'manager'])
+    .order('first_name');
+  return { data: data || [], error };
+}
+
+/**
+ * Assigns many employees to one outlet in a single action, recording an
+ * outlet_transfers history row for each (from_outlet_id is always null here —
+ * this is specifically for employees who never had an outlet before).
+ */
+export async function bulkAssignOutlet({ tenantId, profileIds, toOutletId, toOutletName, transferredBy, notes }) {
+  if (!profileIds || profileIds.length === 0) return { error: null };
+
+  const { error: histErr } = await supabase.from('outlet_transfers').insert(
+    profileIds.map((profileId) => ({
+      tenant_id: tenantId,
+      profile_id: profileId,
+      from_outlet_id: null,
+      from_outlet_name: '',
+      to_outlet_id: toOutletId,
+      to_outlet_name: toOutletName || '',
+      transferred_by: transferredBy,
+      notes: notes || '',
+    }))
+  );
+  if (histErr) return { error: histErr };
+
+  const { error } = await supabase
+    .from('profiles')
+    .update({ outlet_id: toOutletId, outlet_location: toOutletName || '' })
+    .in('id', profileIds);
+  return { error };
 }
 
 /**

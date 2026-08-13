@@ -1,5 +1,6 @@
 import { supabase } from '@/lib/supabase';
 import { getOrCreateQuota, determineApproverRole, incrementSelfCount, incrementManagerCount } from './requestQuotaService';
+import { getFirstApproverRole } from './approvalService';
 
 /**
  * Fetch leave requests for a tenant.
@@ -11,8 +12,8 @@ export async function listAllLeaveRequests(tenantId, forRole = null) {
     .from('leave_requests')
     .select(`
       *,
-      profile:profiles!leave_requests_profile_id_fkey(first_name, last_name, department),
-      approver:profiles!leave_requests_approved_by_fkey(first_name, last_name)
+      profile:profiles!leave_requests_profile_id_fkey(first_name, middle_name, last_name, department),
+      approver:profiles!leave_requests_approved_by_fkey(first_name, middle_name, last_name)
     `)
     .eq('tenant_id', tenantId)
     .order('created_at', { ascending: false });
@@ -31,7 +32,7 @@ export async function listMyLeaveRequests(profileId) {
     .from('leave_requests')
     .select('*')
     .eq('profile_id', profileId)
-    .order('start_date', { ascending: false });
+    .order('created_at', { ascending: false });
   return { data: data || [], error };
 }
 
@@ -68,8 +69,14 @@ export async function checkProbationStatus(profileId) {
 export async function requestLeave(payload) {
   const { tenant_id, profile_id } = payload;
 
+  // Optional per-tenant override: if an admin has configured an approval
+  // chain for leave_requests, its first step wins over the self/manager/admin
+  // quota tiers below — most tenants have no chain configured, so this is a
+  // no-op for them and the existing quota-based routing is unaffected.
+  const chainRole = await getFirstApproverRole(tenant_id, 'leave_requests');
+
   const quota = await getOrCreateQuota(tenant_id, profile_id);
-  const tier  = determineApproverRole(quota);
+  const tier  = chainRole || determineApproverRole(quota);
 
   const finalPayload = {
     ...payload,
@@ -82,7 +89,16 @@ export async function requestLeave(payload) {
     await incrementSelfCount(tenant_id, profile_id);
   }
 
-  const { error } = await supabase.from('leave_requests').insert([finalPayload]);
+  const { data: inserted, error } = await supabase.from('leave_requests').insert([finalPayload]).select('id').single();
+
+  // Self-approved requests skip updateLeaveStatus entirely, so ledger the
+  // deduction here instead — record_leave_deduction is idempotent and a
+  // silent no-op for leave types with no matching leave_types config yet.
+  if (!error && tier === 'self' && inserted?.id) {
+    const { error: ledgerErr } = await supabase.rpc('record_leave_deduction', { p_leave_request_id: inserted.id });
+    if (ledgerErr) console.error('record_leave_deduction failed:', ledgerErr); // non-fatal — the leave request itself already succeeded
+  }
+
   return { error, tier };
 }
 
@@ -99,10 +115,19 @@ export async function updateLeaveStatus(id, status, approverId, approverRole = '
     .eq('id', id)
     .single();
 
-  const { error } = await supabase
+  // Only transition a request that's still Pending — without this guard a double-clicked
+  // Approve (or a click after someone else already actioned it) re-runs the balance
+  // deduction / quota increment below a second time for the same request.
+  const { data: updated, error } = await supabase
     .from('leave_requests')
     .update({ status, approved_by: approverId })
-    .eq('id', id);
+    .eq('id', id)
+    .eq('status', 'Pending')
+    .select('id');
+
+  if (!error && updated?.length === 0) {
+    return { error: new Error('This request has already been reviewed.') };
+  }
 
   if (!error && status === 'Approved') {
     if (leave?.leave_type === 'Comp Off') {
@@ -110,17 +135,16 @@ export async function updateLeaveStatus(id, status, approverId, approverRole = '
       const [ey, em, ed] = leave.end_date.split('-').map(Number);
       let days = 0;
       for (let d = new Date(sy, sm - 1, sd); d <= new Date(ey, em - 1, ed); d.setDate(d.getDate() + 1)) days++;
-      const { data: prof } = await supabase
-        .from('profiles').select('comp_off_balance').eq('id', leave.profile_id).single();
-      await supabase
-        .from('profiles')
-        .update({ comp_off_balance: Math.max(0, (prof?.comp_off_balance || 0) - days) })
-        .eq('id', leave.profile_id);
+      // Atomic — avoids the lost-update race from a read-then-write on comp_off_balance.
+      await supabase.rpc('adjust_comp_off_balance', { p_profile_id: leave.profile_id, p_delta: -days });
     }
 
     if (approverRole === 'manager' && leave?.tenant_id && leave?.profile_id) {
       await incrementManagerCount(leave.tenant_id, leave.profile_id);
     }
+
+    const { error: ledgerErr } = await supabase.rpc('record_leave_deduction', { p_leave_request_id: id });
+    if (ledgerErr) console.error('record_leave_deduction failed:', ledgerErr); // non-fatal — approval itself already succeeded
   }
 
   return { error };

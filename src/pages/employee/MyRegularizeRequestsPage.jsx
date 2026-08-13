@@ -44,11 +44,11 @@ const STATUS_BADGE = {
   Rejected: 'badge-danger',
 };
 
-export default function MyRegularizeRequestsPage() {
+export function RegularizeContent() {
   const { profile, tenant } = useAuth();
   const [requests,  setRequests]  = useState([]);
   const [loading,   setLoading]   = useState(true);
-  const [filter,    setFilter]    = useState('All');
+  const [filter,    setFilter]    = useState('Pending');
   const [showModal, setShowModal] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [quota, setQuota] = useState(null);
@@ -120,20 +120,15 @@ export default function MyRegularizeRequestsPage() {
   };
 
   const filtered = filter === 'All' ? requests : requests.filter(r => r.status === filter);
-  const pendingCount = requests.filter(r => r.status === 'Pending').length;
 
   return (
     <>
-      <Header
-        title="Regularize Attendance"
-        breadcrumb={pendingCount > 0 ? `${pendingCount} pending` : 'Request attendance corrections'}
-      />
       <div className="page-content">
 
         {quota && <QuotaBanner quota={quota} />}
 
       <div className="filter-bar">
-          {['All', 'Pending', 'Approved', 'Rejected'].map(s => (
+          {['Pending', 'Approved', 'Rejected', 'All'].map(s => (
             <button
               key={s}
               className={`btn btn-sm ${filter === s ? 'btn-primary' : 'btn-outline'}`}
@@ -158,11 +153,11 @@ export default function MyRegularizeRequestsPage() {
                 <i className="fas fa-calendar-check empty-icon" />
                 <h3>No requests yet</h3>
                 <p>
-                  {filter === 'All'
+                  {requests.length === 0
                     ? 'Click "New Request" to ask your manager to correct your attendance for a missed punch.'
                     : `No ${filter.toLowerCase()} requests found.`}
                 </p>
-                {filter === 'All' && (
+                {requests.length === 0 && (
                   <button className="btn btn-primary" style={{ marginTop: 12 }} onClick={openModal}>
                     <i className="fas fa-plus" /> New Request
                   </button>
@@ -276,6 +271,15 @@ export default function MyRegularizeRequestsPage() {
           />
         </div>
       </Modal>
+    </>
+  );
+}
+
+export default function MyRegularizeRequestsPage() {
+  return (
+    <>
+      <Header title="Regularize Attendance" breadcrumb="Request attendance corrections" />
+      <RegularizeContent />
     </>
   );
 }

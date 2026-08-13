@@ -72,7 +72,7 @@ export default function MySpecialRequestsPage() {
   const [showModal, setShowModal] = useState(false);
   const [form, setForm] = useState(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
-  const [filter, setFilter] = useState('All');
+  const [filter, setFilter] = useState('Pending');
   const [quota, setQuota] = useState(null);
 
   const fetchRequests = useCallback(async () => {
@@ -181,7 +181,7 @@ export default function MySpecialRequestsPage() {
         <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
           <h3 style={{ margin: 0 }}>My Requests</h3>
           <div className="flex gap-1" style={{ flexWrap: 'wrap' }}>
-            {['All', 'Pending', 'Approved', 'Rejected', 'Overtime', 'Salary Overtime', 'Late Arrival'].map(f => (
+            {['Pending', 'Approved', 'Rejected', 'All', 'Overtime', 'Salary Overtime', 'Late Arrival'].map(f => (
               <button
                 key={f}
                 className={`btn btn-sm ${filter === f ? 'btn-primary' : 'btn-outline'}`}
@@ -193,7 +193,7 @@ export default function MySpecialRequestsPage() {
           </div>
         </div>
 
-        <div className="table-responsive">
+        <div className="table-wrap">
           <table className="table">
             <thead>
               <tr>

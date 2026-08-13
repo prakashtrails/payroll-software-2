@@ -2,6 +2,8 @@ import React from 'react';
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Header from '@/components/Header';
+import Modal from '@/components/Modal';
+import RecentUpdatesCard from '@/components/RecentUpdatesCard';
 import { showToast } from '@/components/Toast';
 import { useAuth } from '@/context/AuthContext';
 import {
@@ -9,6 +11,9 @@ import {
   clockIn as svcClockIn,
   clockOut as svcClockOut,
 } from '@/services/attendanceService';
+import { fetchRecentUpdates } from '@/services/activityFeedService';
+import { submitWfhRequest, getApprovedWfhForDate } from '@/services/wfhService';
+import { getOutlet, resolveAttendanceSettings } from '@/services/tenantService';
 import { monthLabel, todayStr, timeStr, fmtTime12, diffHours, fmtDuration } from '@/lib/helpers';
 
 // Haversine distance in metres between two lat/lng points
@@ -24,7 +29,14 @@ function calcDistance(lat1, lon1, lat2, lon2) {
 // 30 seconds outside before auto clock-out triggers
 const AUTO_CLOCKOUT_GRACE_MS = 30000;
 
-export default function EmployeeDashboard() {
+// Browsers without a GPS chip (most desktops/laptops) fall back to WiFi/IP-based
+// positioning, which in India can be off by tens or hundreds of km — sometimes
+// resolving to a completely different city. A fix with a large accuracy radius
+// can't be trusted to enforce a geofence, so we refuse to treat it as "inside"
+// even if the reported coordinates happen to land within range.
+const MAX_LOCATION_ACCURACY_M = 150;
+
+export function DashboardContent() {
   const { profile, tenant } = useAuth();
   const navigate = useNavigate();
 
@@ -37,6 +49,12 @@ export default function EmployeeDashboard() {
   const [myPunches,      setMyPunches]      = useState({});
   const [clockingIn,     setClockingIn]     = useState(false);
   const [clockingOut,    setClockedOut]     = useState(false);
+  const [updates,        setUpdates]        = useState([]);
+  const [updatesLoading, setUpdatesLoading] = useState(true);
+  const [isWfhToday,     setIsWfhToday]     = useState(false);
+  const [showWfhModal,   setShowWfhModal]   = useState(false);
+  const [wfhForm,        setWfhForm]        = useState({ from_date: todayStr(), to_date: todayStr(), reason: '' });
+  const [wfhSaving,      setWfhSaving]      = useState(false);
 
   const clockRef        = useRef(null);
   const timerRef        = useRef(null);
@@ -44,8 +62,27 @@ export default function EmployeeDashboard() {
   const graceTimerRef   = useRef(null);   // debounce timer for auto clock-out
   const isClockedInRef  = useRef(false);  // ref mirror of isClockedIn for use inside callbacks
 
-  const geofenceEnabled = !!(tenant?.geofence_lat && tenant?.geofence_lng);
-  const geofenceRadius  = tenant?.geofence_radius || 200;
+  const [outletSettings, setOutletSettings] = useState(null);
+  useEffect(() => {
+    if (!profile?.outlet_id) { setOutletSettings(null); return; }
+    let cancelled = false;
+    getOutlet(profile.outlet_id).then(({ data }) => { if (!cancelled) setOutletSettings(data); });
+    return () => { cancelled = true; };
+  }, [profile?.outlet_id]);
+
+  // Outlet's own geofence overrides the tenant-wide default when set.
+  const effective = resolveAttendanceSettings(tenant, outletSettings);
+  const siteGeofenceEnabled = !!(effective.geofence_lat && effective.geofence_lng);
+  // Approved WFH for today lifts the geofence entirely — clock in from anywhere.
+  const geofenceEnabled = siteGeofenceEnabled && !isWfhToday;
+  const geofenceRadius  = effective.geofence_radius;
+
+  useEffect(() => {
+    if (!profile) return;
+    let cancelled = false;
+    getApprovedWfhForDate(profile.id, todayStr()).then(({ data }) => { if (!cancelled) setIsWfhToday(!!data); });
+    return () => { cancelled = true; };
+  }, [profile]);
 
   // Keep ref in sync
   useEffect(() => { isClockedInRef.current = isClockedIn; }, [isClockedIn]);
@@ -68,6 +105,14 @@ export default function EmployeeDashboard() {
   }, [profile, tenant]);
 
   useEffect(() => { fetchMyAttendance(); }, [fetchMyAttendance]);
+
+  useEffect(() => {
+    if (!tenant || !profile) return;
+    setUpdatesLoading(true);
+    fetchRecentUpdates(tenant.id, { profileId: profile.id })
+      .then(({ data }) => setUpdates(data || []))
+      .finally(() => setUpdatesLoading(false));
+  }, [tenant, profile]);
 
   // ── Live clock ───────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -121,8 +166,8 @@ export default function EmployeeDashboard() {
   // ── Geofence watchPosition ───────────────────────────────────────────────────
   useEffect(() => {
     if (!geofenceEnabled) {
-      setLocationStatus('Geofencing not configured');
-      setInsideFence(true); // treat as always inside when not configured
+      setLocationStatus(isWfhToday ? 'Approved WFH today — geofencing disabled' : 'Geofencing not configured');
+      setInsideFence(true); // treat as always inside when not configured (or WFH-approved)
       return;
     }
     if (!navigator.geolocation) {
@@ -135,13 +180,17 @@ export default function EmployeeDashboard() {
       (pos) => {
         const dist = calcDistance(
           pos.coords.latitude, pos.coords.longitude,
-          tenant.geofence_lat, tenant.geofence_lng
+          effective.geofence_lat, effective.geofence_lng
         );
-        const outside = dist > geofenceRadius;
+        const accuracy = pos.coords.accuracy;
+        const accuracyTooLow = accuracy != null && accuracy > MAX_LOCATION_ACCURACY_M;
+        const outside = dist > geofenceRadius || accuracyTooLow;
         setInsideFence(!outside);
 
         if (outside) {
-          setLocationStatus(`Outside office area · ${Math.round(dist)} m away`);
+          setLocationStatus(accuracyTooLow
+            ? `Location too imprecise to verify (±${Math.round(accuracy)} m) — enable GPS/precise location`
+            : `Outside office area · ${Math.round(dist)} m away`);
           // Only start grace timer if clocked in and no timer already running
           if (isClockedInRef.current && !graceTimerRef.current) {
             graceTimerRef.current = setTimeout(() => {
@@ -175,7 +224,7 @@ export default function EmployeeDashboard() {
       if (graceTimerRef.current) clearTimeout(graceTimerRef.current);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [geofenceEnabled, tenant?.geofence_lat, tenant?.geofence_lng, geofenceRadius, doAutoClockOut]);
+  }, [geofenceEnabled, isWfhToday, effective.geofence_lat, effective.geofence_lng, geofenceRadius, doAutoClockOut]);
 
   // Cancel grace timer the moment the employee clocks out (manual or auto)
   useEffect(() => {
@@ -190,6 +239,20 @@ export default function EmployeeDashboard() {
     new Promise((resolve, reject) =>
       navigator.geolocation.getCurrentPosition(resolve, reject, { enableHighAccuracy: true, timeout: 10000 })
     );
+
+  // Authoritative geofence check for a fresh one-shot position: rejects both
+  // "too far" and "too imprecise to trust" fixes (see MAX_LOCATION_ACCURACY_M above).
+  const checkGeofence = (pos) => {
+    const dist = calcDistance(pos.coords.latitude, pos.coords.longitude, effective.geofence_lat, effective.geofence_lng);
+    const accuracy = pos.coords.accuracy;
+    if (accuracy != null && accuracy > MAX_LOCATION_ACCURACY_M) {
+      return { ok: false, message: `Your location is too imprecise to verify (±${Math.round(accuracy)} m). Enable GPS/precise location and try again.` };
+    }
+    if (dist > geofenceRadius) {
+      return { ok: false, message: `You are ${Math.round(dist)} m from the office. Move inside the office area.` };
+    }
+    return { ok: true };
+  };
 
   // ── Clock In ─────────────────────────────────────────────────────────────────
   const clockIn = async () => {
@@ -209,10 +272,10 @@ export default function EmployeeDashboard() {
     try {
       let location = null;
       if (geofenceEnabled) {
-        const pos  = await getCurrentPos();
-        const dist = calcDistance(pos.coords.latitude, pos.coords.longitude, tenant.geofence_lat, tenant.geofence_lng);
-        if (dist > geofenceRadius) {
-          showToast(`You are ${Math.round(dist)} m from the office. Move inside the office area to clock in.`, 'error');
+        const pos = await getCurrentPos();
+        const check = checkGeofence(pos);
+        if (!check.ok) {
+          showToast(check.message, 'error');
           setClockingIn(false);
           return;
         }
@@ -245,10 +308,10 @@ export default function EmployeeDashboard() {
     try {
       let location = null;
       if (geofenceEnabled) {
-        const pos  = await getCurrentPos();
-        const dist = calcDistance(pos.coords.latitude, pos.coords.longitude, tenant.geofence_lat, tenant.geofence_lng);
-        if (dist > geofenceRadius) {
-          showToast(`You are ${Math.round(dist)} m from the office. You will be auto clocked-out shortly.`, 'warning');
+        const pos = await getCurrentPos();
+        const check = checkGeofence(pos);
+        if (!check.ok) {
+          showToast(check.message, 'warning');
           setClockedOut(false);
           return;
         }
@@ -264,17 +327,43 @@ export default function EmployeeDashboard() {
     }
   };
 
+  // ── Work From Home request ───────────────────────────────────────────────────
+  const openWfhModal = () => {
+    setWfhForm({ from_date: todayStr(), to_date: todayStr(), reason: '' });
+    setShowWfhModal(true);
+  };
+
+  const submitWfh = async () => {
+    if (!wfhForm.from_date || !wfhForm.to_date) return showToast('Select a date range', 'error');
+    if (wfhForm.to_date < wfhForm.from_date) return showToast('End date must be on or after the start date', 'error');
+    if (!wfhForm.reason.trim()) return showToast('Please provide a reason', 'error');
+    if (!tenant || !profile) return showToast('Account setup incomplete. Please re-login.', 'error');
+
+    setWfhSaving(true);
+    try {
+      const { error } = await submitWfhRequest({
+        tenantId: tenant.id,
+        profileId: profile.id,
+        fromDate: wfhForm.from_date,
+        toDate: wfhForm.to_date,
+        reason: wfhForm.reason.trim(),
+      });
+      if (error) return showToast('Failed: ' + error.message, 'error');
+      showToast('WFH request submitted — pending manager/HR approval', 'success');
+      setShowWfhModal(false);
+    } finally {
+      setWfhSaving(false);
+    }
+  };
+
   // ── Location status badge ────────────────────────────────────────────────────
   const fenceColor = !geofenceEnabled ? 'rgba(255,255,255,.5)'
     : insideFence === true  ? '#4ade80'
     : insideFence === false ? '#f87171'
     : 'rgba(255,255,255,.5)';
 
-  const now = new Date();
-
   return (
     <>
-      <Header title={`Welcome back, ${profile?.first_name || 'User'}`} breadcrumb={`${monthLabel(now.getMonth(), now.getFullYear())} Stats`} />
       <div className="page-content">
 
         <div className="clock-widget">
@@ -285,7 +374,12 @@ export default function EmployeeDashboard() {
               <span className="pulse" />
               <span>{isClockedIn ? 'Currently Working' : (myPunches?.punches?.length ? 'Clocked Out' : 'Not Clocked In')}</span>
             </div>
-            {geofenceEnabled && (
+            {isWfhToday ? (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8, fontSize: 11, color: '#4ade80' }}>
+                <i className="fas fa-house-laptop" />
+                <span>Approved WFH today — clock in from anywhere</span>
+              </div>
+            ) : geofenceEnabled ? (
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8, fontSize: 11, color: fenceColor }}>
                 <i className="fas fa-location-dot" />
                 <span>{locationStatus}</span>
@@ -295,8 +389,7 @@ export default function EmployeeDashboard() {
                   </span>
                 )}
               </div>
-            )}
-            {!geofenceEnabled && (
+            ) : (
               <div style={{ fontSize: 10, color: 'rgba(255,255,255,.4)', marginTop: 8 }}>
                 <i className="fas fa-location-dot" /> Geofencing not configured
               </div>
@@ -330,17 +423,14 @@ export default function EmployeeDashboard() {
           </div>
         </div>
 
+        <div style={{ display: 'flex', justifyContent: 'flex-end', margin: '10px 0 4px' }}>
+          <button className="btn btn-outline btn-sm" onClick={openWfhModal}>
+            <i className="fas fa-house-laptop" /> Request Work From Home
+          </button>
+        </div>
+
         <div className="grid-2">
-          <div className="card">
-            <div className="card-header"><h3>Recent Announcements</h3></div>
-            <div className="card-body">
-              <div className="empty-state">
-                <i className="fas fa-bullhorn empty-icon" />
-                <h3>No new announcements</h3>
-                <p>Your team updates will appear here.</p>
-              </div>
-            </div>
-          </div>
+          <RecentUpdatesCard items={updates} loading={updatesLoading} />
 
           <div className="card">
             <div className="card-header"><h3>Self Service</h3></div>
@@ -355,6 +445,57 @@ export default function EmployeeDashboard() {
         </div>
 
       </div>
+
+      <Modal
+        show={showWfhModal}
+        onClose={() => setShowWfhModal(false)}
+        title="Request Work From Home"
+        footer={
+          <div className="flex gap-2" style={{ justifyContent: 'flex-end', width: '100%' }}>
+            <button className="btn btn-outline" onClick={() => setShowWfhModal(false)}>Cancel</button>
+            <button className="btn btn-primary" onClick={submitWfh} disabled={wfhSaving}>
+              {wfhSaving ? 'Submitting…' : 'Submit Request'}
+            </button>
+          </div>
+        }
+      >
+        <div className="form-row">
+          <div className="form-group">
+            <label className="form-label">From *</label>
+            <input type="date" className="form-input" min={todayStr()} value={wfhForm.from_date}
+              onChange={(e) => setWfhForm({ ...wfhForm, from_date: e.target.value, to_date: wfhForm.to_date < e.target.value ? e.target.value : wfhForm.to_date })} />
+          </div>
+          <div className="form-group">
+            <label className="form-label">To *</label>
+            <input type="date" className="form-input" min={wfhForm.from_date || todayStr()} value={wfhForm.to_date}
+              onChange={(e) => setWfhForm({ ...wfhForm, to_date: e.target.value })} />
+          </div>
+        </div>
+        <div className="form-group">
+          <label className="form-label">Reason *</label>
+          <textarea className="form-input" rows={3}
+            placeholder="Why are you working from home for these dates?"
+            value={wfhForm.reason} onChange={(e) => setWfhForm({ ...wfhForm, reason: e.target.value })} />
+        </div>
+        <div style={{
+          background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 8,
+          padding: '10px 14px', fontSize: 12, color: 'var(--text-muted)',
+        }}>
+          <i className="fas fa-info-circle" style={{ marginRight: 6 }} />
+          Once approved, geofencing is disabled for these dates so you can clock in from anywhere.
+        </div>
+      </Modal>
+    </>
+  );
+}
+
+export default function EmployeeDashboard() {
+  const { profile } = useAuth();
+  const now = new Date();
+  return (
+    <>
+      <Header title={`Welcome back, ${profile?.first_name || 'User'}`} breadcrumb={`${monthLabel(now.getMonth(), now.getFullYear())} Stats`} />
+      <DashboardContent />
     </>
   );
 }

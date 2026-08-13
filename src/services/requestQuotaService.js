@@ -42,26 +42,20 @@ export function determineApproverRole(quota) {
 }
 
 export async function incrementSelfCount(tenantId, profileId) {
-  const quota = await getOrCreateQuota(tenantId, profileId);
-  const { error } = await supabase
-    .from('request_quotas')
-    .update({
-      self_approved_count: quota.self_approved_count + 1,
-      updated_at: new Date().toISOString(),
-    })
-    .eq('id', quota.id);
+  const { error } = await supabase.rpc('increment_request_quota', {
+    p_tenant_id: tenantId,
+    p_profile_id: profileId,
+    p_field: 'self_approved_count',
+  });
   if (error) throw error;
 }
 
 export async function incrementManagerCount(tenantId, profileId) {
-  const quota = await getOrCreateQuota(tenantId, profileId);
-  const { error } = await supabase
-    .from('request_quotas')
-    .update({
-      manager_approved_count: quota.manager_approved_count + 1,
-      updated_at: new Date().toISOString(),
-    })
-    .eq('id', quota.id);
+  const { error } = await supabase.rpc('increment_request_quota', {
+    p_tenant_id: tenantId,
+    p_profile_id: profileId,
+    p_field: 'manager_approved_count',
+  });
   if (error) throw error;
 }
 

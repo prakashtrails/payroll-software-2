@@ -3,11 +3,12 @@ import * as XLSX from 'xlsx';
 import Header from '@/components/Header';
 import { showToast } from '@/components/Toast';
 import { useAuth } from '@/context/AuthContext';
+import { useOutletView } from '@/context/OutletViewContext';
 import { listActiveEmployees } from '@/services/employeeService';
 import { fetchAllAttendanceWithPunches } from '@/services/attendanceService';
 import { fetchAllPayslipsForReport } from '@/services/payrollService';
 import { listAllLeaveRequests } from '@/services/leaveService';
-import { fmtTime12, dateStr } from '@/lib/helpers';
+import { fmtTime12, dateStr, fullName, scopedToOutlet } from '@/lib/helpers';
 
 function getFirstIn(punches) {
   return (punches || [])
@@ -88,10 +89,12 @@ const REPORT_CONFIGS = [
 
 export default function MasterReportPage() {
   const { tenant } = useAuth();
+  const { outletProfileIds } = useOutletView();
   const [employees, setEmployees] = useState([]);
   const [loading,   setLoading]   = useState(true);
   const [exporting, setExporting] = useState(null); // null | 'all' | reportId
   const [summary,   setSummary]   = useState([]);
+  const [year,      setYear]      = useState(new Date().getFullYear());
 
   const fetchData = useCallback(async () => {
     if (!tenant) return;
@@ -99,12 +102,12 @@ export default function MasterReportPage() {
     try {
       const [empsRes, attRes, payRes, leaveRes] = await Promise.all([
         listActiveEmployees(tenant.id),
-        fetchAllAttendanceWithPunches(tenant.id),
-        fetchAllPayslipsForReport(tenant.id),
+        fetchAllAttendanceWithPunches(tenant.id, year),
+        fetchAllPayslipsForReport(tenant.id, year),
         listAllLeaveRequests(tenant.id),
       ]);
 
-      const emps     = empsRes.data  || [];
+      const emps     = scopedToOutlet(empsRes.data || [], outletProfileIds, 'id');
       const attAll   = attRes.data   || [];
       const payrolls = payRes.data   || [];
       const leaves   = leaveRes.data || [];
@@ -124,13 +127,12 @@ export default function MasterReportPage() {
         });
       });
 
-      const thisYear = new Date().getFullYear();
       const leaveUsed  = {};
       const leaveStats = {};
 
       leaves.forEach(lr => {
         const yr = lr.start_date ? parseInt(lr.start_date.split('-')[0], 10) : 0;
-        if (yr !== thisYear) return;
+        if (yr !== year) return;
         const days   = lr.days_count || lr.days || 1;
         const empId  = lr.profile_id;
         const status = (lr.status || '').toLowerCase();
@@ -182,9 +184,11 @@ export default function MasterReportPage() {
     } finally {
       setLoading(false);
     }
-  }, [tenant]);
+  }, [tenant, year, outletProfileIds]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
+
+  const yearOptions = Array.from({ length: 5 }, (_, i) => new Date().getFullYear() - i);
 
   function buildSheet(reportId) {
     if (reportId === 'employee_details') {
@@ -195,7 +199,7 @@ export default function MasterReportPage() {
       ];
       const dataRows = summary.map(({ emp }, i) => [
         i + 1,
-        `${emp.first_name} ${emp.last_name}`.trim(),
+        fullName(emp),
         emp.department    || '',
         emp.designation   || '',
         emp.join_date     || '',
@@ -219,7 +223,7 @@ export default function MasterReportPage() {
       ];
       const dataRows = [];
       summary.forEach(({ emp, attMap: am }) => {
-        const name = `${emp.first_name} ${emp.last_name}`.trim();
+        const name = fullName(emp);
         Object.keys(am).sort().forEach(dt => {
           const rec      = am[dt];
           const dayName  = new Date(dt + 'T00:00:00').toLocaleDateString('en-IN', { weekday: 'short' });
@@ -249,7 +253,7 @@ export default function MasterReportPage() {
       const headers = ['#', 'Employee Name', 'Department', 'Designation', 'Month', 'Year', 'Net Pay (₹)'];
       const dataRows = [];
       summary.forEach(({ emp, payMap: pm }) => {
-        const name = `${emp.first_name} ${emp.last_name}`.trim();
+        const name = fullName(emp);
         Object.keys(pm).sort((a, b) => b.localeCompare(a)).forEach(key => {
           const [y, m] = key.split('-').map(Number);
           dataRows.push([
@@ -276,7 +280,7 @@ export default function MasterReportPage() {
       ];
       const dataRows = summary.map(({ emp, leavesRemaining, leaveApproved, leavePending, leaveRejected }, i) => [
         i + 1,
-        `${emp.first_name} ${emp.last_name}`.trim(),
+        fullName(emp),
         emp.department || '',
         emp.leave_allocation || 0,
         leaveApproved,
@@ -341,15 +345,26 @@ export default function MasterReportPage() {
         title="Master Report"
         breadcrumb="Dashboard / Master Report"
         actions={
-          <button
-            className="btn btn-primary"
-            onClick={handleExportAll}
-            disabled={exporting !== null || loading}
-          >
-            {exporting === 'all'
-              ? <><div className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} /> Generating…</>
-              : <><i className="fas fa-file-excel" /> Export All Sheets</>}
-          </button>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <select
+              className="form-select"
+              value={year}
+              onChange={(e) => setYear(Number(e.target.value))}
+              disabled={loading || exporting !== null}
+              title="Report year — attendance and payroll data is scoped to this year"
+            >
+              {yearOptions.map((y) => <option key={y} value={y}>{y}</option>)}
+            </select>
+            <button
+              className="btn btn-primary"
+              onClick={handleExportAll}
+              disabled={exporting !== null || loading}
+            >
+              {exporting === 'all'
+                ? <><div className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} /> Generating…</>
+                : <><i className="fas fa-file-excel" /> Export All Sheets</>}
+            </button>
+          </div>
         }
       />
 

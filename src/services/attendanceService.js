@@ -1,6 +1,7 @@
 import { supabase } from '@/lib/supabase';
-import { todayStr, timeStr, diffHours } from '@/lib/helpers';
+import { todayStr, timeStr, diffHours, checkGeofence } from '@/lib/helpers';
 import { getOrCreateQuota, determineApproverRole, incrementSelfCount, incrementManagerCount } from './requestQuotaService';
+import { resolveAttendanceSettings } from './tenantService';
 
 /** Full month attendance (with punches) for one employee — used in calendar views. */
 export async function fetchMyMonthAttendance(profileId, year, month) {
@@ -22,53 +23,58 @@ export async function fetchMyMonthAttendance(profileId, year, month) {
 export async function clockIn(tenantId, profileId, tenant, locationData = null) {
   const today = todayStr();
 
-  // Reuse existing row if present
-  const { data: existing, error: fetchErr } = await supabase
+  // Custom shift logic — computed unconditionally so the upsert below has a full
+  // row ready; on conflict (row already exists) it's ignored and the existing
+  // row's status/location are left untouched.
+  const { data: profile } = await supabase.from('profiles').select('shift_id, outlet_id').eq('id', profileId).single();
+  let shiftStart = tenant?.shift_start || '09:00';
+  if (profile?.shift_id) {
+    const { data: shift } = await supabase.from('shifts').select('start_time').eq('id', profile.shift_id).single();
+    if (shift) shiftStart = shift.start_time;
+  }
+
+  const lateMin  = tenant?.late_threshold || 15;
+  const [sh, sm] = shiftStart.split(':').map(Number);
+  const now      = new Date();
+  const diffMin  = (now.getHours() * 60 + now.getMinutes()) - (sh * 60 + sm);
+  const status   = diffMin > lateMin ? 'Late' : 'Present';
+
+  // Geofence check — flags, never blocks, since field staff legitimately punch off-site sometimes.
+  const { data: outlet } = profile?.outlet_id
+    ? await supabase.from('outlets').select('geofence_lat, geofence_lng, geofence_radius').eq('id', profile.outlet_id).maybeSingle()
+    : { data: null };
+  const outOfGeofence = checkGeofence(locationData?.lat, locationData?.lng, outlet, tenant) || false;
+
+  // Atomic create-if-missing on (profile_id, date) — a select-then-insert here let a
+  // double-tap (or slow network + retry) create two attendance rows for the same day.
+  const { error: upsertErr } = await supabase
+    .from('attendance')
+    .upsert(
+      [{
+        tenant_id: tenantId,
+        profile_id: profileId,
+        date: today,
+        status,
+        location: 'Office',
+        punch_in_lat: locationData?.lat,
+        punch_in_lng: locationData?.lng,
+        out_of_geofence: outOfGeofence,
+      }],
+      { onConflict: 'profile_id,date', ignoreDuplicates: true }
+    );
+  if (upsertErr) throw upsertErr;
+
+  const { data: att, error: fetchErr } = await supabase
     .from('attendance')
     .select('id')
     .eq('profile_id', profileId)
     .eq('date', today)
-    .maybeSingle();
+    .single();
   if (fetchErr) throw fetchErr;
-
-  let attId;
-  if (existing) {
-    attId = existing.id;
-  } else {
-    // Custom shift logic
-    const { data: profile } = await supabase.from('profiles').select('shift_id').eq('id', profileId).single();
-    let shiftStart = tenant?.shift_start || '09:00';
-    if (profile?.shift_id) {
-      const { data: shift } = await supabase.from('shifts').select('start_time').eq('id', profile.shift_id).single();
-      if (shift) shiftStart = shift.start_time;
-    }
-
-    const lateMin     = tenant?.late_threshold || 15;
-    const [sh, sm]    = shiftStart.split(':').map(Number);
-    const now         = new Date();
-    const diffMin     = (now.getHours() * 60 + now.getMinutes()) - (sh * 60 + sm);
-    const status      = diffMin > lateMin ? 'Late' : 'Present';
-
-    const { data: newAtt, error: insErr } = await supabase
-      .from('attendance')
-      .insert([{ 
-        tenant_id: tenantId, 
-        profile_id: profileId, 
-        date: today, 
-        status, 
-        location: 'Office',
-        punch_in_lat: locationData?.lat,
-        punch_in_lng: locationData?.lng
-      }])
-      .select()
-      .single();
-    if (insErr) throw insErr;
-    attId = newAtt.id;
-  }
 
   const { error: punchErr } = await supabase
     .from('punches')
-    .insert([{ attendance_id: attId, punch_time: timeStr(new Date()), punch_type: 'in' }]);
+    .insert([{ attendance_id: att.id, punch_time: timeStr(new Date()), punch_type: 'in' }]);
   if (punchErr) throw punchErr;
 }
 
@@ -78,7 +84,7 @@ export async function clockOut(profileId, locationData = null) {
 
   const { data: att, error: fetchErr } = await supabase
     .from('attendance')
-    .select('id, tenant_id')
+    .select('id, tenant_id, profile:profiles!attendance_profile_id_fkey(outlet_id)')
     .eq('profile_id', profileId)
     .eq('date', today)
     .maybeSingle();
@@ -105,10 +111,15 @@ export async function clockOut(profileId, locationData = null) {
     if (outs[i]) total += diffHours(ins[i].punch_time, outs[i].punch_time);
   }
 
-  // Get tenant thresholds
-  const { data: tenant } = await supabase.from('tenants').select('min_half_day_hours, min_full_day_hours').eq('id', att.tenant_id).single();
-  const halfMin = tenant?.min_half_day_hours || 4;
-  const fullMin = tenant?.min_full_day_hours || 8;
+  // Thresholds: the employee's outlet override, falling back to the tenant default.
+  const outletId = att.profile?.outlet_id;
+  const [{ data: tenant }, { data: outlet }] = await Promise.all([
+    supabase.from('tenants').select('min_half_day_hours, min_full_day_hours, geofence_lat, geofence_lng, geofence_radius').eq('id', att.tenant_id).single(),
+    outletId
+      ? supabase.from('outlets').select('min_half_day_hours, min_full_day_hours, geofence_lat, geofence_lng, geofence_radius').eq('id', outletId).maybeSingle()
+      : Promise.resolve({ data: null }),
+  ]);
+  const { min_half_day_hours: halfMin, min_full_day_hours: fullMin } = resolveAttendanceSettings(tenant, outlet);
 
   let status = 'Absent';
   if (total >= fullMin) {
@@ -117,13 +128,18 @@ export async function clockOut(profileId, locationData = null) {
     status = 'Half Day';
   }
 
+  // Only ever flips out_of_geofence to true, never back to false — preserves
+  // a flag already set at clock-in if this punch-out happens to be in range.
+  const outOfGeofence = checkGeofence(locationData?.lat, locationData?.lng, outlet, tenant);
+
   await supabase
     .from('attendance')
-    .update({ 
-      total_hours: Math.round(total * 100) / 100, 
+    .update({
+      total_hours: Math.round(total * 100) / 100,
       status,
       punch_out_lat: locationData?.lat,
-      punch_out_lng: locationData?.lng
+      punch_out_lng: locationData?.lng,
+      ...(outOfGeofence === true ? { out_of_geofence: true } : {}),
     })
     .eq('id', att.id);
 
@@ -146,9 +162,12 @@ export async function fetchTeamAttendance(tenantId, date) {
   };
 }
 
-export async function fetchTodayAttendanceSummary(tenantId, date) {
+export async function fetchTodayAttendanceSummary(tenantId, date, outletProfileIds = null) {
+  let profilesQuery = supabase.from('profiles').select('id').eq('tenant_id', tenantId).eq('status', 'Active');
+  if (outletProfileIds) profilesQuery = profilesQuery.in('id', [...outletProfileIds]);
+
   const [profilesRes, attendanceRes] = await Promise.all([
-    supabase.from('profiles').select('id').eq('tenant_id', tenantId).eq('status', 'Active'),
+    profilesQuery,
     supabase.from('attendance').select('profile_id, status').eq('tenant_id', tenantId).eq('date', date),
   ]);
 
@@ -187,29 +206,24 @@ export async function saveManualAttendance(tenantId, { profile_id, date, clockIn
     .maybeSingle();
   if (fetchErr) throw fetchErr;
 
-  let attId;
-  let action = 'create';
-  let oldStatus = null;
-  let oldHours = null;
+  const action = existing ? 'update' : 'create';
+  const oldStatus = existing?.status ?? null;
+  const oldHours  = existing?.total_hours ?? null;
 
-  if (existing) {
-    action = 'update';
-    oldStatus = existing.status;
-    oldHours = existing.total_hours;
-    await supabase.from('attendance')
-      .update({ status, total_hours: hours, location: 'Office (Manual)' })
-      .eq('id', existing.id);
-    await supabase.from('punches').delete().eq('attendance_id', existing.id);
-    attId = existing.id;
-  } else {
-    const { data: newAtt, error: insErr } = await supabase
-      .from('attendance')
-      .insert([{ tenant_id: tenantId, profile_id, date, status, total_hours: hours, location: 'Office (Manual)' }])
-      .select()
-      .single();
-    if (insErr) throw insErr;
-    attId = newAtt.id;
-  }
+  // Atomic upsert on (profile_id, date) — a select-then-insert/update here could create
+  // a duplicate row for the same day under a race (e.g. two admin tabs saving at once).
+  const { data: saved, error: upsertErr } = await supabase
+    .from('attendance')
+    .upsert(
+      [{ tenant_id: tenantId, profile_id, date, status, total_hours: hours, location: 'Office (Manual)' }],
+      { onConflict: 'profile_id,date' }
+    )
+    .select('id')
+    .single();
+  if (upsertErr) throw upsertErr;
+  const attId = saved.id;
+
+  await supabase.from('punches').delete().eq('attendance_id', attId);
 
   const punches = [];
   if (ci) punches.push({ attendance_id: attId, punch_time: ci, punch_type: 'in' });
@@ -273,7 +287,7 @@ export async function fetchAllTenantAttendance(tenantId, year, month) {
 export async function fetchAttendanceAuditLog(tenantId, date) {
   let query = supabase
     .from('attendance_audit_log')
-    .select('*, changed_by_profile:profiles!attendance_audit_log_changed_by_fkey(first_name, last_name), target_profile:profiles!attendance_audit_log_profile_id_fkey(first_name, last_name)')
+    .select('*, changed_by_profile:profiles!attendance_audit_log_changed_by_fkey(first_name, middle_name, last_name), target_profile:profiles!attendance_audit_log_profile_id_fkey(first_name, middle_name, last_name)')
     .eq('tenant_id', tenantId)
     .order('created_at', { ascending: false })
     .limit(50);
@@ -286,12 +300,18 @@ export async function fetchAttendanceAuditLog(tenantId, date) {
   return { data: data || [], error };
 }
 
-/** Fetch all attendance records with punches for every employee in a tenant — used for master report. */
-export async function fetchAllAttendanceWithPunches(tenantId) {
+/**
+ * Fetch attendance records with punches for every employee in a tenant, scoped to one
+ * calendar year — used for master report. An unbounded all-time fetch here would pull
+ * hundreds of thousands of rows once a few years of daily attendance accumulate.
+ */
+export async function fetchAllAttendanceWithPunches(tenantId, year = new Date().getFullYear()) {
   const { data, error } = await supabase
     .from('attendance')
     .select('id, profile_id, date, status, total_hours, punches(punch_time, punch_type)')
     .eq('tenant_id', tenantId)
+    .gte('date', `${year}-01-01`)
+    .lte('date', `${year}-12-31`)
     .order('date');
   return { data: data || [], error };
 }
@@ -300,7 +320,7 @@ export async function fetchAllAttendanceWithPunches(tenantId) {
 export async function fetchEmployeeProfileInfo(profileId) {
   const { data, error } = await supabase
     .from('profiles')
-    .select('first_name, last_name, join_date, department, designation')
+    .select('first_name, middle_name, last_name, join_date, department, designation')
     .eq('id', profileId)
     .single();
   return { profile: data, error };
@@ -310,7 +330,7 @@ export async function fetchEmployeeProfileInfo(profileId) {
 export async function fetchEmployeeFullHistory(profileId) {
   const { data: prof } = await supabase
     .from('profiles')
-    .select('first_name, last_name, join_date, department, designation')
+    .select('first_name, middle_name, last_name, join_date, department, designation')
     .eq('id', profileId)
     .single();
 
@@ -357,7 +377,6 @@ export async function submitRegularizeRequest(tenantId, profileId, { date, clock
   };
 
   if (tier === 'self') {
-    await incrementSelfCount(tenantId, profileId);
     await regularizeAttendance(tenantId, {
       fromDate:    date,
       toDate:      date,
@@ -375,6 +394,14 @@ export async function submitRegularizeRequest(tenantId, profileId, { date, clock
     .insert([payload])
     .select()
     .single();
+
+  // Only spend a self-approval slot once the attendance change AND the request
+  // record both succeeded — incrementing earlier burned quota on failed attempts
+  // (e.g. a blocked audit-log insert) with nothing actually recorded.
+  if (tier === 'self' && !error) {
+    await incrementSelfCount(tenantId, profileId);
+  }
+
   return { data, error, tier };
 }
 
@@ -387,8 +414,8 @@ export async function listRegularizeRequests(tenantId, forRole = null) {
     .from('regularize_requests')
     .select(`
       *,
-      profile:profiles!regularize_requests_profile_id_fkey(first_name, last_name, department, designation),
-      reviewer:profiles!regularize_requests_reviewed_by_fkey(first_name, last_name, role)
+      profile:profiles!regularize_requests_profile_id_fkey(first_name, middle_name, last_name, department, designation),
+      reviewer:profiles!regularize_requests_reviewed_by_fkey(first_name, middle_name, last_name, role)
     `)
     .eq('tenant_id', tenantId)
     .order('created_at', { ascending: false });
@@ -418,6 +445,19 @@ export async function listMyRegularizeRequests(profileId) {
  * When manager approves, increments that employee's manager quota.
  */
 export async function approveRegularizeRequest(request, reviewerId, reviewerRole = 'admin') {
+  // Claim the request first (only if still Pending) — otherwise a double-click, or two
+  // reviewers acting at once, would re-apply the attendance change a second time.
+  const reviewedAt = new Date().toISOString();
+  const { data: claimed, error: claimErr } = await supabase
+    .from('regularize_requests')
+    .update({ status: 'Approved', reviewed_by: reviewerId, reviewed_at: reviewedAt })
+    .eq('id', request.id)
+    .eq('status', 'Pending')
+    .select('id');
+
+  if (claimErr) return { error: claimErr };
+  if (claimed?.length === 0) return { error: new Error('This request has already been reviewed.') };
+
   await regularizeAttendance(request.tenant_id, {
     fromDate:     request.date,
     toDate:       request.date,
@@ -429,26 +469,26 @@ export async function approveRegularizeRequest(request, reviewerId, reviewerRole
     changedBy:    reviewerId,
   });
 
-  const reviewedAt = new Date().toISOString();
-  const { error } = await supabase
-    .from('regularize_requests')
-    .update({ status: 'Approved', reviewed_by: reviewerId, reviewed_at: reviewedAt })
-    .eq('id', request.id);
-
-  if (!error && reviewerRole === 'manager') {
+  if (reviewerRole === 'manager') {
     await incrementManagerCount(request.tenant_id, request.profile_id);
   }
 
-  return { error };
+  return { error: null };
 }
 
 /** Reject a regularization request */
 export async function rejectRegularizeRequest(requestId, reviewerId) {
   const reviewedAt = new Date().toISOString();
-  const { error } = await supabase
+  const { data: updated, error } = await supabase
     .from('regularize_requests')
     .update({ status: 'Rejected', reviewed_by: reviewerId, reviewed_at: reviewedAt })
-    .eq('id', requestId);
+    .eq('id', requestId)
+    .eq('status', 'Pending')
+    .select('id');
+
+  if (!error && updated?.length === 0) {
+    return { error: new Error('This request has already been reviewed.') };
+  }
   return { error };
 }
 
@@ -487,18 +527,22 @@ export async function regularizeAttendance(tenantId, {
   const from = new Date(ffy, ffm - 1, ffd);
   const to = new Date(tty, ttm - 1, ttd);
 
-  const auditLogs = [];
+  const dates = [];
+  for (let d = new Date(from); d <= to; d.setDate(d.getDate() + 1)) {
+    dates.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`);
+  }
 
-  // Get tenant configuration for hour calculations
-  const { data: tenantData, error: tenantErr } = await supabase
-    .from('tenants')
-    .select('min_half_day_hours, min_full_day_hours')
-    .eq('id', tenantId)
-    .single();
+  // Get tenant configuration for hour calculations, plus each employee's outlet
+  // (if any) so an outlet's own half/full-day thresholds override the tenant default.
+  const [{ data: tenantData, error: tenantErr }, { data: employeeOutlets }, { data: tenantOutlets }] = await Promise.all([
+    supabase.from('tenants').select('min_half_day_hours, min_full_day_hours').eq('id', tenantId).single(),
+    supabase.from('profiles').select('id, outlet_id').in('id', employeeIds),
+    supabase.from('outlets').select('id, min_half_day_hours, min_full_day_hours').eq('tenant_id', tenantId),
+  ]);
   if (tenantErr) throw tenantErr;
 
-  const halfMin = tenantData?.min_half_day_hours || 4;
-  const fullMin = tenantData?.min_full_day_hours || 8;
+  const outletIdByProfile = Object.fromEntries((employeeOutlets || []).map((p) => [p.id, p.outlet_id]));
+  const outletById = Object.fromEntries((tenantOutlets || []).map((o) => [o.id, o]));
 
   // Calculate hours if clock times provided
   let hours = 0;
@@ -506,108 +550,111 @@ export async function regularizeAttendance(tenantId, {
     hours = Math.round(diffHours(clockInTime, clockOutTime) * 100) / 100;
   }
 
-  // Determine final status based on hours and provided status
-  let finalStatus = status;
-  if (hours > 0) {
-    if (status === 'Present' && hours < fullMin && hours >= halfMin) {
-      finalStatus = 'Half Day';
-    } else if (status === 'Present' && hours < halfMin) {
-      finalStatus = 'Absent';
-    }
-  }
+  // Batch-fetch every existing attendance row in range for these employees in
+  // ONE query, instead of one SELECT per (employee, date) pair.
+  const { data: existingRows, error: existingErr } = await supabase
+    .from('attendance')
+    .select('id, profile_id, date, status, total_hours')
+    .in('profile_id', employeeIds)
+    .gte('date', fromDate)
+    .lte('date', toDate);
+  if (existingErr) throw existingErr;
+  const existingByKey = Object.fromEntries((existingRows || []).map((r) => [`${r.profile_id}_${r.date}`, r]));
 
-  // For each employee and each date in range
+  // Build the full (employee x date) payload in memory, then write it in
+  // chunked batch calls instead of one round-trip per cell.
+  const upsertPayload = [];
+  const rowMeta = [];
   for (const empId of employeeIds) {
-    let currentDate = new Date(from);
-    while (currentDate <= to) {
-      const dateStr = `${currentDate.getFullYear()}-${String(currentDate.getMonth() + 1).padStart(2, '0')}-${String(currentDate.getDate()).padStart(2, '0')}`;
+    const outlet = outletById[outletIdByProfile[empId]] || null;
+    const { min_half_day_hours: halfMin, min_full_day_hours: fullMin } = resolveAttendanceSettings(tenantData, outlet);
 
-      // Fetch existing attendance record
-      const { data: existing, error: fetchErr } = await supabase
-        .from('attendance')
-        .select('id, status, total_hours')
-        .eq('profile_id', empId)
-        .eq('date', dateStr)
-        .maybeSingle();
-      if (fetchErr) throw fetchErr;
-
-      let attId;
-      let action = 'create';
-      let oldStatus = null;
-      let oldHours = null;
-
-      if (existing) {
-        action = 'update';
-        oldStatus = existing.status;
-        oldHours = existing.total_hours;
-
-        // Update existing record
-        const { error: updateErr } = await supabase
-          .from('attendance')
-          .update({
-            status: finalStatus,
-            total_hours: hours,
-            location: 'Office (Regularized)'
-          })
-          .eq('id', existing.id);
-        if (updateErr) throw updateErr;
-        attId = existing.id;
-
-        // Delete old punches if any
-        await supabase.from('punches').delete().eq('attendance_id', existing.id);
-      } else {
-        // Create new record
-        const { data: newAtt, error: insErr } = await supabase
-          .from('attendance')
-          .insert([{
-            tenant_id: tenantId,
-            profile_id: empId,
-            date: dateStr,
-            status: finalStatus,
-            total_hours: hours,
-            location: 'Office (Regularized)'
-          }])
-          .select()
-          .single();
-        if (insErr) throw insErr;
-        attId = newAtt.id;
+    // Determine final status based on hours and provided status (per employee, since
+    // thresholds can differ by outlet)
+    let finalStatus = status;
+    if (hours > 0) {
+      if (status === 'Present' && hours < fullMin && hours >= halfMin) {
+        finalStatus = 'Half Day';
+      } else if (status === 'Present' && hours < halfMin) {
+        finalStatus = 'Absent';
       }
+    }
 
-      // Insert punches if clock times provided
-      if (clockInTime && clockOutTime && attId) {
-        const { error: punchErr } = await supabase
-          .from('punches')
-          .insert([
-            { attendance_id: attId, punch_time: clockInTime, punch_type: 'in' },
-            { attendance_id: attId, punch_time: clockOutTime, punch_type: 'out' }
-          ]);
-        if (punchErr) throw punchErr;
-      }
-
-      // Create audit log
-      auditLogs.push({
+    for (const dateStr of dates) {
+      const existing = existingByKey[`${empId}_${dateStr}`];
+      upsertPayload.push({
         tenant_id: tenantId,
-        attendance_id: attId,
         profile_id: empId,
-        changed_by: changedBy,
         date: dateStr,
-        action,
-        old_status: oldStatus,
-        new_status: finalStatus,
-        old_hours: oldHours,
-        new_hours: hours,
-        reason: reason
+        status: finalStatus,
+        total_hours: hours,
+        location: 'Office (Regularized)',
       });
-
-      currentDate.setDate(currentDate.getDate() + 1);
+      rowMeta.push({
+        empId,
+        dateStr,
+        finalStatus,
+        action: existing ? 'update' : 'create',
+        oldStatus: existing?.status ?? null,
+        oldHours: existing?.total_hours ?? null,
+      });
     }
   }
 
-  // Insert all audit logs at once
-  if (auditLogs.length > 0) {
-    const { error: auditErr } = await supabase
-      .from('attendance_audit_log')
-      .insert(auditLogs);
+  const CHUNK = 500;
+  const chunks = (arr) => {
+    const out = [];
+    for (let i = 0; i < arr.length; i += CHUNK) out.push(arr.slice(i, i + CHUNK));
+    return out;
+  };
+
+  // Atomic upsert on (profile_id, date) per row — avoids creating a duplicate row
+  // if this races with a concurrent clock-in/manual edit for the same day —
+  // batched in chunks instead of one upsert per cell.
+  const attIdByKey = {};
+  for (const part of chunks(upsertPayload)) {
+    const { data: saved, error: upsertErr } = await supabase
+      .from('attendance')
+      .upsert(part, { onConflict: 'profile_id,date' })
+      .select('id, profile_id, date');
+    if (upsertErr) throw upsertErr;
+    for (const r of saved) attIdByKey[`${r.profile_id}_${r.date}`] = r.id;
+  }
+
+  const attIds = rowMeta.map((m) => attIdByKey[`${m.empId}_${m.dateStr}`]);
+
+  for (const part of chunks(attIds)) {
+    const { error: delErr } = await supabase.from('punches').delete().in('attendance_id', part);
+    if (delErr) throw delErr;
+  }
+
+  if (clockInTime && clockOutTime) {
+    const punchRows = attIds.flatMap((attId) => [
+      { attendance_id: attId, punch_time: clockInTime, punch_type: 'in' },
+      { attendance_id: attId, punch_time: clockOutTime, punch_type: 'out' },
+    ]);
+    for (const part of chunks(punchRows)) {
+      const { error: punchErr } = await supabase.from('punches').insert(part);
+      if (punchErr) throw punchErr;
+    }
+  }
+
+  const auditLogs = rowMeta.map((m) => ({
+    tenant_id: tenantId,
+    attendance_id: attIdByKey[`${m.empId}_${m.dateStr}`],
+    profile_id: m.empId,
+    changed_by: changedBy,
+    date: m.dateStr,
+    action: m.action,
+    old_status: m.oldStatus,
+    new_status: m.finalStatus,
+    old_hours: m.oldHours,
+    new_hours: hours,
+    reason: reason,
+  }));
+
+  for (const part of chunks(auditLogs)) {
+    const { error: auditErr } = await supabase.from('attendance_audit_log').insert(part);
     if (auditErr) throw auditErr;
   }
 

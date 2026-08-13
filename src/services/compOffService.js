@@ -35,13 +35,15 @@ export async function settleWeeklyOffForMonth(tenantId, month, year, records) {
     .upsert(payload, { onConflict: 'profile_id,month,year' });
   if (error) throw error;
 
-  for (const r of records.filter(x => x.settlement.credit > 0)) {
-    const { data: prof } = await supabase
-      .from('profiles').select('comp_off_balance').eq('id', r.profileId).single();
-    await supabase
-      .from('profiles')
-      .update({ comp_off_balance: (prof?.comp_off_balance || 0) + r.settlement.credit })
-      .eq('id', r.profileId);
+  const credits = records
+    .filter(r => r.settlement.credit > 0)
+    .map(r => ({ profile_id: r.profileId, delta: r.settlement.credit }));
+
+  if (credits.length > 0) {
+    // One atomic bulk update instead of one RPC round-trip per employee —
+    // same GREATEST(0, balance + delta) semantics as the single-row RPC.
+    const { error: creditErr } = await supabase.rpc('bulk_adjust_comp_off_balance', { p_items: credits });
+    if (creditErr) throw creditErr;
   }
 }
 
@@ -49,7 +51,7 @@ export async function settleWeeklyOffForMonth(tenantId, month, year, records) {
 export async function fetchMonthlySettlements(tenantId, month, year) {
   const { data, error } = await supabase
     .from('weekly_off_settlements')
-    .select('*, profile:profiles!weekly_off_settlements_profile_id_fkey(first_name, last_name, ctc)')
+    .select('*, profile:profiles!weekly_off_settlements_profile_id_fkey(first_name, middle_name, last_name, ctc)')
     .eq('tenant_id', tenantId)
     .eq('month', month + 1)
     .eq('year', year);

@@ -6,6 +6,7 @@ import { supabase } from '@/lib/supabase';
 import { lookupOrgCode, employeeJoinWorkspace } from '@/services/tenantService';
 import { signUp as otpSignUp, sendOtp, verifyOtp, detectIdentifierType } from '@/services/otpService';
 import { useDebounce } from '@/hooks/useDebounce';
+import { validatePassword } from '@/lib/helpers';
 import {
   ErrorBanner, SuccessBanner,
   OtpInput, ResendTimer,
@@ -147,8 +148,8 @@ function AdminSignupForm({ onSuccess }) {
       return setError('Please enter a valid email address.');
     if (form.phone && detectIdentifierType(form.phone.trim()) !== 'phone')
       return setError('Please enter a valid 10-digit mobile number.');
-    if (password.length < 6)
-      return setError('Password must be at least 6 characters.');
+    const pwError = validatePassword(password);
+    if (pwError) return setError(pwError);
     if (password !== confirmPassword)
       return setError('Passwords do not match.');
 
@@ -274,7 +275,7 @@ function AdminSignupForm({ onSuccess }) {
       <div className="form-row">
         <div className="form-group">
           <label className="form-label">Password *</label>
-          <input className="form-input" type="password" placeholder="Min 6 chars" value={form.password} onChange={set('password')} />
+          <input className="form-input" type="password" placeholder="Min. 8 chars, upper, lower & number" value={form.password} onChange={set('password')} />
         </div>
         <div className="form-group">
           <label className="form-label">Confirm Password *</label>
@@ -369,8 +370,8 @@ function EmployeeJoinForm({ onSuccess }) {
       return setError('Please enter a valid email address.');
     if (form.phone && detectIdentifierType(form.phone.trim()) !== 'phone')
       return setError('Please enter a valid 10-digit mobile number.');
-    if (password.length < 6)
-      return setError('Password must be at least 6 characters.');
+    const pwError = validatePassword(password);
+    if (pwError) return setError(pwError);
     if (password !== confirmPassword)
       return setError('Passwords do not match.');
 
@@ -511,7 +512,7 @@ function EmployeeJoinForm({ onSuccess }) {
       <div className="form-row">
         <div className="form-group">
           <label className="form-label">Password *</label>
-          <input className="form-input" type="password" placeholder="Min 6 chars" value={form.password} onChange={set('password')} />
+          <input className="form-input" type="password" placeholder="Min. 8 chars, upper, lower & number" value={form.password} onChange={set('password')} />
         </div>
         <div className="form-group">
           <label className="form-label">Confirm Password *</label>

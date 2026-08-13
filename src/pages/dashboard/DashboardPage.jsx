@@ -1,15 +1,19 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, Navigate } from 'react-router-dom';
 import Header from '@/components/Header';
 import StatCard from '@/components/StatCard';
+import RecentUpdatesCard from '@/components/RecentUpdatesCard';
 import { useAuth } from '@/context/AuthContext';
+import { useOutletView } from '@/context/OutletViewContext';
 import { fetchDashboardStats } from '@/services/tenantService';
 import { fetchTodayAttendanceSummary, fetchMyMonthAttendance, clockIn as svcClockIn, clockOut as svcClockOut } from '@/services/attendanceService';
+import { fetchRecentUpdates } from '@/services/activityFeedService';
 import { todayStr, timeStr, fmtTime12, diffHours, monthLabel } from '@/lib/helpers';
 import { showToast } from '@/components/Toast';
 
-export default function GeneralDashboard() {
+export default function GeneralDashboard({ embedded = false }) {
   const { tenant, profile } = useAuth();
+  const { needsSelection, outletProfileIds, selectedOutletName } = useOutletView();
   const [stats, setStats]   = useState({ activeEmployees: 0, processedPayrolls: 0 });
   const [attendance, setAttendance] = useState({ present: 0, absent: 0, late: 0, halfDay: 0, leave: 0, total: 0 });
   const [loading, setLoading] = useState(true);
@@ -19,6 +23,8 @@ export default function GeneralDashboard() {
   const [isClockedIn, setIsClockedIn] = useState(false);
   const [myPunches, setMyPunches] = useState({});
   const [attLoading, setAttLoading] = useState(false);
+  const [updates, setUpdates] = useState([]);
+  const [updatesLoading, setUpdatesLoading] = useState(true);
   const clockRef = useRef(null);
   const timerRef = useRef(null);
 
@@ -40,14 +46,14 @@ export default function GeneralDashboard() {
   useEffect(() => {
     if (!tenant) { setLoading(false); return; }
     Promise.all([
-      fetchDashboardStats(tenant.id),
-      fetchTodayAttendanceSummary(tenant.id, `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}-${String(new Date().getDate()).padStart(2, '0')}`),
+      fetchDashboardStats(tenant.id, outletProfileIds),
+      fetchTodayAttendanceSummary(tenant.id, `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}-${String(new Date().getDate()).padStart(2, '0')}`, outletProfileIds),
     ]).then(([statsRes, attendanceRes]) => {
       if (!statsRes.error) setStats({ activeEmployees: statsRes.activeEmployees, processedPayrolls: statsRes.processedPayrolls });
       if (!attendanceRes.error) setAttendance(attendanceRes);
       setLoading(false);
     }).catch(() => setLoading(false));
-  }, [tenant]);
+  }, [tenant, outletProfileIds]);
 
   useEffect(() => {
     const tick = () => {
@@ -63,6 +69,14 @@ export default function GeneralDashboard() {
   useEffect(() => {
     fetchMyAttendance();
   }, [fetchMyAttendance]);
+
+  useEffect(() => {
+    if (!tenant || !profile) return;
+    setUpdatesLoading(true);
+    fetchRecentUpdates(tenant.id, { profileId: profile.id })
+      .then(({ data }) => setUpdates(data || []))
+      .finally(() => setUpdatesLoading(false));
+  }, [tenant, profile]);
 
   useEffect(() => {
     const tickTimer = () => {
@@ -117,11 +131,18 @@ export default function GeneralDashboard() {
     }
   };
 
+  if (needsSelection) return <Navigate to="/outlets" replace />;
+
   const now = new Date();
 
   return (
     <>
-      <Header title="Admin Dashboard" breadcrumb={`${monthLabel(now.getMonth(), now.getFullYear())} Overview`} />
+      {!embedded && (
+        <Header
+          title={selectedOutletName ? `Admin Dashboard — ${selectedOutletName}` : 'Admin Dashboard'}
+          breadcrumb={`${monthLabel(now.getMonth(), now.getFullYear())} Overview`}
+        />
+      )}
       <div className="page-content">
         {loading ? (
           <div style={{ padding: '40px 0', textAlign: 'center', color: 'var(--text-muted)' }}>
@@ -159,7 +180,7 @@ export default function GeneralDashboard() {
             <div className="stats-row">
               <StatCard icon="fa-users"         iconColor="blue"   value={stats.activeEmployees}   label="Active Employees" />
               <StatCard icon="fa-file-invoice"  iconColor="purple" value={stats.processedPayrolls} label="Payrolls Processed" />
-              <StatCard icon="fa-calendar-check" iconColor="green" value={attendance.present} label="Present Today" />
+              <StatCard icon="fa-calendar-check" iconColor="green" value={`${attendance.present} / ${attendance.total}`} label="Present Today" />
               <StatCard icon="fa-clock"         iconColor="orange" value={attendance.late}       label="Late Today" />
             </div>
 
@@ -190,6 +211,8 @@ export default function GeneralDashboard() {
                 </div>
               </div>
             </div>
+
+            <RecentUpdatesCard items={updates} loading={updatesLoading} />
 
             <div className="card">
               <div className="card-header"><h3>System Setup Guide</h3></div>

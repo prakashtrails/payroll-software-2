@@ -3,9 +3,10 @@ import * as XLSX from 'xlsx';
 import Header from '@/components/Header';
 import { showToast } from '@/components/Toast';
 import { useAuth } from '@/context/AuthContext';
+import { useOutletView } from '@/context/OutletViewContext';
 import { listActiveEmployees } from '@/services/employeeService';
 import { fetchMyMonthAttendance, fetchEmployeeProfileInfo } from '@/services/attendanceService';
-import { fmt, fmtTime12, dateStr, monthLabel } from '@/lib/helpers';
+import { fmt, fmtTime12, dateStr, monthLabel, fullName, scopedToOutlet } from '@/lib/helpers';
 
 function getFirstIn(punches) {
   return (punches || [])
@@ -30,6 +31,7 @@ const now = new Date();
 
 export default function EmployeeCalendarPage() {
   const { tenant } = useAuth();
+  const { outletProfileIds } = useOutletView();
   const [employees, setEmployees] = useState([]);
   const [selectedId, setSelectedId] = useState('');
   const [records, setRecords] = useState([]);
@@ -43,10 +45,12 @@ export default function EmployeeCalendarPage() {
     if (!tenant) return;
     setLoadingEmps(true);
     listActiveEmployees(tenant.id).then(({ data }) => {
-      setEmployees(data || []);
+      const scoped = scopedToOutlet(data || [], outletProfileIds, 'id');
+      setEmployees(scoped);
+      setSelectedId((prev) => (prev && scoped.some((e) => e.id === prev) ? prev : ''));
       setLoadingEmps(false);
     });
-  }, [tenant]);
+  }, [tenant, outletProfileIds]);
 
   // When employee changes: fetch profile, reset to current month
   useEffect(() => {
@@ -117,7 +121,7 @@ export default function EmployeeCalendarPage() {
 
   const exportToExcel = () => {
     if (!empProfile) return;
-    const empName = `${empProfile.first_name || ''} ${empProfile.last_name || ''}`.trim();
+    const empName = fullName(empProfile);
     const wsData = [
       [`Employee: ${empName}`],
       [`Month: ${monthLabel(viewMonth, viewYear)}`],
@@ -180,7 +184,7 @@ export default function EmployeeCalendarPage() {
               <option value="">— Choose an employee —</option>
               {employees.map(emp => (
                 <option key={emp.id} value={emp.id}>
-                  {emp.first_name} {emp.last_name}{emp.department ? ` (${emp.department})` : ''}
+                  {fullName(emp)}{emp.department ? ` (${emp.department})` : ''}
                 </option>
               ))}
             </select>
@@ -256,7 +260,7 @@ export default function EmployeeCalendarPage() {
             </div>
 
             {/* Table */}
-            <div className="table-responsive">
+            <div className="table-wrap">
               <table className="table">
                 <thead>
                   <tr>

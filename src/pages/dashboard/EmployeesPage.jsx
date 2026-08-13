@@ -1,26 +1,27 @@
 import React from 'react';
 import { useEffect, useState, useCallback } from 'react';
-import * as XLSX from 'xlsx';
+import { Link } from 'react-router-dom';
 import Header from '@/components/Header';
 import Modal from '@/components/Modal';
 import Pagination from '@/components/Pagination';
 import { showToast } from '@/components/Toast';
 import { useAuth } from '@/context/AuthContext';
+import { useOutletView } from '@/context/OutletViewContext';
 import { useDebounce } from '@/hooks/useDebounce';
 import {
-  listEmployees, listBranches, createEmployee, updateEmployee, updateEmployeeAdmin,
-  setEmployeeStatus, removeEmployee, EMPLOYEE_PAGE_SIZE,
+  listEmployees, listBranches, createEmployee, updateEmployee,
+  setEmployeeStatus, removeEmployee, EMPLOYEE_PAGE_SIZE, listActiveEmployees,
+  setEmployeeWithholding,
 } from '@/services/employeeService';
 import { fetchGroupDashboard, transferEmployee, fetchTransferHistory } from '@/services/groupService';
 import { listEmployeePromotions, recordPromotion } from '@/services/promotionService';
-import { listDepartments, listShifts } from '@/services/tenantService';
+import {
+  listDepartments, listShifts, transferEmployeeOutlet, fetchOutletTransferHistory,
+  listUnassignedEmployees, bulkAssignOutlet,
+} from '@/services/tenantService';
 import { supabase } from '@/lib/supabase';
-import { fmt, getInitials, getAvatarColor, todayStr } from '@/lib/helpers';
-
-const isIndia = (country) => {
-  const c = (country || '').toLowerCase().trim();
-  return !c || c === 'india' || c === 'in';
-};
+import { fmt, getInitials, getAvatarColor, todayStr, fullName } from '@/lib/helpers';
+import { parseImportFile, runBulkImport, downloadSampleCSV, resolveLoginEmail } from '@/lib/employeeImport';
 
 function buildNewEmployeeId(currentId, destLocationCode) {
   if (!currentId || currentId.length < 4) return currentId || '';
@@ -91,7 +92,7 @@ function TransferModal({ show, onClose, employee, currentTenantId, groupCode, on
             {getInitials(employee?.first_name, employee?.last_name)}
           </div>
           <div>
-            <div style={{ fontWeight: 600, fontSize: 14 }}>{employee?.first_name} {employee?.last_name}</div>
+            <div style={{ fontWeight: 600, fontSize: 14 }}>{fullName(employee)}</div>
             {employee?.employee_id && (
               <code style={{ fontSize: 11, color: 'var(--primary)', background: 'var(--primary-light)', padding: '1px 6px', borderRadius: 4 }}>
                 {employee.employee_id}
@@ -171,7 +172,7 @@ function TransferHistoryModal({ show, onClose, employee }) {
       ) : history.length === 0 ? (
         <div style={{ padding: 32, textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>
           <i className="fas fa-history" style={{ fontSize: 24, marginBottom: 10, display: 'block' }} />
-          No transfer history for {employee?.first_name} {employee?.last_name}.
+          No transfer history for {fullName(employee)}.
         </div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -211,11 +212,248 @@ function TransferHistoryModal({ show, onClose, employee }) {
   );
 }
 
-function TempPasswordModal({ show, onClose, empName, email, password }) {
+function OutletTransferModal({ show, onClose, employee, tenantId, outlets, transferredBy, onTransferred }) {
+  const [destId, setDestId] = useState('');
+  const [notes,  setNotes]  = useState('');
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!show) return;
+    setDestId(''); setNotes('');
+  }, [show]);
+
+  const destinations = outlets.filter((o) => o.id !== employee?.outlet_id);
+
+  const handleSave = async () => {
+    if (!destId) return showToast('Select destination outlet', 'warning');
+    const dest = outlets.find((o) => o.id === destId);
+    const fromOutlet = outlets.find((o) => o.id === employee?.outlet_id);
+    setSaving(true);
+    const { error } = await transferEmployeeOutlet({
+      tenantId,
+      profileId: employee.id,
+      toOutletId: destId,
+      toOutletName: dest?.name || '',
+      fromOutletId: employee?.outlet_id || null,
+      fromOutletName: fromOutlet?.name || employee?.outlet_location || '',
+      transferredBy,
+      notes,
+    });
+    setSaving(false);
+    if (error) return showToast('Transfer failed: ' + error.message, 'error');
+    showToast(`${employee.first_name} moved to ${dest?.name}`, 'success');
+    onClose();
+    onTransferred();
+  };
+
+  return (
+    <Modal show={show} onClose={onClose} title="Transfer to Outlet" width="480px"
+      footer={<>
+        <button className="btn btn-outline" onClick={onClose}>Cancel</button>
+        <button className="btn btn-primary" onClick={handleSave} disabled={saving || !destId}>
+          {saving ? <><div className="spinner" style={{ width: 15, height: 15, borderWidth: 2 }} /> Transferring…</> : <><i className="fas fa-store-alt" /> Transfer</>}
+        </button>
+      </>}
+    >
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <div style={{ background: 'var(--bg)', borderRadius: 8, padding: '12px 14px', display: 'flex', gap: 12, alignItems: 'center' }}>
+          <div style={{ width: 40, height: 40, borderRadius: 10, background: 'var(--primary-light)', color: 'var(--primary)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: 15 }}>
+            {getInitials(employee?.first_name, employee?.last_name)}
+          </div>
+          <div>
+            <div style={{ fontWeight: 600, fontSize: 14 }}>{fullName(employee)}</div>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+              Currently: {outlets.find((o) => o.id === employee?.outlet_id)?.name || employee?.outlet_location || 'No outlet assigned'}
+            </div>
+          </div>
+        </div>
+
+        <div className="form-group">
+          <label className="form-label">Transfer To Outlet *</label>
+          <select className="form-select" value={destId} onChange={(e) => setDestId(e.target.value)}>
+            <option value="">Select destination outlet</option>
+            {destinations.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
+          </select>
+        </div>
+
+        <div className="form-group">
+          <label className="form-label">Transfer Notes</label>
+          <input className="form-input" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Optional reason for transfer" />
+        </div>
+
+        <div style={{ background: 'var(--warning-light)', borderRadius: 8, padding: '10px 14px', fontSize: 12, color: 'var(--warning)', display: 'flex', gap: 8 }}>
+          <i className="fas fa-info-circle" style={{ marginTop: 1, flexShrink: 0 }} />
+          Employee's historical attendance, payroll, and leaves stay recorded as-is. This transfer is saved to their outlet history.
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function OutletTransferHistoryModal({ show, onClose, employee }) {
+  const [history, setHistory] = useState([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!show || !employee?.id) return;
+    setLoading(true);
+    fetchOutletTransferHistory(employee.id).then(({ data }) => {
+      setHistory(data || []);
+      setLoading(false);
+    });
+  }, [show, employee?.id]);
+
+  return (
+    <Modal show={show} onClose={onClose} title="Outlet Transfer History" width="560px"
+      footer={<button className="btn btn-outline" onClick={onClose}>Close</button>}
+    >
+      {loading ? (
+        <div style={{ padding: 32, textAlign: 'center', color: 'var(--text-muted)' }}>
+          <div className="spinner" style={{ margin: '0 auto 12px' }} />Loading history…
+        </div>
+      ) : history.length === 0 ? (
+        <div style={{ padding: 32, textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>
+          <i className="fas fa-history" style={{ fontSize: 24, marginBottom: 10, display: 'block' }} />
+          No outlet transfer history for {fullName(employee)}.
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {history.map((h) => (
+            <div key={h.id} style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '12px 14px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, flexWrap: 'wrap', gap: 6 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 600, fontSize: 13, flexWrap: 'wrap' }}>
+                  <span style={{ color: 'var(--text-muted)' }}>{h.from_outlet_name || 'No outlet'}</span>
+                  <i className="fas fa-arrow-right" style={{ color: 'var(--primary)', fontSize: 11 }} />
+                  <span style={{ color: 'var(--primary)' }}>{h.to_outlet_name}</span>
+                </div>
+                <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                  {new Date(h.transferred_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
+                </span>
+              </div>
+              {h.notes && <div style={{ fontSize: 12, color: 'var(--text-muted)', fontStyle: 'italic' }}>{h.notes}</div>}
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>
+                By {h.transferred_by_profile ? fullName(h.transferred_by_profile) : 'Unknown'}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+function BulkAssignOutletModal({ show, onClose, tenantId, outlets, transferredBy, onAssigned }) {
+  const [employees, setEmployees] = useState([]);
+  const [selected,  setSelected]  = useState(new Set());
+  const [destId,    setDestId]    = useState('');
+  const [notes,     setNotes]     = useState('');
+  const [loading,   setLoading]   = useState(false);
+  const [saving,    setSaving]    = useState(false);
+
+  useEffect(() => {
+    if (!show || !tenantId) return;
+    setDestId(''); setNotes('');
+    setLoading(true);
+    listUnassignedEmployees(tenantId).then(({ data }) => {
+      setEmployees(data || []);
+      setSelected(new Set((data || []).map((e) => e.id)));
+      setLoading(false);
+    });
+  }, [show, tenantId]);
+
+  const toggle = (id) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  };
+
+  const toggleAll = () => {
+    setSelected((prev) => (prev.size === employees.length ? new Set() : new Set(employees.map((e) => e.id))));
+  };
+
+  const handleSave = async () => {
+    if (!destId) return showToast('Select destination outlet', 'warning');
+    if (selected.size === 0) return showToast('Select at least one employee', 'warning');
+    const dest = outlets.find((o) => o.id === destId);
+    setSaving(true);
+    const { error } = await bulkAssignOutlet({
+      tenantId,
+      profileIds: [...selected],
+      toOutletId: destId,
+      toOutletName: dest?.name || '',
+      transferredBy,
+      notes,
+    });
+    setSaving(false);
+    if (error) return showToast('Bulk assign failed: ' + error.message, 'error');
+    showToast(`${selected.size} employee(s) assigned to ${dest?.name}`, 'success');
+    onClose();
+    onAssigned();
+  };
+
+  return (
+    <Modal show={show} onClose={onClose} title="Assign Unassigned Employees to an Outlet" width="560px"
+      footer={<>
+        <button className="btn btn-outline" onClick={onClose}>Cancel</button>
+        <button className="btn btn-primary" onClick={handleSave} disabled={saving || !destId || selected.size === 0}>
+          {saving ? <><div className="spinner" style={{ width: 15, height: 15, borderWidth: 2 }} /> Assigning…</> : <><i className="fas fa-people-arrows" /> Assign {selected.size > 0 ? `(${selected.size})` : ''}</>}
+        </button>
+      </>}
+    >
+      {loading ? (
+        <div style={{ padding: 32, textAlign: 'center', color: 'var(--text-muted)' }}>
+          <div className="spinner" style={{ margin: '0 auto 12px' }} />Loading unassigned employees…
+        </div>
+      ) : employees.length === 0 ? (
+        <div style={{ padding: 32, textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>
+          <i className="fas fa-check-circle" style={{ fontSize: 24, marginBottom: 10, display: 'block', color: 'var(--success)' }} />
+          Every active employee already has an outlet assigned.
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          <div className="form-group">
+            <label className="form-label">Assign To Outlet *</label>
+            <select className="form-select" value={destId} onChange={(e) => setDestId(e.target.value)}>
+              <option value="">Select outlet</option>
+              {outlets.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
+            </select>
+          </div>
+
+          <div className="form-group">
+            <label className="form-label">Notes</label>
+            <input className="form-input" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Optional — e.g. initial outlet setup" />
+          </div>
+
+          <div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+              <label className="form-label" style={{ margin: 0 }}>Unassigned Employees ({employees.length})</label>
+              <button className="btn btn-outline btn-sm" onClick={toggleAll} type="button">
+                {selected.size === employees.length ? 'Deselect All' : 'Select All'}
+              </button>
+            </div>
+            <div style={{ maxHeight: 260, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 8 }}>
+              {employees.map((e) => (
+                <label key={e.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', borderBottom: '1px solid var(--border-light)', cursor: 'pointer', fontSize: 13 }}>
+                  <input type="checkbox" checked={selected.has(e.id)} onChange={() => toggle(e.id)} />
+                  <span style={{ flex: 1 }}>{fullName(e)}</span>
+                  <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>{e.department || '—'}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+function TempPasswordModal({ show, onClose, empName, username, password }) {
   const [copied, setCopied] = useState(false);
 
   const copyToClipboard = () => {
-    navigator.clipboard.writeText(`Email: ${email}\nPassword: ${password}`);
+    navigator.clipboard.writeText(`Username: ${username}\nPassword: ${password}`);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
@@ -245,8 +483,8 @@ function TempPasswordModal({ show, onClose, empName, email, password }) {
           <i className={`fas ${copied ? 'fa-check' : 'fa-copy'}`} />
         </button>
         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 10, fontSize: 13 }}>
-          <span style={{ color: 'var(--text-muted)' }}>Email</span>
-          <strong>{email}</strong>
+          <span style={{ color: 'var(--text-muted)' }}>Username</span>
+          <strong>{username}</strong>
         </div>
         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13 }}>
           <span style={{ color: 'var(--text-muted)' }}>Temporary Password</span>
@@ -262,7 +500,7 @@ function TempPasswordModal({ show, onClose, empName, email, password }) {
 }
 
 const EMPTY_FORM = {
-  first_name: '', last_name: '', email: '', phone: '',
+  first_name: '', middle_name: '', last_name: '', email: '', phone: '',
   department: '', designation: '', join_date: '', ctc: '',
   bank_acc: '', pan: '', aadhar: '', role: 'employee',
   weekly_holiday: 'Sunday', shift_id: '', leave_allocation: 0,
@@ -270,7 +508,7 @@ const EMPTY_FORM = {
   compliance_enabled: false,
   pf_enabled: false, pf_number: '', pf_amount: '',
   esic_enabled: false, esic_number: '', esic_amount: '',
-  employee_id: '', outlet_location: '', probation_months: 0,
+  employee_id: '', outlet_location: '', probation_months: 0, manager_id: '',
 };
 
 function getComplianceStatus(emp) {
@@ -289,6 +527,9 @@ export default function EmployeesPage() {
   const { tenant, profile } = useAuth();
   const isManager = profile?.role === 'manager';
 
+  // Outlet scoping — follows whatever outlet HR currently has selected app-wide
+  const { selectedOutletId: outletId, selectedOutletName: outletName, outlets } = useOutletView();
+
   // ---- filter state ----
   const [search, setSearch] = useState('');
   const [deptFilter, setDeptFilter] = useState('');
@@ -303,11 +544,13 @@ export default function EmployeesPage() {
 
   // ---- data ----
   const [employees, setEmployees] = useState([]);
+  const [managerOptions, setManagerOptions] = useState([]);
   const [departments, setDepartments] = useState([]);
   const [branches, setBranches] = useState([]);
   const [shifts, setShifts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [clockedInSet, setClockedInSet] = useState(new Set());
+  const [importProgress, setImportProgress] = useState(null); // null | { current, total }
 
   // ---- modal ----
   const [showModal, setShowModal] = useState(false);
@@ -319,19 +562,22 @@ export default function EmployeesPage() {
   // ---- transfer ----
   const [transferEmp,   setTransferEmp]   = useState(null);
   const [historyEmp,    setHistoryEmp]    = useState(null);
+  const [outletTransferEmp, setOutletTransferEmp] = useState(null);
+  const [outletHistoryEmp,  setOutletHistoryEmp]  = useState(null);
+  const [showBulkAssign, setShowBulkAssign] = useState(false);
 
   // ---- promotion history ----
   const [promotionEmp,  setPromotionEmp]  = useState(null);
 
   // Reset to page 1 whenever filters change
-  useEffect(() => { setPage(1); }, [debouncedSearch, deptFilter, statusFilter, branchFilter]);
+  useEffect(() => { setPage(1); }, [debouncedSearch, deptFilter, statusFilter, branchFilter, outletId]);
 
   const fetchData = useCallback(async () => {
     if (!tenant) return;
     setLoading(true);
     try {
-      const [empRes, deptRes, branchRes, shiftRes, attRes] = await Promise.all([
-        listEmployees(tenant.id, { page, search: debouncedSearch, department: deptFilter, status: statusFilter, branch: branchFilter }),
+      const [empRes, deptRes, branchRes, shiftRes, attRes, managerRes] = await Promise.all([
+        listEmployees(tenant.id, { page, search: debouncedSearch, department: deptFilter, status: statusFilter, branch: branchFilter, outletId }),
         listDepartments(tenant.id),
         listBranches(tenant.id),
         listShifts(tenant.id),
@@ -341,12 +587,14 @@ export default function EmployeesPage() {
           .select('profile_id, punches(punch_type)')
           .eq('tenant_id', tenant.id)
           .eq('date', todayStr()),
+        listActiveEmployees(tenant.id),
       ]);
       setEmployees(empRes.data);
       setTotalCount(empRes.count);
       setDepartments((deptRes.data || []).map((d) => d.name));
       setBranches(branchRes.data || []);
       setShifts(shiftRes.data || []);
+      setManagerOptions((managerRes.data || []).filter((e) => e.role === 'manager' || e.role === 'admin'));
 
       // Build set of profile_ids who are currently clocked in (more ins than outs today)
       const working = new Set();
@@ -359,7 +607,7 @@ export default function EmployeesPage() {
     } finally {
       setLoading(false);
     }
-  }, [tenant, page, debouncedSearch, deptFilter, statusFilter, branchFilter]);
+  }, [tenant, page, debouncedSearch, deptFilter, statusFilter, branchFilter, outletId]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
@@ -367,6 +615,7 @@ export default function EmployeesPage() {
     setEditEmp(emp);
     setForm(emp ? {
       first_name: emp.first_name || '',
+      middle_name: emp.middle_name || '',
       last_name: emp.last_name || '',
       email: emp.email || '',
       phone: emp.phone || '',
@@ -395,27 +644,14 @@ export default function EmployeesPage() {
       employee_id:      emp.employee_id      || '',
       outlet_location:  emp.outlet_location  || '',
       probation_months: emp.probation_months ?? 0,
+      manager_id: emp.manager_id || '',
     } : EMPTY_FORM);
     setShowModal(true);
   };
 
-  const downloadSampleCSV = () => {
-    const csvContent =
-      'employee_id,first_name,last_name,email,phone,department,designation,join_date,ctc,bank_acc,outlet_location,country,pan,aadhar,passport_number,work_permit_number,work_permit_expiry,role,weekly_holiday,leave_allocation\n' +
-      'MCMU1001,Jane,Doe,jane.doe@example.com,9999999999,HR,Recruiter,2026-05-01,45000,123456789012,Mumbai,India,ABCDE1234F,999988887777,,,employee,Sunday,12\n' +
-      'MCDL2001,John,Smith,john.smith@example.com,+442012345678,Engineering,Developer,2026-05-01,80000,GB12345678,Delhi,United Kingdom,,,,P12345678,WP-UK-9999,2027-12-31,employee,Saturday,15\n';
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const link = document.createElement('a');
-    link.href = URL.createObjectURL(blob);
-    link.setAttribute('download', 'employee_import_sample.csv');
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  };
-
   const saveEmployee = async () => {
     if (!form.first_name || !form.last_name) return showToast('First and last name required', 'error');
-    if (!form.email) return showToast('Email is required', 'error');
+    if (!form.email && !form.phone) return showToast('Either email or phone number is required', 'error');
     if (!form.department) return showToast('Department is mandatory', 'error');
     if (!form.join_date) return showToast('Joining date is mandatory', 'error');
     if (!form.bank_acc) return showToast('Bank account details are mandatory', 'error');
@@ -423,6 +659,7 @@ export default function EmployeesPage() {
 
     const profileData = {
       first_name: form.first_name.trim(),
+      middle_name: (form.middle_name || '').trim(),
       last_name: form.last_name.trim(),
       email: form.email.trim(),
       phone: form.phone.trim(),
@@ -451,6 +688,7 @@ export default function EmployeesPage() {
       employee_id:      (form.employee_id || '').trim().toUpperCase() || null,
       outlet_location:  (form.outlet_location || '').trim(),
       probation_months: parseInt(form.probation_months, 10) || 0,
+      manager_id: form.manager_id || null,
     };
 
     setSaving(true);
@@ -461,9 +699,17 @@ export default function EmployeesPage() {
         showToast('Employee updated', 'success');
         setShowModal(false);
       } else {
-        const { tempPassword } = await createEmployee(tenant?.id, profileData);
+        // login_email is only for the Auth account (real email, or a phone-derived
+        // placeholder when no email was entered — see resolveLoginEmail). The
+        // credentials modal shows the phone number itself, not that placeholder,
+        // since that's what the employee actually types in on the login page.
+        const { tempPassword } = await createEmployee(tenant?.id, { ...profileData, login_email: resolveLoginEmail(profileData) });
         setShowModal(false);
-        setTempCreds({ empName: `${profileData.first_name} ${profileData.last_name}`, email: profileData.email, password: tempPassword });
+        setTempCreds({
+          empName: fullName(profileData),
+          username: profileData.email || profileData.phone,
+          password: tempPassword,
+        });
       }
       fetchData();
     } catch (err) {
@@ -477,199 +723,47 @@ export default function EmployeesPage() {
     const file = e.target.files[0];
     if (!file) return;
 
-    const isXlsx = file.name.endsWith('.xlsx') || file.name.endsWith('.xls') || file.name.endsWith('.xlsm');
-
-    const toDateStr = (val) => {
-      if (!val && val !== 0) return '';
-      // Excel serial number (e.g. 45839)
-      if (typeof val === 'number') {
-        const date = new Date(Math.round((val - 25569) * 86400 * 1000));
-        return date.toISOString().slice(0, 10);
-      }
-      // JS Date object (when cellDates:true is used)
-      if (val instanceof Date) return val.toISOString().slice(0, 10);
-      // Already a string — normalise DD/MM/YYYY or DD-MM-YYYY → YYYY-MM-DD
-      const s = String(val).trim();
-      const dmyMatch = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
-      if (dmyMatch) return `${dmyMatch[3]}-${dmyMatch[2].padStart(2,'0')}-${dmyMatch[1].padStart(2,'0')}`;
-      return s;
-    };
-
-    const parseRows = (buffer) => {
-      const workbook = XLSX.read(buffer, { type: 'array', cellDates: true });
-      const sheet = workbook.Sheets[workbook.SheetNames[0]];
-      return XLSX.utils.sheet_to_json(sheet, { defval: '' });
-    };
-
-    const parseCsv = (text) => {
-      const lines = text.split('\n').filter(l => l.trim());
-      if (lines.length < 2) return [];
-      const headers = lines[0].split(',').map(h => h.trim().toLowerCase());
-      return lines.slice(1).map(row => {
-        const values = row.split(',').map(v => v.trim());
-        const obj = {};
-        headers.forEach((h, i) => { obj[h] = values[i] ?? ''; });
-        return obj;
-      });
-    };
-
-    const reader = new FileReader();
-    reader.onload = async (evt) => {
-      let rows;
-      try {
-        if (isXlsx) {
-          rows = parseRows(new Uint8Array(evt.target.result));
-        } else {
-          rows = parseCsv(evt.target.result);
-        }
-      } catch (parseErr) {
-        showToast('Failed to parse file: ' + (parseErr.message || 'Unknown error'), 'error');
-        e.target.value = '';
-        return;
-      }
-
-      if (!rows.length) {
-        showToast('No data rows found in file', 'error');
-        e.target.value = '';
-        return;
-      }
-
-      // Fetch existing profiles (id + email + name) to detect duplicates and incomplete records
-      const { data: existingProfiles } = await supabase
-        .from('profiles')
-        .select('id, email, first_name, last_name')
-        .eq('tenant_id', tenant?.id);
-      const existingProfileMap = new Map(
-        (existingProfiles || []).map(p => [(p.email || '').toLowerCase(), p])
-      );
-
-      let successCount = 0;
-      let updateCount = 0;
-      let skipCount = 0;
-      let failCount = 0;
-      let failErrors = [];
-
-      showToast(`Importing ${rows.length} employees...`, 'info');
-
-      for (const data of rows) {
-        // Normalize keys: lowercase + replace spaces/hyphens with underscores
-        // Convert Date objects to YYYY-MM-DD before stringifying to avoid
-        // locale timezone strings like "GMT+0530" reaching Postgres.
-        const d = Object.fromEntries(Object.entries(data).map(([k, v]) => {
-          const key = k.trim().toLowerCase().replace(/[\s\-]+/g, '_');
-          const val = v instanceof Date ? v.toISOString().slice(0, 10) : String(v ?? '').trim();
-          return [key, val];
-        }));
-
-        const fullName = d.name || d.full_name || d.employee_name || '';
-        const rowCountry = (d.country || d.country_of_residence || d.nationality || 'India').trim() || 'India';
-        const rowIsIndia = isIndia(rowCountry);
-
-        const profileData = {
-          first_name: d.first_name || d.firstname || fullName.split(' ')[0] || 'Imported',
-          last_name: d.last_name || d.lastname || d.surname || fullName.split(' ').slice(1).join(' ') || 'User',
-          email: d.email || d.email_id || d.email_address || '',
-          phone: d.phone || d.mobile || d.contact || d.phone_number || d.mobile_number || '',
-          department: d.department || d.dept || '',
-          designation: d.designation || d.position || d.job_title || d.title || '',
-          join_date: toDateStr(d.join_date || d.joining_date || d.date_of_joining || d.doj) || todayStr(),
-          ctc: parseFloat(d.ctc || d.salary || d.annual_ctc || d.gross_salary || 0) || 0,
-          bank_acc: d.bank_acc || d.bank_account || d.account_number || d.acc_no || '',
-          // India-only compliance docs — set empty for international employees
-          pan:    rowIsIndia ? (d.pan || d.pan_number || d.pan_no || '') : '',
-          aadhar: rowIsIndia ? (d.aadhar || d.aadhaar || d.aadhar_number || d.aadhaar_number || '') : '',
-          // International compliance docs — only relevant for non-India employees
-          country: rowCountry,
-          passport_number:    !rowIsIndia ? (d.passport_number || d.passport || d.passport_no || '') : '',
-          work_permit_number: !rowIsIndia ? (d.work_permit_number || d.work_permit || d.permit_number || '') : '',
-          work_permit_expiry: !rowIsIndia ? toDateStr(d.work_permit_expiry || d.permit_expiry || d.visa_expiry || '') || null : null,
-          role: d.role || d.user_role || 'employee',
-          status: /^inactive$/i.test(d.status) ? 'Inactive' : 'Active',
-          weekly_holiday: d.weekly_holiday || d.holiday || 'Sunday',
-          leave_allocation: parseInt(d.leave_allocation || d.leaves || d.annual_leaves || 0, 10) || 0,
-          employee_id:     (d.employee_id || d.emp_id || d.staff_id || '').trim().toUpperCase() || null,
-          outlet_location: (d.outlet_location || d.location || d.branch_location || '').trim(),
-        };
-
-        if (!profileData.email) { failCount++; continue; }
-
-        const existing = existingProfileMap.get(profileData.email.toLowerCase());
-        if (existing) {
-          // Update only if name fields are missing/placeholder
-          const nameMissing =
-            !existing.first_name || existing.first_name === 'Imported' ||
-            !existing.last_name || existing.last_name === 'User';
-          if (!nameMissing) {
-            skipCount++;
-            continue;
-          }
-          try {
-            const { error: updErr } = await updateEmployeeAdmin(existing.id, {
-              first_name: profileData.first_name,
-              last_name: profileData.last_name,
-              phone: profileData.phone || '',
-              department: profileData.department || '',
-              designation: profileData.designation || '',
-              join_date: toDateStr(profileData.join_date) || null,
-              ctc: profileData.ctc || 0,
-              bank_acc: profileData.bank_acc || '',
-              pan: profileData.pan || '',
-              aadhar: profileData.aadhar || '',
-              country: profileData.country || 'India',
-              passport_number: profileData.passport_number || '',
-              work_permit_number: profileData.work_permit_number || '',
-              work_permit_expiry: profileData.work_permit_expiry || null,
-              weekly_holiday: profileData.weekly_holiday || 'Sunday',
-              leave_allocation: profileData.leave_allocation || 0,
-            });
-            if (updErr) throw updErr;
-            updateCount++;
-          } catch (err) {
-            failCount++;
-            failErrors.push(`${profileData.email}: ${err.message || 'Update failed'}`);
-          }
-          continue;
-        }
-
-        try {
-          await createEmployee(tenant?.id, profileData);
-          existingProfileMap.set(profileData.email.toLowerCase(), { email: profileData.email });
-          successCount++;
-        } catch (err) {
-          const msg = err.message || '';
-          if (/already registered|already in use|already exists|user already/i.test(msg)) {
-            skipCount++;
-          } else if (/rate limit|too many requests|security purposes|after \d+ second/i.test(msg)) {
-            failCount++;
-            failErrors.push(`${profileData.email}: email rate limit — deploy the create-employee-user edge function (see docs)`);
-          } else {
-            console.error(`Import fail for ${profileData.email}:`, err);
-            failCount++;
-            failErrors.push(`${profileData.email}: ${msg || 'Unknown error'}`);
-          }
-        }
-      }
-
-      const parts = [`${successCount} imported`];
-      if (updateCount > 0) parts.push(`${updateCount} updated`);
-      if (skipCount > 0) parts.push(`${skipCount} skipped (already complete)`);
-      if (failCount > 0) parts.push(`${failCount} failed`);
-      const summary = parts.join(', ');
-
-      if (failCount > 0) {
-        showToast(`Import complete: ${summary}. Errors: ${failErrors.join(' | ')}`, 'error');
-      } else {
-        showToast(`Import complete: ${summary}`, successCount > 0 ? 'success' : 'info');
-      }
-      fetchData();
+    let rows;
+    try {
+      rows = await parseImportFile(file);
+    } catch (parseErr) {
+      showToast('Failed to parse file: ' + (parseErr.message || 'Unknown error'), 'error');
       e.target.value = '';
-    };
-
-    if (isXlsx) {
-      reader.readAsArrayBuffer(file);
-    } else {
-      reader.readAsText(file);
+      return;
     }
+
+    if (!rows.length) {
+      showToast('No data rows found in file', 'error');
+      e.target.value = '';
+      return;
+    }
+
+    setImportProgress({ current: 0, total: rows.length });
+    let result;
+    try {
+      result = await runBulkImport({
+        tenantId: tenant?.id,
+        rows,
+        onProgress: (current, total) => setImportProgress({ current, total }),
+      });
+    } finally {
+      setImportProgress(null);
+    }
+
+    const { successCount, updateCount, skipCount, failCount, failErrors } = result;
+    const parts = [`${successCount} imported`];
+    if (updateCount > 0) parts.push(`${updateCount} updated`);
+    if (skipCount > 0) parts.push(`${skipCount} skipped (already complete)`);
+    if (failCount > 0) parts.push(`${failCount} failed`);
+    const summary = parts.join(', ');
+
+    if (failCount > 0) {
+      showToast(`Import complete: ${summary}. Errors: ${failErrors.join(' | ')}`, 'error');
+    } else {
+      showToast(`Import complete: ${summary}`, successCount > 0 ? 'success' : 'info');
+    }
+    fetchData();
+    e.target.value = '';
   };
 
   const toggleStatus = async (emp) => {
@@ -680,8 +774,27 @@ export default function EmployeesPage() {
     fetchData();
   };
 
+  const toggleWithholding = async (emp) => {
+    let reason = '';
+    if (!emp.is_withheld) {
+      reason = prompt(`Reason for withholding ${fullName(emp)}'s salary?`, '') || '';
+      if (reason === null) return;
+    } else if (!confirm(`Release ${fullName(emp)}'s salary? They'll be included in the next payroll run again.`)) {
+      return;
+    }
+    const { error } = await setEmployeeWithholding(emp.id, !emp.is_withheld, reason);
+    if (error) return showToast('Failed to update withholding', 'error');
+    showToast(emp.is_withheld ? 'Salary released' : 'Salary withheld', emp.is_withheld ? 'success' : 'warning');
+    fetchData();
+  };
+
   const deleteEmp = async (emp) => {
-    if (!confirm(`Delete ${emp.first_name} ${emp.last_name}? This cannot be undone.`)) return;
+    if (!confirm(
+      `Permanently delete ${fullName(emp)}?\n\n` +
+      `This also PERMANENTLY DELETES their entire attendance history, payslips, advances, ` +
+      `and leave records — not just the employee record. This cannot be undone.\n\n` +
+      `If you just want to offboard them while keeping their records, use the "Toggle Status" button instead to mark them Inactive.`
+    )) return;
     const { error } = await removeEmployee(emp.id);
     if (error) return showToast('Delete failed: ' + error.message, 'error');
     showToast('Employee deleted', 'success');
@@ -691,15 +804,20 @@ export default function EmployeesPage() {
 
   const showCredentials = (emp) => {
     setTempCreds({
-      empName: `${emp.first_name} ${emp.last_name}`,
-      email: emp.email,
+      empName: fullName(emp),
+      username: emp.email || emp.phone,
       password: emp.temp_password || '********'
     });
   };
 
   return (
     <>
-      <Header title="Employees" breadcrumb={`${totalCount} employees`} />
+      <Header
+        title={outletId ? `Employees — ${outletName || 'Outlet'}` : 'Employees'}
+        breadcrumb={outletId
+          ? <>{totalCount} employees at this outlet · <Link to="/outlets">All Outlets</Link></>
+          : `${totalCount} employees`}
+      />
       <div className="page-content">
         <div className="filter-bar">
           <select className="form-select" value={deptFilter} onChange={(e) => setDeptFilter(e.target.value)}>
@@ -726,14 +844,29 @@ export default function EmployeesPage() {
           />
           {!isManager && (
             <div style={{ marginLeft: 'auto', display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
-              <button className="btn btn-outline" onClick={() => document.getElementById('import-csv').click()}>
+              {importProgress && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--text-muted)' }}>
+                  <div className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} />
+                  Importing {importProgress.current} / {importProgress.total}…
+                </div>
+              )}
+              <button
+                className="btn btn-outline"
+                disabled={!!importProgress}
+                onClick={() => document.getElementById('import-csv').click()}
+              >
                 <i className="fas fa-file-import" /> Import CSV / XLSX
               </button>
-              <input id="import-csv" type="file" accept=".csv,.txt,.xlsx,.xls,.xlsm" style={{ display: 'none' }} onChange={handleImport} />
-              <button className="btn btn-outline" onClick={downloadSampleCSV}>
+              <input id="import-csv" type="file" accept=".csv,.txt,.xlsx,.xls,.xlsm" style={{ display: 'none' }} onChange={handleImport} disabled={!!importProgress} />
+              <button className="btn btn-outline" disabled={!!importProgress} onClick={downloadSampleCSV}>
                 <i className="fas fa-file-csv" /> Sample CSV
               </button>
-              <button className="btn btn-primary" onClick={() => openModal()}>
+              {outlets.length > 0 && (
+                <button className="btn btn-outline" onClick={() => setShowBulkAssign(true)} title="Assign employees who don't have an outlet yet">
+                  <i className="fas fa-people-arrows" /> Assign Unassigned to Outlet
+                </button>
+              )}
+              <button className="btn btn-primary" disabled={!!importProgress} onClick={() => openModal()}>
                 <i className="fas fa-plus" /> Add Employee
               </button>
             </div>
@@ -774,7 +907,7 @@ export default function EmployeesPage() {
                             {getInitials(e.first_name, e.last_name)}
                           </div>
                           <div>
-                            <div className="emp-name">{e.first_name} {e.last_name}</div>
+                            <div className="emp-name">{fullName(e)}</div>
                             <div className="emp-role">{e.email || ''}</div>
                             {e.employee_id && (
                               <code style={{ fontSize: 10, color: 'var(--primary)', background: 'var(--primary-light)', padding: '0 5px', borderRadius: 3, marginTop: 2, display: 'inline-block' }}>
@@ -824,7 +957,27 @@ export default function EmployeesPage() {
                               <i className="fas fa-history" />
                             </button>
                           )}
+                          {!isManager && outlets.length > 0 && (
+                            <button className="btn btn-outline btn-icon btn-sm" onClick={() => setOutletTransferEmp(e)} title="Transfer to outlet" style={{ color: 'var(--primary)' }}>
+                              <i className="fas fa-store-alt" />
+                            </button>
+                          )}
+                          {outlets.length > 0 && (
+                            <button className="btn btn-outline btn-icon btn-sm" onClick={() => setOutletHistoryEmp(e)} title="Outlet transfer history" style={{ color: 'var(--text-muted)' }}>
+                              <i className="fas fa-map-marked-alt" />
+                            </button>
+                          )}
                           {!isManager && <button className="btn btn-outline btn-icon btn-sm" onClick={() => toggleStatus(e)} title="Toggle Status"><i className="fas fa-power-off" /></button>}
+                          {!isManager && (
+                            <button
+                              className="btn btn-outline btn-icon btn-sm"
+                              onClick={() => toggleWithholding(e)}
+                              title={e.is_withheld ? `Withheld: ${e.withheld_reason || 'no reason given'} — click to release` : 'Withhold salary'}
+                              style={{ color: e.is_withheld ? 'var(--warning)' : undefined }}
+                            >
+                              <i className={`fas ${e.is_withheld ? 'fa-pause-circle' : 'fa-hand-paper'}`} />
+                            </button>
+                          )}
                           {!isManager && <button className="btn btn-outline btn-icon btn-sm" style={{ color: 'var(--danger)' }} onClick={() => deleteEmp(e)} title="Delete"><i className="fas fa-trash" /></button>}
                         </div>
                       </td>
@@ -870,17 +1023,22 @@ export default function EmployeesPage() {
               />
             </div>
           </div>
-          <div className="form-row">
+          <div className="form-row" style={{ gridTemplateColumns: '1fr 1fr 1fr' }}>
             <div className="form-group"><label className="form-label">First Name *</label><input className="form-input" value={form.first_name} onChange={(e) => setForm({ ...form, first_name: e.target.value })} /></div>
+            <div className="form-group"><label className="form-label">Middle Name</label><input className="form-input" value={form.middle_name} onChange={(e) => setForm({ ...form, middle_name: e.target.value })} /></div>
             <div className="form-group"><label className="form-label">Last Name *</label><input className="form-input" value={form.last_name} onChange={(e) => setForm({ ...form, last_name: e.target.value })} /></div>
           </div>
           <div className="form-row">
             <div className="form-group">
-              <label className="form-label">Email Address *</label>
+              <label className="form-label">Email Address</label>
               <input className="form-input" type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} disabled={!!editEmp} />
-              {!editEmp && <div className="form-hint">Employee will use this to login</div>}
+              {!editEmp && <div className="form-hint">Employee logs in with this, or with their phone number if left blank</div>}
             </div>
-            <div className="form-group"><label className="form-label">Phone</label><input className="form-input" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} /></div>
+            <div className="form-group">
+              <label className="form-label">Phone {!form.email && '*'}</label>
+              <input className="form-input" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} disabled={!!editEmp && !form.email} />
+              {!editEmp && !form.email && <div className="form-hint">Used as login username since no email was entered</div>}
+            </div>
           </div>
           <div className="form-row">
             <div className="form-group">
@@ -1023,6 +1181,18 @@ export default function EmployeesPage() {
           </div>
           <div className="form-row">
             <div className="form-group">
+              <label className="form-label">Reporting Manager</label>
+              <select className="form-select" value={form.manager_id} onChange={(e) => setForm({ ...form, manager_id: e.target.value })}>
+                <option value="">None</option>
+                {managerOptions.filter((m) => !editEmp || m.id !== editEmp.id).map((m) => (
+                  <option key={m.id} value={m.id}>{fullName(m)} ({m.role === 'admin' ? 'HR' : 'Manager'})</option>
+                ))}
+              </select>
+              <div className="form-hint">Used for 1:1 meetings, KRAs, PIPs, and review routing under Performance.</div>
+            </div>
+          </div>
+          <div className="form-row">
+            <div className="form-group">
               <label className="form-label">Annual Leave Allocation</label>
               <input className="form-input" type="number" min="0" value={form.leave_allocation}
                 onChange={(e) => setForm({ ...form, leave_allocation: e.target.value })} />
@@ -1036,7 +1206,7 @@ export default function EmployeesPage() {
         show={!!tempCreds}
         onClose={() => setTempCreds(null)}
         empName={tempCreds?.empName}
-        email={tempCreds?.email}
+        username={tempCreds?.username}
         password={tempCreds?.password}
       />
 
@@ -1053,6 +1223,31 @@ export default function EmployeesPage() {
         show={!!historyEmp}
         onClose={() => setHistoryEmp(null)}
         employee={historyEmp}
+      />
+
+      <OutletTransferModal
+        show={!!outletTransferEmp}
+        onClose={() => setOutletTransferEmp(null)}
+        employee={outletTransferEmp}
+        tenantId={tenant?.id}
+        outlets={outlets}
+        transferredBy={profile?.id}
+        onTransferred={fetchData}
+      />
+
+      <OutletTransferHistoryModal
+        show={!!outletHistoryEmp}
+        onClose={() => setOutletHistoryEmp(null)}
+        employee={outletHistoryEmp}
+      />
+
+      <BulkAssignOutletModal
+        show={showBulkAssign}
+        onClose={() => setShowBulkAssign(false)}
+        tenantId={tenant?.id}
+        outlets={outlets}
+        transferredBy={profile?.id}
+        onAssigned={fetchData}
       />
 
       <PromotionModal
@@ -1119,7 +1314,7 @@ function PromotionModal({ show, onClose, employee, tenantId, currentUserId, onSa
   };
 
   return (
-    <Modal show={show} onClose={onClose} title={`Promotions — ${employee?.first_name} ${employee?.last_name}`} width="580px"
+    <Modal show={show} onClose={onClose} title={`Promotions — ${fullName(employee)}`} width="580px"
       footer={
         showForm
           ? <>
@@ -1215,7 +1410,7 @@ function PromotionModal({ show, onClose, employee, tenantId, currentUserId, onSa
               {p.notes && <div style={{ fontSize: 12, color: 'var(--text-muted)', fontStyle: 'italic' }}>{p.notes}</div>}
               {p.created_by_profile && (
                 <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
-                  Recorded by: {p.created_by_profile.first_name} {p.created_by_profile.last_name}
+                  Recorded by: {fullName(p.created_by_profile)}
                 </div>
               )}
             </div>

@@ -11,12 +11,16 @@ export async function listComponents(tenantId) {
 
 export async function saveComponent(tenantId, payload, editId = null) {
   const row = {
-    tenant_id: tenantId,
-    name:      payload.name.trim(),
-    category:  payload.category,
-    calc_type: payload.calc_type,
-    percent:   parseFloat(payload.percent) || 0,
-    fixed:     parseFloat(payload.fixed)   || 0,
+    tenant_id:  tenantId,
+    name:       payload.name.trim(),
+    category:   payload.category,
+    calc_type:  payload.calc_type,
+    percent:    parseFloat(payload.percent) || 0,
+    fixed:      parseFloat(payload.fixed)   || 0,
+    formula:    payload.calc_type === 'formula' ? (payload.formula || '').trim() : '',
+    depends_on: payload.calc_type === 'formula'
+      ? (payload.depends_on || '').split(',').map((s) => s.trim()).filter(Boolean)
+      : [],
   };
 
   if (editId) {

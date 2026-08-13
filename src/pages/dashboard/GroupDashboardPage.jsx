@@ -7,7 +7,7 @@ import {
   fetchGroupDashboard, fetchGroupEmployees,
   transferEmployee, fetchTransferHistory,
 } from '@/services/groupService';
-import { getInitials, getAvatarColor } from '@/lib/helpers';
+import { getInitials, getAvatarColor, fullName } from '@/lib/helpers';
 
 const PALETTE = [
   { bg: 'var(--primary-light)', fg: 'var(--primary)',  bar: 'var(--primary)'  },
@@ -97,7 +97,7 @@ function TransferModal({ show, onClose, employee, outlets, onTransferred }) {
             {getInitials(employee?.first_name, employee?.last_name)}
           </div>
           <div>
-            <div style={{ fontWeight: 600, fontSize: 14 }}>{employee?.first_name} {employee?.last_name}</div>
+            <div style={{ fontWeight: 600, fontSize: 14 }}>{fullName(employee)}</div>
             <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{employee?.company_name}</div>
             {employee?.employee_id && (
               <code style={{ fontSize: 11, color: 'var(--primary)', background: 'var(--primary-light)', padding: '1px 6px', borderRadius: 4, marginTop: 2, display: 'inline-block' }}>
@@ -172,7 +172,7 @@ function TransferHistoryModal({ show, onClose, employee }) {
       footer={<button className="btn btn-outline" onClick={onClose}>Close</button>}
     >
       <div style={{ marginBottom: 12, fontWeight: 600, fontSize: 13 }}>
-        {employee?.first_name} {employee?.last_name}
+        {fullName(employee)}
         {employee?.employee_id && (
           <code style={{ marginLeft: 8, fontSize: 11, color: 'var(--primary)', background: 'var(--primary-light)', padding: '1px 6px', borderRadius: 4 }}>
             {employee.employee_id}
@@ -311,6 +311,7 @@ export default function GroupDashboardPage() {
       const q = empSearch.toLowerCase();
       return (
         (e.first_name || '').toLowerCase().includes(q) ||
+        (e.middle_name || '').toLowerCase().includes(q) ||
         (e.last_name  || '').toLowerCase().includes(q) ||
         (e.email      || '').toLowerCase().includes(q) ||
         (e.employee_id || '').toLowerCase().includes(q) ||
@@ -688,7 +689,7 @@ export default function GroupDashboardPage() {
                                   {getInitials(e.first_name, e.last_name)}
                                 </div>
                                 <div>
-                                  <div className="emp-name">{e.first_name} {e.last_name}</div>
+                                  <div className="emp-name">{fullName(e)}</div>
                                   <div className="emp-role">{e.email}</div>
                                   {e.employee_id && (
                                     <code style={{ fontSize: 10, color: 'var(--primary)', background: 'var(--primary-light)', padding: '0 5px', borderRadius: 3, marginTop: 2, display: 'inline-block' }}>

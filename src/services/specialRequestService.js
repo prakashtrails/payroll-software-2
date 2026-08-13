@@ -10,8 +10,8 @@ export async function listAllSpecialRequests(tenantId, forRole = null) {
     .from('special_requests')
     .select(`
       *,
-      profile:profiles!special_requests_profile_id_fkey(first_name, last_name, department, ctc),
-      approver:profiles!special_requests_approved_by_fkey(first_name, last_name)
+      profile:profiles!special_requests_profile_id_fkey(first_name, middle_name, last_name, department, ctc),
+      approver:profiles!special_requests_approved_by_fkey(first_name, middle_name, last_name)
     `)
     .eq('tenant_id', tenantId)
     .order('created_at', { ascending: false });
@@ -71,10 +71,18 @@ export async function updateSpecialRequestStatus(id, status, approverId, approve
     .eq('id', id)
     .single();
 
-  const { error } = await supabase
+  // Only transition a request that's still Pending — prevents a double-clicked Approve
+  // from crediting the manager quota (or, for Salary Overtime, payroll) twice.
+  const { data: updated, error } = await supabase
     .from('special_requests')
     .update({ status, approved_by: approverId })
-    .eq('id', id);
+    .eq('id', id)
+    .eq('status', 'Pending')
+    .select('id');
+
+  if (!error && updated?.length === 0) {
+    return { error: new Error('This request has already been reviewed.') };
+  }
 
   if (!error && status === 'Approved' && approverRole === 'manager' && req?.tenant_id) {
     await incrementManagerCount(req.tenant_id, req.profile_id);

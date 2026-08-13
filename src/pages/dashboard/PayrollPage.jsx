@@ -4,14 +4,18 @@ import Header from '@/components/Header';
 import Modal from '@/components/Modal';
 import { showToast } from '@/components/Toast';
 import { useAuth } from '@/context/AuthContext';
-import { fetchPayroll, processPayroll, revertPayroll, fetchApprovedOvertimeForMonth } from '@/services/payrollService';
+import { useOutletView } from '@/context/OutletViewContext';
+import { fetchPayroll, processPayroll, revertPayroll, fetchApprovedOvertimeForMonth, fetchPayrollGlEntries, buildBankFileRows } from '@/services/payrollService';
 import { listActiveEmployees } from '@/services/employeeService';
 import { listComponents } from '@/services/salaryService';
 import { listActiveAdvances } from '@/services/advanceService';
 import { fetchAllTenantAttendance } from '@/services/attendanceService';
-import { fmt, monthLabel, calcSalary, calcPfEsic, calcOtPay, calcPayableOvertimeHours, getInitials, getAvatarColor, getWeeklyOffDaysInMonth, calcWeeklyOffSettlement, HIGH_SALARY_THRESHOLD } from '@/lib/helpers';
+import { fmt, monthLabel, calcSalary, calcPfEsic, calcOtPay, calcPayableOvertimeHours, getInitials, getAvatarColor, getWeeklyOffDaysInMonth, calcWeeklyOffSettlement, HIGH_SALARY_THRESHOLD, fullName, scopedToOutlet, currentFinancialYear } from '@/lib/helpers';
 import { fetchApprovedCompOffLeavesForMonth } from '@/services/leaveService';
 import { settleWeeklyOffForMonth, fetchMonthlySettlements } from '@/services/compOffService';
+import { fetchActiveTaxSlab, fetchDeclarationsForTenant } from '@/services/taxService';
+import { fetchPendingSalaryAdditions } from '@/services/salaryAdditionsService';
+import * as XLSX from 'xlsx';
 
 function isCompliance(emp) {
   return !!(emp.pf_enabled || emp.esic_enabled);
@@ -19,6 +23,7 @@ function isCompliance(emp) {
 
 export default function RunPayrollPage() {
   const { tenant, profile } = useAuth();
+  const { outletProfileIds } = useOutletView();
   const isManager = profile?.role === 'manager';
   const [payrollMonth, setPayrollMonth]                     = useState(new Date().getMonth());
   const [payrollYear,  setPayrollYear]                      = useState(new Date().getFullYear());
@@ -36,8 +41,15 @@ export default function RunPayrollPage() {
   const [attendanceRaw, setAttendanceRaw] = useState([]);
   const [compOffLeaves, setCompOffLeaves] = useState({});
   const [settlements,   setSettlements]   = useState([]);
+  const [taxSlab,       setTaxSlab]       = useState(null);
+  const [declarationsByProfile, setDeclarationsByProfile] = useState({});
+  const [pendingAdditions, setPendingAdditions] = useState([]);
+  const [lastWithheld,  setLastWithheld]  = useState([]);
 
-  const workDays          = tenant?.work_days || 30;
+  // Total working days = actual calendar days in the selected payroll month
+  // (28-31), not a fixed configured number, so a full-attendance employee
+  // always gets their full CTC regardless of how long the month is.
+  const workDays          = new Date(payrollYear, payrollMonth + 1, 0).getDate();
   const complianceEmps    = employees.filter(isCompliance);
   const nonComplianceEmps = employees.filter(e => !isCompliance(e));
 
@@ -45,7 +57,7 @@ export default function RunPayrollPage() {
     if (!tenant) return;
     setLoading(true);
     try {
-      const [empsRes, compsRes, advsRes, payCompRes, payNonCompRes, attRes, otRes, compOffRes, settleRes] = await Promise.all([
+      const [empsRes, compsRes, advsRes, payCompRes, payNonCompRes, attRes, otRes, compOffRes, settleRes, taxSlabRes, declRes, additionsRes] = await Promise.all([
         listActiveEmployees(tenant.id),
         listComponents(tenant.id),
         listActiveAdvances(tenant.id),
@@ -55,20 +67,27 @@ export default function RunPayrollPage() {
         fetchApprovedOvertimeForMonth(tenant.id, payrollMonth, payrollYear),
         fetchApprovedCompOffLeavesForMonth(tenant.id, payrollMonth, payrollYear),
         fetchMonthlySettlements(tenant.id, payrollMonth, payrollYear),
+        fetchActiveTaxSlab(tenant.id, currentFinancialYear(new Date(payrollYear, payrollMonth))),
+        fetchDeclarationsForTenant(tenant.id, currentFinancialYear(new Date(payrollYear, payrollMonth))),
+        fetchPendingSalaryAdditions(tenant.id, payrollMonth + 1, payrollYear),
       ]);
-      setEmployees(empsRes.data);
+      const emps = scopedToOutlet(empsRes.data, outletProfileIds, 'id');
+      setEmployees(emps);
       setComponents(compsRes.data);
-      setAdvances(advsRes.data);
+      setAdvances(scopedToOutlet(advsRes.data, outletProfileIds));
       setProcessedCompliance(payCompRes.data);
       setProcessedNonCompliance(payNonCompRes.data);
-      setOvertimeRequests(otRes.data || []);
+      setOvertimeRequests(scopedToOutlet(otRes.data || [], outletProfileIds));
       setCompOffLeaves(compOffRes.data || {});
-      setSettlements(settleRes.data || []);
+      setSettlements(scopedToOutlet(settleRes.data || [], outletProfileIds));
+      setTaxSlab(taxSlabRes.data || null);
+      setDeclarationsByProfile(declRes.data || {});
+      setPendingAdditions(scopedToOutlet(additionsRes.data || [], outletProfileIds));
 
-      const attendance = attRes.data || [];
+      const attendance = scopedToOutlet(attRes.data || [], outletProfileIds);
       setAttendanceRaw(attendance);
       const overrides  = {};
-      empsRes.data.forEach(emp => {
+      emps.forEach(emp => {
         const empAtt = attendance.filter(a => a.profile_id === emp.id);
         let days = 0;
         empAtt.forEach(a => {
@@ -86,7 +105,7 @@ export default function RunPayrollPage() {
     } finally {
       setLoading(false);
     }
-  }, [tenant, payrollMonth, payrollYear]);
+  }, [tenant, payrollMonth, payrollYear, outletProfileIds]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
@@ -139,7 +158,7 @@ export default function RunPayrollPage() {
         }
       });
 
-      await processPayroll({
+      const { withheld } = await processPayroll({
         tenantId:         tenant.id,
         month:            payrollMonth,
         year:             payrollYear,
@@ -151,7 +170,11 @@ export default function RunPayrollPage() {
         workDayOverrides,
         overtimeRequests: autoOtRequests,
         shiftHours:       shiftHrs,
+        taxSlab,
+        declarationsByProfile,
+        salaryAdditions:  pendingAdditions,
       });
+      setLastWithheld(withheld || []);
 
       // Run comp off settlement for high-salary employees in this group
       const weeklyOffDay = tenant?.weekly_off_day ?? 0;
@@ -175,7 +198,8 @@ export default function RunPayrollPage() {
         await settleWeeklyOffForMonth(tenant.id, payrollMonth, payrollYear, settlementInput);
       }
 
-      showToast(`${group} payroll processed for ${monthLabel(payrollMonth, payrollYear)}`, 'success');
+      const withheldNote = withheld?.length ? ` — ${withheld.length} employee${withheld.length > 1 ? 's' : ''} skipped (withheld)` : '';
+      showToast(`${group} payroll processed for ${monthLabel(payrollMonth, payrollYear)}${withheldNote}`, 'success');
       fetchData();
     } catch (err) {
       showToast('Processing failed: ' + err.message, 'error');
@@ -211,6 +235,36 @@ export default function RunPayrollPage() {
     showToast('CSV exported', 'success');
   };
 
+  /** GL journal export — department-level debit/credit rows posted by process_payroll_by_country. */
+  const exportGL = async (group) => {
+    const processed = group === 'Compliance' ? processedCompliance : processedNonCompliance;
+    if (!processed) return showToast('Process payroll first', 'warning');
+    const { data, error } = await fetchPayrollGlEntries(processed.id);
+    if (error) return showToast('Failed to load GL entries: ' + error.message, 'error');
+    if (!data.length) return showToast('No GL entries for this run', 'warning');
+    const ws = XLSX.utils.json_to_sheet(data.map((r) => ({
+      Department: r.department, Side: r.entry_side, Account: r.account_name, Amount: r.amount,
+    })));
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'GL Journal');
+    XLSX.writeFile(wb, `payroll_gl_${group.toLowerCase().replace(/[^a-z0-9]/g, '_')}_${payrollYear}-${String(payrollMonth + 1).padStart(2, '0')}.xlsx`);
+    showToast('GL journal exported', 'success');
+  };
+
+  /** Generic NEFT/RTGS-style bank payout file — adjust columns to your bank's exact bulk-upload layout before real use. */
+  const exportBankFile = (group) => {
+    const processed = group === 'Compliance' ? processedCompliance : processedNonCompliance;
+    if (!processed?.payslips?.length) return showToast('Process payroll first', 'warning');
+    const employeesById = Object.fromEntries(employees.map((e) => [e.id, e]));
+    const rows = buildBankFileRows(processed.payslips, employeesById, `Salary ${monthLabel(payrollMonth, payrollYear)}`);
+    const missing = rows.filter((r) => !r['Account Number']).length;
+    const ws = XLSX.utils.json_to_sheet(rows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Bank Payout');
+    XLSX.writeFile(wb, `payroll_bankfile_${group.toLowerCase().replace(/[^a-z0-9]/g, '_')}_${payrollYear}-${String(payrollMonth + 1).padStart(2, '0')}.xlsx`);
+    showToast(missing ? `Bank file exported — ${missing} employee(s) missing an account number` : 'Bank file exported', missing ? 'warning' : 'success');
+  };
+
   return (
     <>
       <Header title="Run Payroll" breadcrumb={monthLabel(payrollMonth, payrollYear)} />
@@ -230,6 +284,18 @@ export default function RunPayrollPage() {
           </div>
         ) : (
           <>
+          {(employees.some((e) => e.is_withheld) || lastWithheld.length > 0) && (
+            <div className="card" style={{ marginBottom: 16, borderColor: 'var(--warning)' }}>
+              <div style={{ padding: '12px 20px', fontSize: 13, display: 'flex', alignItems: 'center', gap: 10 }}>
+                <i className="fas fa-pause-circle" style={{ color: 'var(--warning)' }} />
+                <span>
+                  <strong>{employees.filter((e) => e.is_withheld).length}</strong> employee(s) have salary withheld and will be skipped when payroll runs.
+                  Manage this from the employee's profile.
+                </span>
+              </div>
+            </div>
+          )}
+
           <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
             <PayrollSection
               title="Compliance Payroll"
@@ -247,6 +313,8 @@ export default function RunPayrollPage() {
               onProcess={() => handleProcess('Compliance')}
               onRevert={() => handleRevert('Compliance')}
               onExport={() => exportCSV('Compliance')}
+              onExportGL={() => exportGL('Compliance')}
+              onExportBank={() => exportBankFile('Compliance')}
               onViewSlip={setDetailSlip}
               month={payrollMonth}
               year={payrollYear}
@@ -267,6 +335,8 @@ export default function RunPayrollPage() {
               onProcess={() => handleProcess('Non-Compliance')}
               onRevert={() => handleRevert('Non-Compliance')}
               onExport={() => exportCSV('Non-Compliance')}
+              onExportGL={() => exportGL('Non-Compliance')}
+              onExportBank={() => exportBankFile('Non-Compliance')}
               onViewSlip={setDetailSlip}
               month={payrollMonth}
               year={payrollYear}
@@ -293,9 +363,10 @@ function PayrollSection({
   title, subtitle, group, emps, processed, processing,
   workDays, workDayOverrides, setWorkDayOverrides,
   components, advances, isManager,
-  onProcess, onRevert, onExport, onViewSlip,
+  onProcess, onRevert, onExport, onExportGL, onExportBank, onViewSlip,
 }) {
-  const slips      = processed?.payslips || [];
+  const { outletProfileIds } = useOutletView();
+  const slips      = scopedToOutlet(processed?.payslips || [], outletProfileIds);
   const totalGross = slips.reduce((s, p) => s + (p.gross_earnings || 0), 0);
   const totalNet   = slips.reduce((s, p) => s + (p.net_pay || 0), 0);
 
@@ -311,9 +382,17 @@ function PayrollSection({
             ? <span className="badge badge-success"><i className="fas fa-check" /> Processed</span>
             : <span className="badge badge-warning">Not Processed</span>}
           {processed && (
-            <button className="btn btn-outline btn-sm" onClick={onExport}>
-              <i className="fas fa-file-csv" /> CSV
-            </button>
+            <>
+              <button className="btn btn-outline btn-sm" onClick={onExport}>
+                <i className="fas fa-file-csv" /> CSV
+              </button>
+              <button className="btn btn-outline btn-sm" onClick={onExportGL} title="Department-level debit/credit journal">
+                <i className="fas fa-book" /> GL
+              </button>
+              <button className="btn btn-outline btn-sm" onClick={onExportBank} title="Generic NEFT/RTGS-style bank payout file">
+                <i className="fas fa-university" /> Bank File
+              </button>
+            </>
           )}
           {!isManager && (processed ? (
             <button className="btn btn-danger btn-sm" onClick={onRevert}>
@@ -400,7 +479,7 @@ function PayrollSection({
                             {getInitials(e.first_name, e.last_name)}
                           </div>
                           <div>
-                            <div className="emp-name">{e.first_name} {e.last_name}</div>
+                            <div className="emp-name">{fullName(e)}</div>
                             <div className="emp-role">{e.department || ''}</div>
                           </div>
                         </div>
@@ -529,7 +608,7 @@ function CompOffSettlementCard({ settlements }) {
                         {getInitials(s.profile?.first_name, s.profile?.last_name)}
                       </div>
                       <div>
-                        <div className="emp-name">{s.profile?.first_name} {s.profile?.last_name}</div>
+                        <div className="emp-name">{fullName(s.profile)}</div>
                         <div className="emp-role">{fmt(s.profile?.ctc)}/mo</div>
                       </div>
                     </div>

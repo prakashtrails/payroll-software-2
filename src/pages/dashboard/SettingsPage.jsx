@@ -1,9 +1,11 @@
 import React from 'react';
 import { useEffect, useState, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import Header from '@/components/Header';
 import Modal from '@/components/Modal';
 import { showToast } from '@/components/Toast';
 import { useAuth } from '@/context/AuthContext';
+import { useOutletView } from '@/context/OutletViewContext';
 import {
   updateTenant,
   listDepartments,
@@ -12,24 +14,32 @@ import {
   listShifts,
   addShift,
   removeShift,
+  updateShiftThresholds,
   listHolidays,
   addHoliday,
   updateHolidayStatus,
   importHolidays,
   initializeMajorHolidays,
+  updateOutlet,
+  resolveAttendanceSettings,
 } from '@/services/tenantService';
 import { monthLabel } from '@/lib/helpers';
 import { createGroup, linkToGroup, leaveGroup } from '@/services/groupService';
 
 export default function SettingsPage() {
   const { tenant, profile, refreshProfile } = useAuth();
+  const { outlets, selectedOutletId, selectedOutletName, selectOutlet } = useOutletView();
+  const navigate = useNavigate();
   const [form, setForm] = useState({
-    company_name: '', pay_day: 1, work_days: 30, currency: '₹',
+    company_name: '', pay_day: 1, currency: '₹',
     shift_start: '09:00', shift_end: '18:00', late_threshold: 15,
-    min_half_day_hours: 4, min_full_day_hours: 8,
-    geofence_lat: '', geofence_lng: '', geofence_radius: 200,
     weekly_off_day: 0, location_code: '',
   });
+  const [attForm, setAttForm] = useState({
+    min_half_day_hours: '', min_full_day_hours: '',
+    geofence_lat: '', geofence_lng: '', geofence_radius: '',
+  });
+  const [savingAtt, setSavingAtt] = useState(false);
   const [departments, setDepartments] = useState([]);
   const [shifts, setShifts]           = useState([]);
   const [saving, setSaving]           = useState(false);
@@ -156,43 +166,73 @@ export default function SettingsPage() {
     setForm({
       company_name:   tenant.company_name   || '',
       pay_day:        tenant.pay_day        || 1,
-      work_days:      tenant.work_days      || 30,
       currency:       tenant.currency       || '₹',
       shift_start:    tenant.shift_start    || '09:00',
       shift_end:      tenant.shift_end      || '18:00',
       late_threshold: tenant.late_threshold || 15,
-      min_half_day_hours: tenant.min_half_day_hours || 4,
-      min_full_day_hours: tenant.min_full_day_hours || 8,
-      geofence_lat: tenant.geofence_lat || '',
-      geofence_lng: tenant.geofence_lng || '',
-      geofence_radius: tenant.geofence_radius || 200,
       weekly_off_day: tenant.weekly_off_day ?? 0,
       location_code: tenant.location_code || '',
     });
     fetchData();
   }, [tenant, fetchData]);
 
+  // The Attendance & Geofencing card is scoped to whichever outlet is currently
+  // selected app-wide (useOutletView) — null/"Combined" edits the tenant defaults
+  // that every outlet without its own override falls back to.
+  useEffect(() => {
+    if (!tenant) return;
+    const outlet = selectedOutletId ? outlets.find((o) => o.id === selectedOutletId) : null;
+    setAttForm({
+      min_half_day_hours: outlet?.min_half_day_hours ?? '',
+      min_full_day_hours: outlet?.min_full_day_hours ?? '',
+      geofence_lat: outlet?.geofence_lat ?? '',
+      geofence_lng: outlet?.geofence_lng ?? '',
+      geofence_radius: outlet?.geofence_radius ?? '',
+    });
+  }, [tenant, outlets, selectedOutletId]);
+
   const saveSettings = async () => {
     setSaving(true);
     const { error } = await updateTenant(tenant.id, {
       company_name:   form.company_name   || 'My Company',
       pay_day:        parseInt(form.pay_day)        || 1,
-      work_days:      parseInt(form.work_days)      || 30,
       currency:       form.currency       || '₹',
       shift_start:    form.shift_start    || '09:00',
       shift_end:      form.shift_end      || '18:00',
       late_threshold: parseInt(form.late_threshold) || 15,
-      min_half_day_hours: parseFloat(form.min_half_day_hours) || 4,
-      min_full_day_hours: parseFloat(form.min_full_day_hours) || 8,
-      geofence_lat: form.geofence_lat ? parseFloat(form.geofence_lat) : null,
-      geofence_lng: form.geofence_lng ? parseFloat(form.geofence_lng) : null,
-      geofence_radius: parseInt(form.geofence_radius) || 200,
       weekly_off_day: parseInt(form.weekly_off_day) || 0,
       location_code: (form.location_code || '').toUpperCase().slice(0, 2) || null,
     });
     setSaving(false);
     if (error) return showToast('Save failed: ' + error.message, 'error');
     showToast('Settings saved', 'success');
+    refreshProfile();
+  };
+
+  // Tenant-level fallback shown as placeholders when an outlet hasn't set its own value.
+  const tenantDefaults = resolveAttendanceSettings(tenant, null);
+
+  const saveAttendanceSettings = async () => {
+    setSavingAtt(true);
+    const payload = {
+      min_half_day_hours: attForm.min_half_day_hours === '' ? null : parseFloat(attForm.min_half_day_hours),
+      min_full_day_hours: attForm.min_full_day_hours === '' ? null : parseFloat(attForm.min_full_day_hours),
+      geofence_lat: attForm.geofence_lat === '' ? null : parseFloat(attForm.geofence_lat),
+      geofence_lng: attForm.geofence_lng === '' ? null : parseFloat(attForm.geofence_lng),
+      geofence_radius: attForm.geofence_radius === '' ? null : parseInt(attForm.geofence_radius, 10),
+    };
+    const { error } = selectedOutletId
+      ? await updateOutlet(selectedOutletId, payload)
+      : await updateTenant(tenant.id, {
+          min_half_day_hours: payload.min_half_day_hours ?? 4,
+          min_full_day_hours: payload.min_full_day_hours ?? 8,
+          geofence_lat: payload.geofence_lat,
+          geofence_lng: payload.geofence_lng,
+          geofence_radius: payload.geofence_radius ?? 200,
+        });
+    setSavingAtt(false);
+    if (error) return showToast('Save failed: ' + error.message, 'error');
+    showToast(selectedOutletId ? `Attendance rules saved for ${selectedOutletName}` : 'Company-wide attendance rules saved', 'success');
     refreshProfile();
   };
 
@@ -304,6 +344,26 @@ export default function SettingsPage() {
     fetchData();
   };
 
+  const [thresholdShift, setThresholdShift] = useState(null);
+  const [thresholdForm, setThresholdForm] = useState({ grace_minutes: 10, early_exit_threshold_minutes: 10, auto_absent_after_hours: 20 });
+
+  const openThresholds = (s) => {
+    setThresholdShift(s);
+    setThresholdForm({
+      grace_minutes: s.grace_minutes ?? 10,
+      early_exit_threshold_minutes: s.early_exit_threshold_minutes ?? 10,
+      auto_absent_after_hours: s.auto_absent_after_hours ?? 20,
+    });
+  };
+
+  const saveThresholds = async () => {
+    const { error } = await updateShiftThresholds(thresholdShift.id, thresholdForm);
+    if (error) return showToast('Save failed: ' + error.message, 'error');
+    showToast('Automation thresholds updated', 'success');
+    setThresholdShift(null);
+    fetchData();
+  };
+
   return (
     <>
       <Header title="Settings" breadcrumb="Company and system configuration" />
@@ -403,6 +463,34 @@ export default function SettingsPage() {
         </div>
       </Modal>
 
+      <Modal
+        show={!!thresholdShift}
+        onClose={() => setThresholdShift(null)}
+        title={`Auto-Attendance Thresholds — ${thresholdShift?.name || ''}`}
+        footer={<>
+          <button className="btn btn-outline" onClick={() => setThresholdShift(null)}>Cancel</button>
+          <button className="btn btn-primary" onClick={saveThresholds}>Save</button>
+        </>}
+      >
+        <div className="form-group">
+          <label className="form-label">Grace period (minutes)</label>
+          <input className="form-input" type="number" value={thresholdForm.grace_minutes}
+            onChange={(e) => setThresholdForm({ ...thresholdForm, grace_minutes: e.target.value })} />
+          <div className="form-hint">Punch-ins within this window of shift start still count as on-time.</div>
+        </div>
+        <div className="form-group">
+          <label className="form-label">Early-exit threshold (minutes)</label>
+          <input className="form-input" type="number" value={thresholdForm.early_exit_threshold_minutes}
+            onChange={(e) => setThresholdForm({ ...thresholdForm, early_exit_threshold_minutes: e.target.value })} />
+        </div>
+        <div className="form-group">
+          <label className="form-label">Auto-mark Absent after (hours past midnight)</label>
+          <input className="form-input" type="number" value={thresholdForm.auto_absent_after_hours}
+            onChange={(e) => setThresholdForm({ ...thresholdForm, auto_absent_after_hours: e.target.value })} />
+          <div className="form-hint">Used by the nightly sweep that marks employees with zero punches as Absent.</div>
+        </div>
+      </Modal>
+
       <div className="page-content settings-page">
         <div className="grid-2">
           <div className="card">
@@ -464,10 +552,6 @@ export default function SettingsPage() {
                   <input className="form-input" type="number" min="1" max="28" value={form.pay_day} onChange={(e) => setForm({ ...form, pay_day: e.target.value })} />
                 </div>
                 <div className="form-group">
-                  <label className="form-label">Working Days / Month</label>
-                  <input className="form-input" type="number" min="1" max="31" value={form.work_days} onChange={(e) => setForm({ ...form, work_days: e.target.value })} />
-                </div>
-                <div className="form-group">
                   <label className="form-label">Weekly Off Day</label>
                   <select className="form-select" value={form.weekly_off_day} onChange={(e) => setForm({ ...form, weekly_off_day: e.target.value })}>
                     {['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'].map((d, i) => (
@@ -505,38 +589,66 @@ export default function SettingsPage() {
           <div className="card">
             <div className="card-header"><h3>Attendance & Geofencing</h3></div>
             <div className="card-body">
+              {outlets.length > 0 && (
+                <div className="form-group">
+                  <label className="form-label">Applies to</label>
+                  <select
+                    className="form-select"
+                    value={selectedOutletId || ''}
+                    onChange={(e) => selectOutlet(e.target.value || null)}
+                  >
+                    <option value="">Combined (Company Default)</option>
+                    {outlets.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
+                  </select>
+                  <div className="form-hint">
+                    {selectedOutletId
+                      ? `Editing rules just for ${selectedOutletName}. Leave a field blank to inherit the company default.`
+                      : 'Editing the company-wide default. Any outlet without its own override uses these values.'}
+                  </div>
+                </div>
+              )}
+
               <div className="form-row">
                 <div className="form-group">
                   <label className="form-label">Half-Day Min. Hours</label>
-                  <input className="form-input" type="number" step="0.5" value={form.min_half_day_hours} onChange={(e) => setForm({ ...form, min_half_day_hours: e.target.value })} />
+                  <input className="form-input" type="number" step="0.5"
+                    placeholder={String(tenantDefaults.min_half_day_hours)}
+                    value={attForm.min_half_day_hours}
+                    onChange={(e) => setAttForm({ ...attForm, min_half_day_hours: e.target.value })} />
                 </div>
                 <div className="form-group">
                   <label className="form-label">Full-Day Min. Hours</label>
-                  <input className="form-input" type="number" step="0.5" value={form.min_full_day_hours} onChange={(e) => setForm({ ...form, min_full_day_hours: e.target.value })} />
+                  <input className="form-input" type="number" step="0.5"
+                    placeholder={String(tenantDefaults.min_full_day_hours)}
+                    value={attForm.min_full_day_hours}
+                    onChange={(e) => setAttForm({ ...attForm, min_full_day_hours: e.target.value })} />
                 </div>
               </div>
-              
+
               <div className="settings-geofence">
                 <h4><i className="fas fa-map-marker-alt" /> Geofencing</h4>
                 <p>Restrict employee clock-in/out to a specific location.</p>
                 <div className="form-row">
                   <div className="form-group">
                     <label className="form-label">Latitude</label>
-                    <input className="form-input" placeholder="e.g. 28.6139" value={form.geofence_lat} onChange={(e) => setForm({ ...form, geofence_lat: e.target.value })} />
+                    <input className="form-input" placeholder={selectedOutletId ? String(tenantDefaults.geofence_lat ?? 'e.g. 28.6139') : 'e.g. 28.6139'}
+                      value={attForm.geofence_lat} onChange={(e) => setAttForm({ ...attForm, geofence_lat: e.target.value })} />
                   </div>
                   <div className="form-group">
                     <label className="form-label">Longitude</label>
-                    <input className="form-input" placeholder="e.g. 77.2090" value={form.geofence_lng} onChange={(e) => setForm({ ...form, geofence_lng: e.target.value })} />
+                    <input className="form-input" placeholder={selectedOutletId ? String(tenantDefaults.geofence_lng ?? 'e.g. 77.2090') : 'e.g. 77.2090'}
+                      value={attForm.geofence_lng} onChange={(e) => setAttForm({ ...attForm, geofence_lng: e.target.value })} />
                   </div>
                 </div>
                 <div className="form-group">
                   <label className="form-label">Radius (meters)</label>
-                  <input className="form-input" type="number" value={form.geofence_radius} onChange={(e) => setForm({ ...form, geofence_radius: e.target.value })} />
+                  <input className="form-input" type="number" placeholder={String(tenantDefaults.geofence_radius)}
+                    value={attForm.geofence_radius} onChange={(e) => setAttForm({ ...attForm, geofence_radius: e.target.value })} />
                 </div>
               </div>
 
-              <button className="btn btn-primary" onClick={saveSettings} disabled={saving}>
-                {saving ? 'Saving…' : <><i className="fas fa-save" /> Save Attendance Rules</>}
+              <button className="btn btn-primary" onClick={saveAttendanceSettings} disabled={savingAtt}>
+                {savingAtt ? 'Saving…' : <><i className="fas fa-save" /> Save Attendance Rules</>}
               </button>
             </div>
           </div>
@@ -632,9 +744,14 @@ export default function SettingsPage() {
                     <div style={{ fontSize: 13, fontWeight: 600 }}>{s.name}</div>
                     <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>{s.start_time} — {s.end_time}</div>
                   </div>
-                  <button className="btn btn-outline btn-icon btn-sm" style={{ color: 'var(--danger)' }} onClick={() => handleRemoveShift(s.id)}>
-                    <i className="fas fa-trash-alt" />
-                  </button>
+                  <div style={{ display: 'flex', gap: 4 }}>
+                    <button className="btn btn-outline btn-icon btn-sm" title="Auto-attendance thresholds" onClick={() => openThresholds(s)}>
+                      <i className="fas fa-stopwatch" />
+                    </button>
+                    <button className="btn btn-outline btn-icon btn-sm" style={{ color: 'var(--danger)' }} onClick={() => handleRemoveShift(s.id)}>
+                      <i className="fas fa-trash-alt" />
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>
@@ -789,6 +906,33 @@ export default function SettingsPage() {
               )}
             </div>
           </div>
+
+          {/* ── Outlet View ──────────────────────────────────────────────────── */}
+          {outlets.length > 0 && (
+            <div className="card">
+              <div className="card-header">
+                <div>
+                  <h3 style={{ margin: 0 }}>Outlet View</h3>
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
+                    Scope Dashboard, Attendance, Requests and Payroll to one outlet, or view everything combined
+                  </div>
+                </div>
+              </div>
+              <div className="card-body">
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+                  <div>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 3 }}>CURRENTLY VIEWING</div>
+                    <div style={{ fontWeight: 600, fontSize: 14 }}>
+                      {selectedOutletName || 'All Outlets (Combined)'}
+                    </div>
+                  </div>
+                  <button className="btn btn-outline btn-sm" style={{ marginLeft: 'auto' }} onClick={() => navigate('/outlets')}>
+                    <i className="fas fa-exchange-alt" /> Change Outlet View
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
 
         </div>
       </div>

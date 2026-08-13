@@ -58,6 +58,23 @@ serve(async (req) => {
       auth: { autoRefreshToken: false, persistSession: false },
     });
 
+    // Cooldown: this endpoint accepts any email (it's also used pre-signup, before
+    // an account exists, so we can't check account ownership) — without a per-email
+    // throttle it can be used to mass-mail arbitrary inboxes via our SMTP relay.
+    const { data: recent } = await db
+      .from("otp_table")
+      .select("created_at")
+      .eq("user_id", email)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (recent && Date.now() - new Date(recent.created_at).getTime() < 60_000) {
+      return new Response(
+        JSON.stringify({ error: "Please wait a minute before requesting another code." }),
+        { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
     await db.from("otp_table").delete().eq("user_id", email);
     const { error: insertErr } = await db.from("otp_table").insert([{
       user_id:    email,

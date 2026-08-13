@@ -190,6 +190,51 @@ a { color: inherit; text-decoration: none; }
   border-radius: 10px;
 }
 
+.nav-item-arrow {
+  margin-left: auto;
+  font-size: 10px;
+  opacity: 0.4;
+}
+
+.nav-flyout {
+  position: fixed;
+  min-width: 170px;
+  background: #1A1B2E;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-lg);
+  padding: 6px;
+  z-index: 200;
+}
+
+.nav-flyout-item {
+  display: block;
+  padding: 9px 12px;
+  border-radius: 6px;
+  color: rgba(255, 255, 255, 0.75);
+  font-size: 13px;
+  font-weight: 500;
+  text-decoration: none;
+  transition: all 0.15s ease;
+}
+
+.nav-flyout-item:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+}
+
+.nav-flyout-item-parent {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.nav-flyout-arrow {
+  font-size: 9px;
+  opacity: 0.4;
+}
+
 .sidebar-footer {
   padding: 16px;
   border-top: 1px solid rgba(255, 255, 255, 0.08);
@@ -243,6 +288,51 @@ a { color: inherit; text-decoration: none; }
   color: var(--danger);
 }
 
+/* Mobile drawer controls — hidden on desktop, shown only inside the
+   max-width:900px block below (Sidebar.jsx always renders these). */
+.mobile-menu-btn {
+  display: none;
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  z-index: 60;
+  width: 40px;
+  height: 40px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow-md);
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  cursor: pointer;
+}
+
+.sidebar-close-btn {
+  display: none;
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 18px;
+  cursor: pointer;
+  padding: 6px;
+}
+
+.sidebar-backdrop {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 90;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+  pointer-events: none;
+}
+
 /* ======================== MAIN CONTENT ======================== */
 .main-content {
   margin-left: var(--sidebar-w);
@@ -282,6 +372,8 @@ a { color: inherit; text-decoration: none; }
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .header-btn {
@@ -598,6 +690,20 @@ tr:hover td {
   transform: scale(1);
 }
 
+.modal-fullscreen {
+  width: 96vw;
+  height: 92vh;
+  max-width: 96vw;
+  max-height: 92vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.modal-fullscreen .modal-body {
+  flex: 1;
+  overflow-y: auto;
+}
+
 .modal-header {
   display: flex;
   align-items: center;
@@ -763,6 +869,9 @@ tr:hover td {
 }
 
 /* ======================== TABS ======================== */
+.tab-bar-wrap { padding: 20px 28px 0; }
+.subtab-bar-wrap { padding: 0 28px; }
+
 .tabs {
   display: flex;
   gap: 3px;
@@ -1411,7 +1520,112 @@ tr:hover td {
   .clock-widget { flex-direction: column; gap: 20px; text-align: center; }
   .clock-actions { justify-content: center; }
   .att-summary-bar { grid-template-columns: repeat(2, 1fr); }
+
+  /* Mobile nav drawer */
+  .mobile-menu-btn { display: flex; }
+  .sidebar-close-btn { display: block; }
+  .sidebar-backdrop.show { display: block; opacity: 1; pointer-events: auto; }
+  .header { padding-left: 60px; } /* room for the fixed hamburger button */
 }
+
+@media (max-width: 600px) {
+  .header {
+    flex-wrap: wrap;
+    height: auto;
+    min-height: var(--header-h);
+    padding: 12px 16px 12px 60px;
+    row-gap: 10px;
+  }
+  .header-left h1 { font-size: 17px; }
+  .header-right { width: 100%; justify-content: flex-start; }
+
+  .page-content { padding: 16px; }
+  .card-body { padding: 14px 16px; }
+  .modal-body { padding: 16px; }
+  .modal-header { padding: 14px 16px; }
+  .modal-footer { padding: 14px 16px; }
+
+  table, .table-wrap table { min-width: 480px; } /* scroll within .table-wrap instead of squashing columns unreadably */
+
+  .btn-sm { min-height: 32px; }
+  .header-btn { width: 40px; height: 40px; } /* larger tap target on touch */
+
+  .clock-widget { padding: 20px; }
+  .clock-time { font-size: 32px; }
+  .clock-actions { flex-wrap: wrap; }
+  .clock-btn { padding: 12px 20px; flex: 1; min-width: 130px; }
+
+  .tab-bar-wrap { padding: 16px 16px 0; }
+  .subtab-bar-wrap { padding: 0 16px; }
+
+  .holiday-banner { padding: 16px 44px; min-height: 100px; }
+  .holiday-banner-name { font-size: 17px; }
+  .holiday-banner-icon { font-size: 70px; }
+}
+
+/* ======================== HOLIDAY BANNER ======================== */
+.holiday-banner-card { padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+
+.holiday-banner-label {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--text-muted);
+}
+
+.holiday-banner-count { font-weight: 500; text-transform: none; letter-spacing: 0; }
+
+.holiday-banner-empty { padding: 20px 0; color: var(--text-muted); font-size: 13px; text-align: center; }
+
+.holiday-banner {
+  position: relative;
+  border-radius: var(--radius-md);
+  min-height: 120px;
+  display: flex;
+  align-items: center;
+  padding: 20px 56px;
+  overflow: hidden;
+  color: #fff;
+}
+
+.holiday-banner-icon {
+  position: absolute;
+  right: 8px;
+  bottom: -14px;
+  font-size: 90px;
+  opacity: .18;
+  transform: rotate(-12deg);
+}
+
+.holiday-banner-text { position: relative; z-index: 1; }
+.holiday-banner-name { font-size: 20px; font-weight: 700; }
+.holiday-banner-date { font-size: 13px; opacity: .85; margin-top: 4px; }
+
+.holiday-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(255, 255, 255, .18);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background .15s;
+  z-index: 2;
+}
+
+.holiday-nav:hover { background: rgba(255, 255, 255, .32); }
+.holiday-nav.prev { left: 12px; }
+.holiday-nav.next { right: 12px; }
 
 /* ======================== PAGINATION ======================== */
 .pagination {
