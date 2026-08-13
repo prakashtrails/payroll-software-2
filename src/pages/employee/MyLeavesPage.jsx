@@ -1,10 +1,12 @@
 import React, { useEffect, useState } from 'react';
 import Header from '@/components/Header';
 import Modal from '@/components/Modal';
+import StatCard from '@/components/StatCard';
 import { showToast } from '@/components/Toast';
 import { useAuth } from '@/context/AuthContext';
 import { listMyLeaveRequests, requestLeave, checkProbationStatus } from '@/services/leaveService';
 import { fetchMyQuota } from '@/services/requestQuotaService';
+import { fetchMyLeaveBalances, listLeaveTypes } from '@/services/leaveLedgerService';
 import { fmt, todayStr, HIGH_SALARY_THRESHOLD } from '@/lib/helpers';
 
 function QuotaBanner({ quota }) {
@@ -38,14 +40,33 @@ function QuotaBanner({ quota }) {
   );
 }
 
+// Best-effort icon/color per leave type name — falls back gracefully for any
+// custom type an admin adds beyond the seeded Planned/Emergency/Unplanned set.
+function leaveTypeIcon(name = '') {
+  const n = name.toLowerCase();
+  if (n.includes('emergency')) return 'fa-triangle-exclamation';
+  if (n.includes('unplanned')) return 'fa-question-circle';
+  if (n.includes('planned')) return 'fa-calendar-check';
+  if (n.includes('sick')) return 'fa-briefcase-medical';
+  if (n.includes('comp')) return 'fa-gift';
+  return 'fa-calendar-day';
+}
+function leaveTypeColor(name = '') {
+  const n = name.toLowerCase();
+  if (n.includes('emergency')) return 'red';
+  if (n.includes('unplanned')) return 'orange';
+  if (n.includes('planned')) return 'green';
+  return 'blue';
+}
+
 const EMPTY_REQUEST = {
-  leave_type: 'Casual Leave',
+  leave_type: '',
   start_date: todayStr(),
   end_date: todayStr(),
   reason: '',
 };
 
-export default function MyLeavesPage() {
+export function LeaveContent() {
   const { profile, tenant } = useAuth();
   const [requests, setRequests] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -54,12 +75,31 @@ export default function MyLeavesPage() {
   const [saving, setSaving] = useState(false);
   const [quota, setQuota] = useState(null);
   const [probation, setProbation] = useState(null);
+  const [leaveBalances, setLeaveBalances] = useState([]);
+  const [leaveTypes, setLeaveTypes] = useState([]);
+  const [filter, setFilter] = useState('Pending');
 
   useEffect(() => {
     fetchRequests();
     loadQuota();
     loadProbation();
+    loadLeaveBalances();
+    loadLeaveTypes();
   }, [profile]);
+
+  const loadLeaveBalances = async () => {
+    if (!profile) return;
+    const { data } = await fetchMyLeaveBalances(profile.id);
+    setLeaveBalances(data); // show every configured type, including a fresh 0 balance — not just the ones with activity
+  };
+
+  const loadLeaveTypes = async () => {
+    if (!tenant) return;
+    const { data } = await listLeaveTypes(tenant.id);
+    const active = data.filter((t) => t.is_active);
+    setLeaveTypes(active);
+    setForm((f) => (f.leave_type ? f : { ...f, leave_type: active[0]?.name || '' }));
+  };
 
   const loadQuota = async () => {
     if (!profile || !tenant) return;
@@ -136,17 +176,15 @@ export default function MyLeavesPage() {
     }
   };
 
+  const filteredRequests = requests.filter(r => filter === 'All' || r.status === filter);
+
   return (
     <div className="page-container">
-      <Header 
-        title="My Leaves" 
-        breadcrumb="My Space / Leaves"
-        actions={
-          <button className="btn btn-primary" onClick={() => setShowModal(true)}>
-            <i className="fas fa-plus" /> New Request
-          </button>
-        }
-      />
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 4 }}>
+        <button className="btn btn-primary" onClick={() => setShowModal(true)}>
+          <i className="fas fa-plus" /> New Request
+        </button>
+      </div>
 
       {probation?.inProbation && (
         <div style={{
@@ -182,8 +220,39 @@ export default function MyLeavesPage() {
         </div>
       )}
 
+      {leaveBalances.length > 0 && (
+        <div style={{ marginTop: 16 }}>
+          <h3 style={{ fontSize: 15, marginBottom: 10 }}>My Leave Balance</h3>
+          <div className="stats-row" style={{ gridTemplateColumns: `repeat(${Math.min(leaveBalances.length, 4)}, 1fr)` }}>
+            {leaveBalances.map((b) => (
+              <StatCard
+                key={b.leave_type_id}
+                icon={leaveTypeIcon(b.leave_type?.name)}
+                iconColor={leaveTypeColor(b.leave_type?.name)}
+                value={b.balance}
+                label={b.leave_type?.name || 'Leave'}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="card" style={{ marginTop: 16 }}>
-        <div className="table-responsive">
+        <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+          <h3 style={{ margin: 0 }}>My Requests</h3>
+          <div className="flex gap-1" style={{ flexWrap: 'wrap' }}>
+            {['Pending', 'Approved', 'Rejected', 'All'].map(s => (
+              <button
+                key={s}
+                className={`btn btn-sm ${filter === s ? 'btn-primary' : 'btn-outline'}`}
+                onClick={() => setFilter(s)}
+              >
+                {s}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="table-wrap">
           <table className="table">
             <thead>
               <tr>
@@ -198,9 +267,11 @@ export default function MyLeavesPage() {
             <tbody>
               {loading ? (
                 <tr><td colSpan="6" style={{ textAlign: 'center', padding: 40 }}><div className="spinner" /></td></tr>
-              ) : requests.length === 0 ? (
-                <tr><td colSpan="6" style={{ textAlign: 'center', padding: 40, color: 'var(--text-muted)' }}>No leave requests found.</td></tr>
-              ) : requests.map(req => {
+              ) : filteredRequests.length === 0 ? (
+                <tr><td colSpan="6" style={{ textAlign: 'center', padding: 40, color: 'var(--text-muted)' }}>
+                  {requests.length === 0 ? 'No leave requests found.' : `No ${filter.toLowerCase()} requests found.`}
+                </td></tr>
+              ) : filteredRequests.map(req => {
                 const start = new Date(req.start_date);
                 const end = new Date(req.end_date);
                 const diffTime = Math.abs(end - start);
@@ -249,11 +320,10 @@ export default function MyLeavesPage() {
               <option value="Earned (Probation)">Earned Leave (Probation) — {probation.earnedLeaves} available</option>
             ) : (
               <>
-                <option>Casual Leave</option>
-                <option>Sick Leave</option>
-                <option>Paid Leave</option>
-                <option>Maternity/Paternity Leave</option>
-                <option>Loss of Pay</option>
+                {leaveTypes.map((lt) => {
+                  const bal = leaveBalances.find((b) => b.leave_type_id === lt.id);
+                  return <option key={lt.id} value={lt.name}>{lt.name}{bal ? ` — ${bal.balance} available` : ''}</option>;
+                })}
                 {(profile?.ctc || 0) >= HIGH_SALARY_THRESHOLD && (
                   <option value="Comp Off">Comp Off (Weekly Off Compensation)</option>
                 )}
@@ -289,5 +359,14 @@ export default function MyLeavesPage() {
         </div>
       </Modal>
     </div>
+  );
+}
+
+export default function MyLeavesPage() {
+  return (
+    <>
+      <Header title="My Leaves" breadcrumb="My Space / Leaves" />
+      <LeaveContent />
+    </>
   );
 }

@@ -4,12 +4,14 @@ import Modal from '@/components/Modal';
 import StatCard from '@/components/StatCard';
 import { showToast } from '@/components/Toast';
 import { useAuth } from '@/context/AuthContext';
+import { useOutletView } from '@/context/OutletViewContext';
 import { listAdvances, createAdvance, updateAdvance, deleteAdvance } from '@/services/advanceService';
 import { listActiveEmployees } from '@/services/employeeService';
-import { fmt, getInitials, getAvatarColor } from '@/lib/helpers';
+import { fmt, getInitials, getAvatarColor, fullName, scopedToOutlet } from '@/lib/helpers';
 
 export default function AdvancesPage() {
   const { tenant, profile } = useAuth();
+  const { outletProfileIds } = useOutletView();
   const isManager = profile?.role === 'manager';
   const [advances, setAdvances]     = useState([]);
   const [employees, setEmployees]   = useState([]);
@@ -27,12 +29,12 @@ export default function AdvancesPage() {
         listAdvances(tenant.id),
         listActiveEmployees(tenant.id),
       ]);
-      setAdvances(advsRes.data);
-      setEmployees(empsRes.data);
+      setAdvances(scopedToOutlet(advsRes.data, outletProfileIds));
+      setEmployees(scopedToOutlet(empsRes.data, outletProfileIds, 'id'));
     } finally {
       setLoading(false);
     }
-  }, [tenant]);
+  }, [tenant, outletProfileIds]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
@@ -83,7 +85,7 @@ export default function AdvancesPage() {
   const activeAdv   = advances.filter((a) => a.status === 'Active');
   const totalOut    = activeAdv.reduce((s, a) => s + (a.balance || 0), 0);
   const totalEMI    = activeAdv.reduce((s, a) => s + (a.emi    || 0), 0);
-  const getEmpName  = (pid) => { const e = employees.find((x) => x.id === pid); return e ? `${e.first_name} ${e.last_name}` : '—'; };
+  const getEmpName  = (pid) => { const e = employees.find((x) => x.id === pid); return e ? fullName(e) : '—'; };
 
   return (
     <>
@@ -168,7 +170,7 @@ export default function AdvancesPage() {
           <label className="form-label">Employee *</label>
           <select className="form-select" value={form.profile_id} onChange={(e) => setForm({ ...form, profile_id: e.target.value })}>
             <option value="">Select Employee</option>
-            {employees.map((e) => <option key={e.id} value={e.id}>{e.first_name} {e.last_name}</option>)}
+            {employees.map((e) => <option key={e.id} value={e.id}>{fullName(e)}</option>)}
           </select>
         </div>
         <div className="form-group">

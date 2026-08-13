@@ -13,7 +13,7 @@ export default function SalaryStructurePage() {
   const [loading, setLoading]       = useState(true);
   const [showModal, setShowModal]   = useState(false);
   const [editComp, setEditComp]     = useState(null);
-  const [form, setForm]             = useState({ name: '', category: 'earning', calc_type: 'percent_ctc', percent: '', fixed: '' });
+  const [form, setForm]             = useState({ name: '', category: 'earning', calc_type: 'percent_ctc', percent: '', fixed: '', formula: '', depends_on: '' });
 
   const fetchComponents = useCallback(async () => {
     if (!tenant) return;
@@ -32,17 +32,20 @@ export default function SalaryStructurePage() {
   const openModal = (category, comp = null) => {
     setEditComp(comp);
     setForm({
-      name:      comp?.name      || '',
-      category:  comp?.category  || category,
-      calc_type: comp?.calc_type || 'percent_ctc',
-      percent:   comp?.percent   || '',
-      fixed:     comp?.fixed     || '',
+      name:       comp?.name      || '',
+      category:   comp?.category  || category,
+      calc_type:  comp?.calc_type || 'percent_ctc',
+      percent:    comp?.percent   || '',
+      fixed:      comp?.fixed     || '',
+      formula:    comp?.formula   || '',
+      depends_on: (comp?.depends_on || []).join(', '),
     });
     setShowModal(true);
   };
 
   const handleSave = async () => {
     if (!form.name.trim()) return showToast('Name is required', 'error');
+    if (form.calc_type === 'formula' && !form.formula.trim()) return showToast('Formula is required', 'error');
     const { error } = await saveComponent(tenant.id, form, editComp?.id);
     if (error) return showToast((editComp ? 'Update' : 'Add') + ' failed: ' + error.message, 'error');
     showToast(editComp ? 'Component updated' : 'Component added', 'success');
@@ -84,8 +87,8 @@ export default function SalaryStructurePage() {
               {items.length === 0 ? (
                 <tr><td colSpan={4} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 24 }}>No components configured</td></tr>
               ) : items.map((c) => {
-                const typeLabel = c.calc_type === 'percent_ctc' ? '% of CTC' : c.calc_type === 'percent_basic' ? '% of Basic' : 'Fixed';
-                const valLabel  = c.calc_type === 'fixed' ? fmt(c.fixed) : c.percent + '%';
+                const typeLabel = c.calc_type === 'percent_ctc' ? '% of CTC' : c.calc_type === 'percent_basic' ? '% of Basic' : c.calc_type === 'formula' ? 'Formula' : 'Fixed';
+                const valLabel  = c.calc_type === 'formula' ? <code style={{ fontSize: 11 }}>{c.formula}</code> : c.calc_type === 'fixed' ? fmt(c.fixed) : c.percent + '%';
                 return (
                   <tr key={c.id}>
                     <td><strong>{c.name}</strong></td>
@@ -188,9 +191,27 @@ export default function SalaryStructurePage() {
             <option value="percent_ctc">% of CTC</option>
             <option value="percent_basic">% of Basic</option>
             <option value="fixed">Fixed Amount</option>
+            <option value="formula">Formula</option>
           </select>
         </div>
-        {form.calc_type !== 'fixed' ? (
+        {form.calc_type === 'formula' ? (
+          <>
+            <div className="form-group">
+              <label className="form-label">Formula *</label>
+              <input className="form-input" placeholder="e.g. min(basic * 0.0833, 7000)" value={form.formula} onChange={(e) => setForm({ ...form, formula: e.target.value })} />
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+                Use <code>ctc</code>, <code>basic</code>, other component names in snake_case (e.g. a component named "Special Allowance" is <code>special_allowance</code>), <code>+ - * /</code>, <code>()</code>, and <code>min()</code>/<code>max()</code>/<code>round()</code>.
+              </div>
+            </div>
+            <div className="form-group">
+              <label className="form-label">Depends on (comma-separated component keys)</label>
+              <input className="form-input" placeholder="e.g. basic, special_allowance" value={form.depends_on} onChange={(e) => setForm({ ...form, depends_on: e.target.value })} />
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+                List any other formula-type components this one references, so they're computed first. Leave blank if this formula only uses <code>ctc</code>/<code>basic</code>.
+              </div>
+            </div>
+          </>
+        ) : form.calc_type !== 'fixed' ? (
           <div className="form-group">
             <label className="form-label">Percentage (%)</label>
             <input className="form-input" type="number" step="0.01" value={form.percent} onChange={(e) => setForm({ ...form, percent: e.target.value })} />

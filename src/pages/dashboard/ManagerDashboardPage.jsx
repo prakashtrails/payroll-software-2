@@ -8,7 +8,7 @@ import { fetchTodayAttendanceSummary, fetchMyMonthAttendance, clockIn as svcCloc
 import { todayStr, timeStr, fmtTime12, diffHours, monthLabel } from '@/lib/helpers';
 import { showToast } from '@/components/Toast';
 
-export default function ManagerDashboard() {
+export default function ManagerDashboard({ embedded = false }) {
   const { tenant, profile } = useAuth();
   const [stats, setStats]   = useState({ activeEmployees: 0, processedPayrolls: 0 });
   const [attendance, setAttendance] = useState({ present: 0, absent: 0, late: 0, halfDay: 0, leave: 0, total: 0 });
@@ -121,7 +121,9 @@ export default function ManagerDashboard() {
 
   return (
     <>
-      <Header title="Manager Dashboard" breadcrumb={`${monthLabel(now.getMonth(), now.getFullYear())} Overview`} />
+      {!embedded && (
+        <Header title="Manager Dashboard" breadcrumb={`${monthLabel(now.getMonth(), now.getFullYear())} Overview`} />
+      )}
       <div className="page-content">
         {loading ? (
           <div style={{ padding: '40px 0', textAlign: 'center', color: 'var(--text-muted)' }}>

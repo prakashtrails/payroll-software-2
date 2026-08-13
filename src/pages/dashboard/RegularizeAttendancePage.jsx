@@ -3,15 +3,17 @@ import Header from '@/components/Header';
 import Modal from '@/components/Modal';
 import { showToast } from '@/components/Toast';
 import { useAuth } from '@/context/AuthContext';
+import { useOutletView } from '@/context/OutletViewContext';
 import {
   listRegularizeRequests, approveRegularizeRequest, rejectRegularizeRequest,
   regularizeAttendance,
 } from '@/services/attendanceService';
 import { listActiveEmployees } from '@/services/employeeService';
-import { fmt, getInitials, getAvatarColor, todayStr } from '@/lib/helpers';
+import { fmt, getInitials, getAvatarColor, todayStr, fullName, scopedToOutlet } from '@/lib/helpers';
 
 export default function RegularizeAttendancePage() {
   const { profile, tenant } = useAuth();
+  const { outletProfileIds } = useOutletView();
   const isAdmin   = profile?.role === 'admin' || profile?.role === 'superadmin';
 
   const [requests,   setRequests]   = useState([]);
@@ -48,18 +50,18 @@ export default function RegularizeAttendancePage() {
       // Manager only sees requests routed to their level; admin sees all
       const { data, error } = await listRegularizeRequests(tenant.id, isManager ? 'manager' : null);
       if (error) showToast(error.message, 'error');
-      else setRequests(data);
+      else setRequests(scopedToOutlet(data, outletProfileIds));
     } finally {
       setLoading(false);
     }
-  }, [tenant, isManager]);
+  }, [tenant, isManager, outletProfileIds]);
 
   useEffect(() => { fetchRequests(); }, [fetchRequests]);
 
   useEffect(() => {
     if (!showBulk || !tenant) return;
-    listActiveEmployees(tenant.id).then(({ data }) => setEmployees(data || []));
-  }, [showBulk, tenant]);
+    listActiveEmployees(tenant.id).then(({ data }) => setEmployees(scopedToOutlet(data, outletProfileIds, 'id')));
+  }, [showBulk, tenant, outletProfileIds]);
 
   const handleApprove = async (req) => {
     setActing(req.id);
@@ -134,7 +136,7 @@ export default function RegularizeAttendancePage() {
 
   const reviewerLabel = (reviewer) => {
     if (!reviewer) return null;
-    const name = `${reviewer.first_name} ${reviewer.last_name}`;
+    const name = fullName(reviewer);
     const role = reviewer.role === 'admin' ? 'Admin' : reviewer.role === 'manager' ? 'Manager' : reviewer.role;
     return { name, role };
   };
@@ -211,7 +213,7 @@ export default function RegularizeAttendancePage() {
                             {getInitials(req.profile?.first_name, req.profile?.last_name)}
                           </div>
                           <div>
-                            <div className="emp-name">{req.profile?.first_name} {req.profile?.last_name}</div>
+                            <div className="emp-name">{fullName(req.profile)}</div>
                             <div className="emp-role">{req.profile?.department}</div>
                           </div>
                         </div>
@@ -394,7 +396,7 @@ export default function RegularizeAttendancePage() {
                     <div className="emp-avatar" style={{ width: 24, height: 24, fontSize: 10, background: `linear-gradient(135deg, ${getAvatarColor(emp.id)})` }}>
                       {getInitials(emp.first_name, emp.last_name)}
                     </div>
-                    <span style={{ fontSize: 13 }}>{emp.first_name} {emp.last_name}</span>
+                    <span style={{ fontSize: 13 }}>{fullName(emp)}</span>
                     <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 'auto' }}>{emp.department}</span>
                   </label>
                 ))}

@@ -2,12 +2,14 @@ import React from 'react';
 import { useEffect, useState, useCallback } from 'react';
 import Header from '@/components/Header';
 import { useAuth } from '@/context/AuthContext';
+import { useOutletView } from '@/context/OutletViewContext';
 import { fetchPayslipsByMonth } from '@/services/payrollService';
 import { listActiveEmployees } from '@/services/employeeService';
-import { fmt, monthLabel } from '@/lib/helpers';
+import { fmt, monthLabel, escapeHtml, fullName, scopedToOutlet } from '@/lib/helpers';
 
 export default function PayslipsPage() {
   const { tenant } = useAuth();
+  const { outletProfileIds } = useOutletView();
   const [month, setMonth] = useState(new Date().getMonth());
   const [year, setYear] = useState(new Date().getFullYear());
   const [payslips, setPayslips] = useState([]);
@@ -23,12 +25,12 @@ export default function PayslipsPage() {
         fetchPayslipsByMonth(tenant.id, month, year),
         listActiveEmployees(tenant.id),
       ]);
-      setPayslips(slipsRes.data);
-      setEmployees(empsRes.data);
+      setPayslips(scopedToOutlet(slipsRes.data, outletProfileIds));
+      setEmployees(scopedToOutlet(empsRes.data, outletProfileIds, 'id'));
     } finally {
       setLoading(false);
     }
-  }, [tenant, month, year]);
+  }, [tenant, month, year, outletProfileIds]);
 
   useEffect(() => { fetchPayslips(); }, [fetchPayslips]);
 
@@ -52,16 +54,16 @@ export default function PayslipsPage() {
     .row.total{font-weight:700;font-size:15px;padding-top:10px;border-top:2px solid #000;margin-top:6px}
     .header{display:flex;justify-content:space-between;margin-bottom:16px;padding-bottom:12px;border-bottom:2px solid #000}
     .section{font-size:12px;font-weight:700;margin:12px 0 6px;padding:4px 8px;background:#f0f0f0;border-radius:4px}</style></head><body>
-    <div class="header"><div><strong style="font-size:16px">${tenant?.company_name || 'Company'}</strong><br><span style="font-size:11px">Payslip for ${monthLabel(month, year)}</span></div></div>
+    <div class="header"><div><strong style="font-size:16px">${escapeHtml(tenant?.company_name || 'Company')}</strong><br><span style="font-size:11px">Payslip for ${escapeHtml(monthLabel(month, year))}</span></div></div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;font-size:12px;margin-bottom:14px">
-      <div>Name: <strong>${slip.emp_name}</strong></div>
-      <div>Department: <strong>${slip.department || '—'}</strong></div>
-      <div>Days Worked: <strong>${slip.work_days}/${slip.total_work_days}</strong></div></div>
+      <div>Name: <strong>${escapeHtml(slip.emp_name)}</strong></div>
+      <div>Department: <strong>${escapeHtml(slip.department || '—')}</strong></div>
+      <div>Days Worked: <strong>${escapeHtml(slip.work_days)}/${escapeHtml(slip.total_work_days)}</strong></div></div>
     <div class="section">Earnings</div>
-    ${(breakdown.earnings || []).map((e) => `<div class="row"><span>${e.name}</span><span>₹${e.amount?.toLocaleString('en-IN')}</span></div>`).join('')}
-    <div class="row" style="font-weight:600;border-top:1px solid #ccc;padding-top:6px"><span>Total Earnings</span><span>₹${slip.gross_earnings?.toLocaleString('en-IN')}</span></div>
+    ${(breakdown.earnings || []).map((e) => `<div class="row"><span>${escapeHtml(e.name)}</span><span>₹${escapeHtml(e.amount?.toLocaleString('en-IN'))}</span></div>`).join('')}
+    <div class="row" style="font-weight:600;border-top:1px solid #ccc;padding-top:6px"><span>Total Earnings</span><span>₹${escapeHtml(slip.gross_earnings?.toLocaleString('en-IN'))}</span></div>
     <div class="section">Deductions</div>
-    ${(breakdown.deductions || []).map((d) => `<div class="row"><span>${d.name}</span><span>₹${d.amount?.toLocaleString('en-IN')}</span></div>`).join('')}
+    ${(breakdown.deductions || []).map((d) => `<div class="row"><span>${escapeHtml(d.name)}</span><span>₹${escapeHtml(d.amount?.toLocaleString('en-IN'))}</span></div>`).join('')}
     ${slip.advance_deduction > 0 ? `<div class="row"><span>Advance Recovery</span><span>₹${slip.advance_deduction?.toLocaleString('en-IN')}</span></div>` : ''}
     <div class="row" style="font-weight:600;border-top:1px solid #ccc;padding-top:6px"><span>Total Deductions</span><span>₹${(slip.total_deductions + slip.advance_deduction)?.toLocaleString('en-IN')}</span></div>
     <div class="row total"><span>Net Pay</span><span>₹${slip.net_pay?.toLocaleString('en-IN')}</span></div>
@@ -83,7 +85,7 @@ export default function PayslipsPage() {
           <select className="form-select" value={filterEmp} onChange={(e) => setFilterEmp(e.target.value)}>
             <option value="">All Employees</option>
             {employees.map((e) => (
-              <option key={e.id} value={e.id}>{e.first_name} {e.last_name}</option>
+              <option key={e.id} value={e.id}>{fullName(e)}</option>
             ))}
           </select>
         </div>

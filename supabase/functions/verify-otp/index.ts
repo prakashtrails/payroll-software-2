@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { findUserByEmail } from "../_shared/findUserByEmail.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -62,8 +63,20 @@ serve(async (req) => {
       );
     }
 
+    // Brute-force guard: cap incorrect attempts per OTP (1,000,000-value space
+    // is trivially guessable in a 5-minute window without this).
+    const MAX_ATTEMPTS = 5;
+    if (record.attempts >= MAX_ATTEMPTS) {
+      await db.from("otp_table").delete().eq("user_id", email);
+      return new Response(
+        JSON.stringify({ error: "Too many incorrect attempts. Please request a new code." }),
+        { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
     // Check OTP value
     if (record.otp !== otp.toString().trim()) {
+      await db.from("otp_table").update({ attempts: record.attempts + 1 }).eq("id", record.id);
       return new Response(
         JSON.stringify({ error: "Invalid OTP. Please check the code and try again." }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
@@ -82,9 +95,9 @@ serve(async (req) => {
         );
       }
 
-      // Check if user already exists
-      const { data: listData } = await db.auth.admin.listUsers();
-      const existingUser = listData?.users?.find((u: { email: string }) => u.email === email);
+      // Check if user already exists (paginated — a flat perPage:1000 call
+      // silently misses users once the platform account count grows past it)
+      const existingUser = await findUserByEmail(db, email);
 
       let userId: string;
 

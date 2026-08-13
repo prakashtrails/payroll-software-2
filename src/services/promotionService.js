@@ -4,7 +4,7 @@ import { supabase } from '@/lib/supabase';
 export async function listEmployeePromotions(profileId) {
   const { data, error } = await supabase
     .from('employee_promotions')
-    .select('*, created_by_profile:profiles!employee_promotions_created_by_fkey(first_name, last_name)')
+    .select('*, created_by_profile:profiles!employee_promotions_created_by_fkey(first_name, middle_name, last_name)')
     .eq('profile_id', profileId)
     .order('effective_date', { ascending: false });
   return { data: data || [], error };

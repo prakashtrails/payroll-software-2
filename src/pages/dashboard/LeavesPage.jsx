@@ -2,20 +2,23 @@ import React, { useEffect, useState } from 'react';
 import Header from '@/components/Header';
 import { showToast } from '@/components/Toast';
 import { useAuth } from '@/context/AuthContext';
+import { useOutletView } from '@/context/OutletViewContext';
 import { listAllLeaveRequests, updateLeaveStatus } from '@/services/leaveService';
-import { fmt, todayStr } from '@/lib/helpers';
+import { fmt, todayStr, fullName, scopedToOutlet } from '@/lib/helpers';
 
 export default function LeavesPage() {
   const { tenant, profile } = useAuth();
+  const { outletProfileIds } = useOutletView();
   const [requests, setRequests] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('Pending'); // Pending, Approved, Rejected, All
+  const [acting, setActing] = useState(null); // id of the request currently being approved/rejected
 
   const isManager = profile?.role === 'manager';
 
   useEffect(() => {
     fetchRequests();
-  }, [tenant]);
+  }, [tenant, outletProfileIds]);
 
   const fetchRequests = async () => {
     if (!tenant) return;
@@ -24,18 +27,24 @@ export default function LeavesPage() {
       // Manager only sees requests routed to their level; admin sees all
       const { data, error } = await listAllLeaveRequests(tenant.id, isManager ? 'manager' : null);
       if (error) showToast(error.message, 'error');
-      else setRequests(data);
+      else setRequests(scopedToOutlet(data, outletProfileIds));
     } finally {
       setLoading(false);
     }
   };
 
   const handleStatusChange = async (id, status) => {
-    const { error } = await updateLeaveStatus(id, status, profile.id, profile.role);
-    if (error) showToast(error.message, 'error');
-    else {
-      showToast(`Leave ${status.toLowerCase()} successfully`, 'success');
-      fetchRequests();
+    if (acting) return;
+    setActing(id);
+    try {
+      const { error } = await updateLeaveStatus(id, status, profile.id, profile.role);
+      if (error) showToast(error.message, 'error');
+      else {
+        showToast(`Leave ${status.toLowerCase()} successfully`, 'success');
+        fetchRequests();
+      }
+    } finally {
+      setActing(null);
     }
   };
 
@@ -64,7 +73,7 @@ export default function LeavesPage() {
           </div>
         </div>
 
-        <div className="table-responsive">
+        <div className="table-wrap">
           <table className="table">
             <thead>
               <tr>
@@ -92,7 +101,7 @@ export default function LeavesPage() {
                 return (
                   <tr key={req.id}>
                     <td>
-                      <div style={{ fontWeight: 600 }}>{req.profile?.first_name} {req.profile?.last_name}</div>
+                      <div style={{ fontWeight: 600 }}>{fullName(req.profile)}</div>
                       <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{req.profile?.department}</div>
                     </td>
                     <td><span className="badge badge-info">{req.leave_type}</span></td>
@@ -111,16 +120,18 @@ export default function LeavesPage() {
                     <td>
                       {req.status === 'Pending' && (
                         <div className="flex gap-1">
-                          <button 
-                            className="btn btn-sm btn-success" 
+                          <button
+                            className="btn btn-sm btn-success"
                             title="Approve"
+                            disabled={acting === req.id}
                             onClick={() => handleStatusChange(req.id, 'Approved')}
                           >
                             <i className="fas fa-check" />
                           </button>
-                          <button 
-                            className="btn btn-sm btn-danger" 
+                          <button
+                            className="btn btn-sm btn-danger"
                             title="Reject"
+                            disabled={acting === req.id}
                             onClick={() => handleStatusChange(req.id, 'Rejected')}
                           >
                             <i className="fas fa-times" />

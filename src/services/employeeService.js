@@ -1,24 +1,56 @@
-import { createClient } from '@supabase/supabase-js';
 import { supabase } from '@/lib/supabase';
 
-// Admin client uses service-role key — can create auth users without sending emails.
-// storageKey is unique so it doesn't conflict with the main anon client's session.
-const supabaseAdmin = createClient(
-  import.meta.env.VITE_SUPABASE_URL,
-  import.meta.env.VITE_SUPABASE_SERVICE_ROLE_KEY,
-  { auth: { autoRefreshToken: false, persistSession: false, storageKey: 'sb-admin-auth' } }
-);
-
 export const EMPLOYEE_PAGE_SIZE = 25;
+
+/**
+ * supabase.functions.invoke() reports any non-2xx response as a generic
+ * FunctionsHttpError without surfacing the JSON body — pull the real
+ * `{ error }` message out of the response so callers can inspect it
+ * (e.g. "already exists" / rate-limit detection during bulk import).
+ */
+async function invokeMessage(error) {
+  if (!error?.context?.json) return error?.message || 'Request failed';
+  try {
+    const body = await error.context.json();
+    return body?.error || error.message;
+  } catch {
+    return error.message;
+  }
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// This project's Supabase auth server fleet is inconsistently synced on a
+// rotated JWT signing key — some replicas verify a valid session token fine,
+// others intermittently reject it with this exact message. It's transient
+// (confirmed: back-to-back identical calls alternate pass/fail), so a couple
+// of quick retries clears it without the caller ever seeing it.
+const isTransientAuthError = (msg) => /invalid jwt|signature is invalid|unable to (parse|verify) signature/i.test(msg || '');
+
+async function invokeWithRetry(fnName, body, maxRetries = 2) {
+  let lastErr;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const { data, error } = await supabase.functions.invoke(fnName, { body });
+    const msg = error ? await invokeMessage(error) : data?.error;
+    if (!msg) return data;
+    lastErr = new Error(msg);
+    if (attempt < maxRetries && isTransientAuthError(msg)) {
+      await sleep(400 * (attempt + 1));
+      continue;
+    }
+    throw lastErr;
+  }
+  throw lastErr;
+}
 
 /**
  * Paginated, server-side-filtered employee list.
  * Returns { data, count, error } — count is the total matching rows.
  */
-export async function listEmployees(tenantId, { page = 1, search = '', department = '', status = '', branch = '' } = {}) {
+export async function listEmployees(tenantId, { page = 1, search = '', department = '', status = '', branch = '', outletId = '' } = {}) {
   let q = supabase
     .from('profiles')
-    .select('*', { count: 'exact' })
+    .select('*, outlets(name)', { count: 'exact' })
     .eq('tenant_id', tenantId)
     .neq('role', 'superadmin')
     .order('first_name');
@@ -26,9 +58,10 @@ export async function listEmployees(tenantId, { page = 1, search = '', departmen
   if (department) q = q.eq('department', department);
   if (status)     q = q.eq('status', status);
   if (branch)     q = q.eq('outlet_location', branch);
+  if (outletId)   q = q.eq('outlet_id', outletId);
   if (search) {
     q = q.or(
-      `first_name.ilike.%${search}%,last_name.ilike.%${search}%,email.ilike.%${search}%,department.ilike.%${search}%`
+      `first_name.ilike.%${search}%,middle_name.ilike.%${search}%,last_name.ilike.%${search}%,email.ilike.%${search}%,department.ilike.%${search}%`
     );
   }
 
@@ -55,7 +88,7 @@ export async function listBranches(tenantId) {
 export async function listActiveEmployees(tenantId) {
   const { data, error } = await supabase
     .from('profiles')
-    .select('id, first_name, last_name, department, designation, ctc, role, country, join_date, pf_enabled, pf_amount, esic_enabled, esic_amount, leave_allocation, employee_id, outlet_location')
+    .select('id, first_name, middle_name, last_name, department, designation, ctc, role, country, join_date, pf_enabled, pf_amount, esic_enabled, esic_amount, leave_allocation, employee_id, outlet_location, is_withheld, withheld_reason, bank_acc, bank_name, ifsc_code, manager_id')
     .eq('tenant_id', tenantId)
     .eq('status', 'Active')
     .in('role', ['employee', 'admin', 'manager'])
@@ -69,12 +102,40 @@ export async function updateEmployee(id, payload) {
 }
 
 export async function updateEmployeeAdmin(id, payload) {
-  const { error } = await supabaseAdmin.from('profiles').update(payload).eq('id', id);
-  return { error };
+  try {
+    await invokeWithRetry('update-employee-admin', { id, payload });
+    return { error: null };
+  } catch (err) {
+    return { error: err };
+  }
+}
+
+/**
+ * Corrects an employee's login email via the update-employee-email edge
+ * function, which updates both the Supabase Auth account (what they actually
+ * sign in with) and the profiles row — without touching their password, so
+ * an existing temp/self-set password keeps working.
+ */
+export async function updateEmployeeEmail(id, email) {
+  try {
+    await invokeWithRetry('update-employee-email', { id, email });
+    return { error: null };
+  } catch (err) {
+    return { error: err };
+  }
 }
 
 export async function setEmployeeStatus(id, status) {
   const { error } = await supabase.from('profiles').update({ status }).eq('id', id);
+  return { error };
+}
+
+/** Withhold/release an employee's salary — processPayroll skips withheld employees entirely. */
+export async function setEmployeeWithholding(id, isWithheld, reason = '') {
+  const { error } = await supabase.from('profiles').update({
+    is_withheld: isWithheld,
+    withheld_reason: isWithheld ? reason : '',
+  }).eq('id', id);
   return { error };
 }
 
@@ -84,150 +145,30 @@ export async function removeEmployee(id) {
 }
 
 /**
- * Creates a Supabase Auth user then calls the insert_employee_profile RPC
- * to create the profile under the calling manager's tenant.
+ * Creates a Supabase Auth user and profile via the create-employee-user edge
+ * function, which runs with the service-role key server-side and verifies
+ * the caller is an admin/manager of the target tenant before doing anything.
  * Returns { tempPassword } on success, throws on failure.
  */
-const ALREADY_EXISTS_RE = /already.{0,15}registered|already in use|already exists|user already/i;
-
 export async function createEmployee(tenantId, profileData) {
-  const tempPassword = 'Pay@' + Math.random().toString(36).slice(2, 8).toUpperCase();
-  let newUserId = null;
-
-  // Primary path: admin client creates the auth user directly — no confirmation email, no rate limit.
-  const { data: adminData, error: adminError } = await supabaseAdmin.auth.admin.createUser({
-    email: profileData.email,
-    password: tempPassword,
-    email_confirm: true,
-    user_metadata: { first_name: profileData.first_name, last_name: profileData.last_name },
-  });
-
-  if (adminError) {
-    if (!ALREADY_EXISTS_RE.test(adminError.message || '')) throw adminError;
-
-    // Auth user exists — find their ID and reuse it for the profile
-    const { data: listData, error: listError } = await supabaseAdmin.auth.admin.listUsers({ perPage: 1000 });
-    if (listError) throw listError;
-    const existing = listData?.users?.find(u => u.email?.toLowerCase() === profileData.email.toLowerCase());
-    if (!existing) throw new Error(`User with email ${profileData.email} already exists but could not be located.`);
-
-    // Check if a profile already exists for this user IN THIS tenant
-    const { data: existingProfile } = await supabaseAdmin
-      .from('profiles')
-      .select('id, tenant_id')
-      .eq('id', existing.id)
-      .maybeSingle();
-
-    if (existingProfile) {
-      if (existingProfile.tenant_id === tenantId) {
-        // Genuinely already in this company
-        throw new Error(`Employee with email ${profileData.email} already exists in your company.`);
-      }
-      // Profile exists but for a different/null tenant — reassign it to this tenant
-      await supabaseAdmin.from('profiles').update({
-        tenant_id:           tenantId,
-        first_name:          profileData.first_name,
-        last_name:           profileData.last_name,
-        phone:               profileData.phone               || '',
-        department:          profileData.department          || '',
-        designation:         profileData.designation         || '',
-        ctc:                 profileData.ctc                 || 0,
-        join_date:           profileData.join_date           || null,
-        bank_acc:            profileData.bank_acc            || '',
-        pan:                 profileData.pan                 || '',
-        aadhar:              profileData.aadhar              || '',
-        country:             profileData.country             || 'India',
-        passport_number:     profileData.passport_number     || '',
-        work_permit_number:  profileData.work_permit_number  || '',
-        work_permit_expiry:  profileData.work_permit_expiry  || null,
-        weekly_holiday:      profileData.weekly_holiday      || 'Sunday',
-        leave_allocation:    profileData.leave_allocation    || 0,
-        shift_id:            profileData.shift_id            || null,
-        role:                profileData.role                || 'employee',
-        compliance_enabled:  profileData.compliance_enabled  || false,
-        pf_enabled:          profileData.pf_enabled          || false,
-        pf_number:           profileData.pf_number           || '',
-        pf_amount:           profileData.pf_amount           || 0,
-        esic_enabled:        profileData.esic_enabled        || false,
-        esic_number:         profileData.esic_number         || '',
-        esic_amount:         profileData.esic_amount         || 0,
-        employee_id:         profileData.employee_id         || null,
-        outlet_location:     profileData.outlet_location     || '',
-        probation_months:    profileData.probation_months    || 0,
-        // reset company-specific counters so old company data doesn't bleed in
-        probation_earned_leaves: 0,
-        comp_off_balance:    0,
-        temp_password:       tempPassword,
-        status:              'Active',
-        must_change_password: true,
-      }).eq('id', existing.id);
-
-      await supabaseAdmin.auth.admin.updateUserById(existing.id, {
-        password: tempPassword,
-        email_confirm: true,
-      });
-
-      return { tempPassword };
-    }
-
-    // No profile at all — confirm auth user and create profile below
-    await supabaseAdmin.auth.admin.updateUserById(existing.id, {
-      password: tempPassword,
-      email_confirm: true,
-    });
-
-    newUserId = existing.id;
-  } else {
-    newUserId = adminData.user.id;
-  }
-
-  // Upsert profile via admin client (bypasses RLS).
-  // Using upsert so that if Supabase's handle_new_user trigger already created
-  // a skeleton {id, email} row, we overwrite it with the full employee data.
-  const { error: insertError } = await supabaseAdmin.from('profiles').upsert({
-    id:                  newUserId,
-    tenant_id:           tenantId,
-    first_name:          profileData.first_name,
-    last_name:           profileData.last_name,
-    email:               profileData.email,
-    phone:               profileData.phone        || '',
-    department:          profileData.department   || '',
-    designation:         profileData.designation  || '',
-    ctc:                 profileData.ctc          || 0,
-    join_date:           profileData.join_date    || null,
-    bank_acc:            profileData.bank_acc          || '',
-    pan:                 profileData.pan               || '',
-    aadhar:              profileData.aadhar            || '',
-    country:             profileData.country           || 'India',
-    passport_number:     profileData.passport_number   || '',
-    work_permit_number:  profileData.work_permit_number || '',
-    work_permit_expiry:  profileData.work_permit_expiry || null,
-    weekly_holiday:      profileData.weekly_holiday    || 'Sunday',
-    leave_allocation:    profileData.leave_allocation || 0,
-    shift_id:            profileData.shift_id     || null,
-    compliance_enabled:  profileData.compliance_enabled || false,
-    pf_enabled:          profileData.pf_enabled         || false,
-    pf_number:           profileData.pf_number          || '',
-    pf_amount:           profileData.pf_amount          || 0,
-    esic_enabled:        profileData.esic_enabled        || false,
-    esic_number:         profileData.esic_number         || '',
-    esic_amount:         profileData.esic_amount         || 0,
-    employee_id:         profileData.employee_id         || null,
-    outlet_location:     profileData.outlet_location     || '',
-    temp_password:       tempPassword,
-    role:                profileData.role         || 'employee',
-    status:              profileData.status || 'Active',
-    must_change_password: true,
-  }, { onConflict: 'id' });
-
-  if (insertError) throw insertError;
-
-  return { tempPassword };
+  const data = await invokeWithRetry('create-employee-user', { tenantId, profileData });
+  return { tempPassword: data.tempPassword, userId: data.userId };
 }
 
 /** Clears the must_change_password flag after employee sets their own password.
  *  Uses a SECURITY DEFINER RPC because employees have no UPDATE policy on profiles. */
 export async function clearMustChangePassword() {
   const { error } = await supabase.rpc('clear_must_change_password');
+  return { error };
+}
+
+/**
+ * Records the employee's current password in employee_current_passwords, a
+ * table only superadmin can read (see 20260810_employee_current_password.sql).
+ * Called right after an employee sets their own password for the first time,
+ * since profiles.temp_password is left stale at that point on purpose.
+ */
+export async function recordCurrentPassword(password) {
+  const { error } = await supabase.rpc('set_current_password', { p_password: password });
   return { error };
 }

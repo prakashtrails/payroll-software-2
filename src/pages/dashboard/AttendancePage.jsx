@@ -4,13 +4,15 @@ import Header from '@/components/Header';
 import Modal from '@/components/Modal';
 import { showToast } from '@/components/Toast';
 import { useAuth } from '@/context/AuthContext';
+import { useOutletView } from '@/context/OutletViewContext';
 import {
   fetchMyMonthAttendance,
   fetchTeamAttendance, saveManualAttendance, fetchAttendanceAuditLog,
-} from '@/services/attendanceService';import { listHolidays } from '@/services/tenantService';import { todayStr, dateStr, fmtTime12, fmtDuration, monthLabel, getInitials, getAvatarColor } from '@/lib/helpers';
+} from '@/services/attendanceService';import { listHolidays } from '@/services/tenantService';import { todayStr, dateStr, fmtTime12, fmtDuration, monthLabel, getInitials, getAvatarColor, fullName, scopedToOutlet } from '@/lib/helpers';
 
 export default function AttendancePage() {
   const { profile, tenant } = useAuth();
+  const { outletProfileIds } = useOutletView();
   const [tab, setTab] = useState('my');
   const [attMonth, setAttMonth] = useState(new Date().getMonth());
   const [attYear, setAttYear] = useState(new Date().getFullYear());
@@ -62,7 +64,8 @@ export default function AttendancePage() {
 
   const fetchTeamData = useCallback(async () => {
     if (!tenant) return;
-    const { employees: emps, departments: depts, records: attRecords } = await fetchTeamAttendance(tenant.id, teamDate);
+    const { employees: allEmps, departments: depts, records: attRecords } = await fetchTeamAttendance(tenant.id, teamDate);
+    const emps = scopedToOutlet(allEmps, outletProfileIds, 'id');
     setEmployees(emps);
     setDepartments(depts);
 
@@ -90,11 +93,11 @@ export default function AttendancePage() {
         const d = new Date(teamDate);
         if (d.getDay() === 0 || d.getDay() === 6) { status = 'Weekend'; badgeCls = 'badge-info'; }
       }
-      return { ...emp, clockInT, clockOutT, hours, status, badgeCls };
+      return { ...emp, clockInT, clockOutT, hours, status, badgeCls, outOfGeofence: rec?.out_of_geofence || false };
     });
 
     setTeamData(rows);
-  }, [tenant, teamDate, teamDept]);
+  }, [tenant, teamDate, teamDept, outletProfileIds]);
 
   useEffect(() => { if (tab === 'team') fetchTeamData(); }, [tab, fetchTeamData]);
 
@@ -319,14 +322,19 @@ export default function AttendancePage() {
                         <td>
                           <div className="emp-cell">
                             <div className="emp-avatar" style={{ background: `linear-gradient(135deg, ${getAvatarColor(r.id)})` }}>{getInitials(r.first_name, r.last_name)}</div>
-                            <div><div className="emp-name">{r.first_name} {r.last_name}</div><div className="emp-role">{r.id.slice(0, 8)}</div></div>
+                            <div><div className="emp-name">{fullName(r)}</div><div className="emp-role">{r.id.slice(0, 8)}</div></div>
                           </div>
                         </td>
                         <td>{r.department || '—'}</td>
                         <td>{r.clockInT}</td>
                         <td>{r.clockOutT}</td>
                         <td>{r.hours}</td>
-                        <td><span className={`badge ${r.badgeCls}`}>{r.status}</span></td>
+                        <td>
+                          <span className={`badge ${r.badgeCls}`}>{r.status}</span>
+                          {r.outOfGeofence && (
+                            <i className="fas fa-map-marker-alt" style={{ marginLeft: 6, color: 'var(--warning)' }} title="Punch was outside the configured geofence" />
+                          )}
+                        </td>
                         <td>
                           <button className="btn btn-outline btn-sm" onClick={() => { setManualForm({ profile_id: r.id, date: teamDate, clockIn: tenant?.shift_start || '', clockOut: tenant?.shift_end || '', status: 'Present', reason: '' }); setShowManual(true); }}>
                             <i className="fas fa-edit" />
@@ -377,14 +385,14 @@ export default function AttendancePage() {
                             <div className="emp-avatar" style={{ background: `linear-gradient(135deg, ${getAvatarColor(log.profile_id)})`, width: 28, height: 28, fontSize: 10 }}>
                               {getInitials(log.target_profile?.first_name, log.target_profile?.last_name)}
                             </div>
-                            <span className="emp-name" style={{ fontSize: 12 }}>{log.target_profile?.first_name} {log.target_profile?.last_name}</span>
+                            <span className="emp-name" style={{ fontSize: 12 }}>{fullName(log.target_profile)}</span>
                           </div>
                         </td>
                         <td><span className={`badge ${log.action === 'create' ? 'badge-success' : 'badge-warning'}`}>{log.action === 'create' ? 'Created' : 'Updated'}</span></td>
                         <td style={{ color: 'var(--text-muted)' }}>{log.old_status || '—'}</td>
                         <td><strong>{log.new_status}</strong></td>
                         <td style={{ fontSize: 11, color: 'var(--text-muted)' }}>{log.old_hours != null ? `${log.old_hours}h` : '—'} → {log.new_hours != null ? `${log.new_hours}h` : '—'}</td>
-                        <td style={{ fontSize: 12 }}>{log.changed_by_profile?.first_name} {log.changed_by_profile?.last_name}</td>
+                        <td style={{ fontSize: 12 }}>{fullName(log.changed_by_profile)}</td>
                         <td style={{ fontSize: 11, maxWidth: 200, whiteSpace: 'normal' }}>{log.reason || '—'}</td>
                         <td style={{ fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{new Date(log.created_at).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</td>
                       </tr>
@@ -408,7 +416,7 @@ export default function AttendancePage() {
           <label className="form-label">Employee *</label>
           <select className="form-select" value={manualForm.profile_id} onChange={(e) => setManualForm({ ...manualForm, profile_id: e.target.value })}>
             <option value="">Select</option>
-            {employees.map((e) => <option key={e.id} value={e.id}>{e.first_name} {e.last_name}</option>)}
+            {employees.map((e) => <option key={e.id} value={e.id}>{fullName(e)}</option>)}
           </select>
         </div>
         <div className="form-group">

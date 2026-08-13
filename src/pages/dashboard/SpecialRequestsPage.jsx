@@ -2,8 +2,9 @@ import React, { useEffect, useState, useCallback } from 'react';
 import Header from '@/components/Header';
 import { showToast } from '@/components/Toast';
 import { useAuth } from '@/context/AuthContext';
+import { useOutletView } from '@/context/OutletViewContext';
 import { listAllSpecialRequests, updateSpecialRequestStatus } from '@/services/specialRequestService';
-import { fmt } from '@/lib/helpers';
+import { fmt, fullName, scopedToOutlet } from '@/lib/helpers';
 
 const TYPE_BADGE = {
   Overtime: 'badge-info',
@@ -21,10 +22,12 @@ function getOtPay(req) {
 
 export default function SpecialRequestsPage() {
   const { tenant, profile } = useAuth();
+  const { outletProfileIds } = useOutletView();
   const [requests, setRequests] = useState([]);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState('Pending');
   const [typeFilter, setTypeFilter] = useState('All');
+  const [acting, setActing] = useState(null); // id of the request currently being approved/rejected
 
   const isManager = profile?.role === 'manager';
 
@@ -35,20 +38,26 @@ export default function SpecialRequestsPage() {
       // Manager only sees requests routed to their level; admin sees all
       const { data, error } = await listAllSpecialRequests(tenant.id, isManager ? 'manager' : null);
       if (error) showToast(error.message, 'error');
-      else setRequests(data);
+      else setRequests(scopedToOutlet(data, outletProfileIds));
     } finally {
       setLoading(false);
     }
-  }, [tenant, isManager]);
+  }, [tenant, isManager, outletProfileIds]);
 
   useEffect(() => { fetchRequests(); }, [fetchRequests]);
 
   const handleStatusChange = async (id, status) => {
-    const { error } = await updateSpecialRequestStatus(id, status, profile.id, profile.role);
-    if (error) showToast(error.message, 'error');
-    else {
-      showToast(`Request ${status.toLowerCase()} successfully`, 'success');
-      fetchRequests();
+    if (acting) return;
+    setActing(id);
+    try {
+      const { error } = await updateSpecialRequestStatus(id, status, profile.id, profile.role);
+      if (error) showToast(error.message, 'error');
+      else {
+        showToast(`Request ${status.toLowerCase()} successfully`, 'success');
+        fetchRequests();
+      }
+    } finally {
+      setActing(null);
     }
   };
 
@@ -115,7 +124,7 @@ export default function SpecialRequestsPage() {
           </div>
         </div>
 
-        <div className="table-responsive">
+        <div className="table-wrap">
           <table className="table">
             <thead>
               <tr>
@@ -137,7 +146,7 @@ export default function SpecialRequestsPage() {
                 <tr key={req.id}>
                   <td>
                     <div style={{ fontWeight: 600 }}>
-                      {req.profile?.first_name} {req.profile?.last_name}
+                      {fullName(req.profile)}
                     </div>
                     <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{req.profile?.department}</div>
                   </td>
@@ -202,6 +211,7 @@ export default function SpecialRequestsPage() {
                                 ? 'Approve — full day, no deduction'
                                 : 'Approve'
                           }
+                          disabled={acting === req.id}
                           onClick={() => handleStatusChange(req.id, 'Approved')}
                         >
                           <i className="fas fa-check" />
@@ -209,6 +219,7 @@ export default function SpecialRequestsPage() {
                         <button
                           className="btn btn-sm btn-danger"
                           title="Reject"
+                          disabled={acting === req.id}
                           onClick={() => handleStatusChange(req.id, 'Rejected')}
                         >
                           <i className="fas fa-times" />

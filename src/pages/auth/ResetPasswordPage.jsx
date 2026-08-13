@@ -3,6 +3,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '@/lib/supabase';
 import { ErrorBanner, SuccessBanner } from '@/components/OtpVerification';
+import { validatePassword } from '@/lib/helpers';
 
 const ICON_STYLE = {
   position: 'absolute', left: 13, top: '50%', transform: 'translateY(-50%)',
@@ -28,47 +29,63 @@ export default function ResetPasswordPage() {
 
   // Verify that user has a valid password recovery session
   useEffect(() => {
+    let cancelled = false;
+
     const checkSession = async () => {
       try {
         // Supabase will automatically parse the recovery token from URL
         // when detectSessionInUrl is enabled
         const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-        
+        if (cancelled) return;
+
         if (sessionError) {
           setError('Failed to verify session. ' + sessionError.message);
           setIsValidSession(false);
-        } else if (session?.user) {
+          setCheckingSession(false);
+          return;
+        }
+
+        if (session?.user) {
           // Valid session found (recovery link was processed)
           setIsValidSession(true);
-        } else {
-          // No session - check if there's a recovery token in the URL
-          const hash = window.location.hash;
-          if (hash.includes('type=recovery') && hash.includes('access_token')) {
-            // Token is present but not yet processed, should be picked up by detectSessionInUrl
-            // Give it a moment and check again
-            setTimeout(async () => {
-              const { data: { session: newSession } } = await supabase.auth.getSession();
-              if (newSession?.user) {
-                setIsValidSession(true);
-              } else {
-                setError('Invalid or expired password reset link. Please request a new one.');
-                setIsValidSession(false);
-              }
-            }, 500);
-          } else {
-            setError('Invalid or expired password reset link. Please request a new one.');
-            setIsValidSession(false);
-          }
+          setCheckingSession(false);
+          return;
         }
+
+        // No session - check if there's a recovery token in the URL
+        const hash = window.location.hash;
+        if (hash.includes('type=recovery') && hash.includes('access_token')) {
+          // Token is present but not yet processed, should be picked up by detectSessionInUrl.
+          // Keep showing the loading state until this delayed re-check actually resolves —
+          // resolving checkingSession immediately here flashed a false "invalid link" error.
+          setTimeout(async () => {
+            if (cancelled) return;
+            const { data: { session: newSession } } = await supabase.auth.getSession();
+            if (cancelled) return;
+            if (newSession?.user) {
+              setIsValidSession(true);
+            } else {
+              setError('Invalid or expired password reset link. Please request a new one.');
+              setIsValidSession(false);
+            }
+            setCheckingSession(false);
+          }, 500);
+          return;
+        }
+
+        setError('Invalid or expired password reset link. Please request a new one.');
+        setIsValidSession(false);
+        setCheckingSession(false);
       } catch (err) {
+        if (cancelled) return;
         setError('Failed to verify session: ' + err.message);
         setIsValidSession(false);
-      } finally {
         setCheckingSession(false);
       }
     };
 
     checkSession();
+    return () => { cancelled = true; };
   }, []);
 
   const handleReset = async (e) => {
@@ -82,24 +99,14 @@ export default function ResetPasswordPage() {
       return;
     }
 
-    if (newPassword.length < 8) {
-      setError('Password must be at least 8 characters long.');
+    const pwError = validatePassword(newPassword);
+    if (pwError) {
+      setError(pwError);
       return;
     }
 
     if (newPassword !== confirmPassword) {
       setError('Passwords do not match.');
-      return;
-    }
-
-    // Check password strength
-    const hasUpperCase = /[A-Z]/.test(newPassword);
-    const hasLowerCase = /[a-z]/.test(newPassword);
-    const hasNumbers = /\d/.test(newPassword);
-    const hasSpecialChar = /[!@#$%^&*(),.?":{}|<>]/.test(newPassword);
-
-    if (!hasUpperCase || !hasLowerCase || !hasNumbers) {
-      setError('Password must contain uppercase, lowercase, and numbers.');
       return;
     }
 

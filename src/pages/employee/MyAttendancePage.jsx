@@ -12,7 +12,7 @@ import {
 import { listHolidays } from '@/services/tenantService';
 import { todayStr, dateStr, fmtTime12, fmtDuration, monthLabel } from '@/lib/helpers';
 
-export default function MyAttendancePage() {
+export function AttendanceContent() {
   const { profile, tenant } = useAuth();
   const [attMonth, setAttMonth]       = useState(new Date().getMonth());
   const [attYear, setAttYear]         = useState(new Date().getFullYear());
@@ -168,7 +168,6 @@ export default function MyAttendancePage() {
 
   return (
     <>
-      <Header title="My Attendance" breadcrumb={monthLabel(attMonth, attYear)} />
       <div className="page-content">
 
         {/* Summary bar */}
@@ -328,6 +327,15 @@ export default function MyAttendancePage() {
           />
         </div>
       </Modal>
+    </>
+  );
+}
+
+export default function MyAttendancePage() {
+  return (
+    <>
+      <Header title="My Attendance" breadcrumb="Track your attendance" />
+      <AttendanceContent />
     </>
   );
 }

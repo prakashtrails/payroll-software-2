@@ -1,10 +1,12 @@
-import React, { useState } from 'react';
-import { Outlet } from 'react-router-dom';
+import React, { useState, useEffect } from 'react';
+import { Outlet, useLocation } from 'react-router-dom';
 import Sidebar from '../components/Sidebar';
 import { ToastContainer } from '../components/Toast';
 import { useAuth } from '@/context/AuthContext';
+import { OutletViewProvider } from '@/context/OutletViewContext';
 import { supabase } from '@/lib/supabase';
-import { clearMustChangePassword } from '@/services/employeeService';
+import { clearMustChangePassword, recordCurrentPassword } from '@/services/employeeService';
+import { validatePassword } from '@/lib/helpers';
 
 // ─── Force-password-change modal ─────────────────────────────────────────────
 
@@ -20,8 +22,8 @@ function ForcePasswordChange({ onDone }) {
     ev.preventDefault();
     setError('');
     const { password, confirm } = form;
-    if (!password) return setError('Please enter a new password.');
-    if (password.length < 8) return setError('Password must be at least 8 characters.');
+    const pwError = validatePassword(password);
+    if (pwError) return setError(pwError);
     if (password !== confirm) return setError('Passwords do not match.');
 
     setSaving(true);
@@ -31,6 +33,10 @@ function ForcePasswordChange({ onDone }) {
 
       const { error: dbError } = await clearMustChangePassword();
       if (dbError) throw new Error('Could not save password change: ' + dbError.message);
+
+      // Best-effort — superadmin's live-password record shouldn't block the
+      // employee's own password change if it fails.
+      recordCurrentPassword(password);
 
       onDone();
     } catch (err) {
@@ -88,7 +94,7 @@ function ForcePasswordChange({ onDone }) {
               <input
                 className="form-input"
                 type={showPw ? 'text' : 'password'}
-                placeholder="Min. 8 characters"
+                placeholder="Min. 8 chars, upper, lower & number"
                 value={form.password}
                 onChange={set('password')}
                 autoFocus
@@ -143,22 +149,36 @@ function ForcePasswordChange({ onDone }) {
 
 export default function DashboardLayout() {
   const { profile, refreshProfile } = useAuth();
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const location = useLocation();
+
+  // Auto-close the mobile drawer whenever the route changes.
+  useEffect(() => { setSidebarOpen(false); }, [location.pathname]);
 
   const handlePasswordSet = async () => {
     await refreshProfile();
   };
 
   return (
-    <div className="layout">
-      <Sidebar />
-      <main className="main-content">
-        <Outlet />
-      </main>
-      <ToastContainer />
+    <OutletViewProvider>
+      <div className="layout">
+        <button
+          className="mobile-menu-btn"
+          onClick={() => setSidebarOpen(true)}
+          aria-label="Open menu"
+        >
+          <i className="fas fa-bars" />
+        </button>
+        <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
+        <main className="main-content">
+          <Outlet />
+        </main>
+        <ToastContainer />
 
-      {profile?.must_change_password && (
-        <ForcePasswordChange onDone={handlePasswordSet} />
-      )}
-    </div>
+        {profile?.must_change_password && (
+          <ForcePasswordChange onDone={handlePasswordSet} />
+        )}
+      </div>
+    </OutletViewProvider>
   );
 }
