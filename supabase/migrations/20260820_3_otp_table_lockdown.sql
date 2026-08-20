@@ -1,0 +1,16 @@
+-- otp_table's only RLS policy ("service_role_all") had USING(true) applied to
+-- PUBLIC (not restricted "TO service_role" despite the name), with cmd '*'
+-- (select/insert/update/delete) -- and anon/authenticated both hold the
+-- standard PostgREST table grants. Net effect: anyone with just the public
+-- anon key, no login required, could read or overwrite any row -- including
+-- the `otp` column (a live login/verification code) for any user_id, or
+-- reset `attempts` to defeat the brute-force lockout added in
+-- 20260714_otp_attempt_limit.sql.
+--
+-- send-otp/verify-otp (supabase/functions/send-otp, verify-otp) only ever
+-- touch this table with the service-role key, which bypasses RLS regardless
+-- of policies present -- this policy was never actually needed for them to
+-- work. Dropping it leaves RLS enabled with zero policies for anon/
+-- authenticated, i.e. default-deny at the API layer, while the edge
+-- functions keep working unchanged.
+DROP POLICY IF EXISTS "service_role_all" ON otp_table;
