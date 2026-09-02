@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import * as XLSX from 'xlsx';
 import Header from '@/components/Header';
 import { showToast } from '@/components/Toast';
@@ -40,6 +40,33 @@ export default function EmployeeCalendarPage() {
   const [loading, setLoading] = useState(false);
   const [viewMonth, setViewMonth] = useState(now.getMonth()); // 0-based
   const [viewYear, setViewYear] = useState(now.getFullYear());
+  const [searchTerm, setSearchTerm] = useState('');
+  const [showDropdown, setShowDropdown] = useState(false);
+  const searchRef = useRef(null);
+
+  // Keep the search box text in sync with the selected employee
+  useEffect(() => {
+    if (!selectedId) { setSearchTerm(''); return; }
+    const emp = employees.find(e => e.id === selectedId);
+    if (emp) setSearchTerm(fullName(emp));
+  }, [selectedId, employees]);
+
+  // Close the search dropdown when clicking outside it
+  useEffect(() => {
+    function handleClickOutside(e) {
+      if (searchRef.current && !searchRef.current.contains(e.target)) setShowDropdown(false);
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const filteredEmployees = employees.filter((emp) => {
+    const q = searchTerm.trim().toLowerCase();
+    if (!q) return true;
+    const name = fullName(emp).toLowerCase();
+    const dept = (emp.department || '').toLowerCase();
+    return name.includes(q) || dept.includes(q);
+  });
 
   useEffect(() => {
     if (!tenant) return;
@@ -174,20 +201,57 @@ export default function EmployeeCalendarPage() {
         <div className="card-header" style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <h3 style={{ margin: 0, whiteSpace: 'nowrap' }}>Select Employee</h3>
 
-          <div style={{ flex: 1, minWidth: 200, maxWidth: 340 }}>
-            <select
-              className="form-select"
-              value={selectedId}
-              onChange={e => setSelectedId(e.target.value)}
-              disabled={loadingEmps}
-            >
-              <option value="">— Choose an employee —</option>
-              {employees.map(emp => (
-                <option key={emp.id} value={emp.id}>
-                  {fullName(emp)}{emp.department ? ` (${emp.department})` : ''}
-                </option>
-              ))}
-            </select>
+          <div ref={searchRef} style={{ flex: 1, minWidth: 200, maxWidth: 340, position: 'relative' }}>
+            <div style={{ position: 'relative' }}>
+              <i className="fas fa-search" style={{
+                position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)',
+                fontSize: 12, color: 'var(--text-muted)', pointerEvents: 'none',
+              }} />
+              <input
+                type="text"
+                className="form-select"
+                style={{ paddingLeft: 28, width: '100%' }}
+                placeholder={loadingEmps ? 'Loading employees…' : 'Search employee by name or department…'}
+                value={searchTerm}
+                disabled={loadingEmps}
+                onChange={e => {
+                  setSearchTerm(e.target.value);
+                  setShowDropdown(true);
+                  if (!e.target.value) setSelectedId('');
+                }}
+                onFocus={() => setShowDropdown(true)}
+              />
+            </div>
+
+            {showDropdown && !loadingEmps && (
+              <div style={{
+                position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 20,
+                background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 8,
+                marginTop: 4, maxHeight: 260, overflowY: 'auto',
+                boxShadow: '0 4px 12px rgba(0,0,0,0.12)',
+              }}>
+                {filteredEmployees.length === 0 ? (
+                  <div style={{ padding: '10px 14px', fontSize: 13, color: 'var(--text-muted)' }}>
+                    No employees found.
+                  </div>
+                ) : filteredEmployees.map(emp => (
+                  <div
+                    key={emp.id}
+                    onClick={() => {
+                      setSelectedId(emp.id);
+                      setSearchTerm(fullName(emp));
+                      setShowDropdown(false);
+                    }}
+                    style={{
+                      padding: '8px 14px', fontSize: 13, cursor: 'pointer',
+                      background: emp.id === selectedId ? 'var(--primary-light, #ede9fe)' : 'transparent',
+                    }}
+                  >
+                    {fullName(emp)}{emp.department ? ` · ${emp.department}` : ''}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           {selectedId && (

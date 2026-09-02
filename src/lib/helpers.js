@@ -17,6 +17,21 @@ export const escapeHtml = (value) =>
 export const normalizePhone = (phone) => String(phone || '').replace(/\D/g, '').slice(-10);
 
 /**
+ * "Today" as YYYY-MM-DD in the browser's LOCAL calendar day — not
+ * `toISOString().slice(0,10)`, which reads the UTC date. For IST (UTC+5:30)
+ * that UTC read lags the real local day by up to 5.5 hours right after local
+ * midnight, so a holiday match computed off it can miss the actual holiday
+ * morning and then bleed a day late into the morning after. Holiday/festival
+ * "is today X" checks must use this, not the UTC shortcut.
+ */
+export const getLocalDateString = (date = new Date()) => {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+};
+
+/**
  * Employees imported without an email need SOME identifier for their Supabase
  * Auth account — phone-based auth isn't configured in this project (see
  * otpService.js), so instead of a real email we synthesize a deterministic,
@@ -71,6 +86,50 @@ export const getInitials = (firstName, lastName) =>
 export const fullName = (p) =>
   [p?.first_name, p?.middle_name, p?.last_name].filter(Boolean).join(' ');
 
+/**
+ * What to show in a credentials modal for a profile-shaped object that was
+ * fetched with the `employee_current_passwords(password, updated_at)` embed
+ * (see listEmployees / listOutlets).
+ *
+ * create-employee-user and reset-employee-password now both write the
+ * system-issued temp password into employee_current_passwords immediately
+ * (not just once the employee sets their own), and set_current_password
+ * overwrites that same row when they do — so the row is the single source of
+ * truth for "whatever unlocks this account right now" going forward.
+ * must_change_password only decides the *label*: still the system-issued
+ * value (true) vs. one the employee personalized (false).
+ *
+ * The one gap left is accounts from before this change, or ones that never
+ * went through any of those three paths (e.g. a self-service company signup,
+ * where the founder typed their own password client-side and it was never
+ * relayed anywhere) — those fall back to temp_password, or an explicit
+ * "unknown" state if even that's stale/missing.
+ */
+export function resolveEmployeeCredentials(emp) {
+  const cpEntry = Array.isArray(emp?.employee_current_passwords)
+    ? emp.employee_current_passwords[0]
+    : emp?.employee_current_passwords;
+  const currentPassword = cpEntry?.password;
+  if (currentPassword) {
+    return {
+      password: currentPassword,
+      label: emp?.must_change_password === false ? 'Current Password' : 'Temporary Password',
+      note: '',
+    };
+  }
+  if (emp?.temp_password && emp?.must_change_password !== false) {
+    return { password: emp.temp_password, label: 'Temporary Password', note: '' };
+  }
+  if (emp?.temp_password) {
+    return {
+      password: '',
+      label: 'Password Unknown',
+      note: 'They already changed this password, but the change was never recorded for viewing here. Use Reset Password to issue a new one.',
+    };
+  }
+  return { password: '', label: 'No Password On File', note: 'This account has no temporary or recorded password on file.' };
+}
+
 export const AVATAR_COLORS = [
   '#00AEEF,#0078A8', '#8B5CF6,#6D28D9', '#22C55E,#16A34A',
   '#FF6B35,#E5501E', '#F59E0B,#D97706', '#EC4899,#DB2777',
@@ -118,6 +177,28 @@ export const diffHours = (t1, t2) => {
   // instead of clamping to 0, which silently zeroed every overnight employee's hours.
   if (mins < 0) mins += 24 * 60;
   return mins / 60;
+};
+
+// Elapsed seconds worked today, ticking every second even for the still-open
+// punch — diffHours() alone only has minute precision (timeStr drops seconds),
+// so the seconds digit of a live timer would otherwise sit frozen for up to 59s.
+export const elapsedSecondsToday = (punches) => {
+  if (!punches?.length) return 0;
+  const sorted = [...punches].sort((a, b) => a.punch_time.localeCompare(b.punch_time));
+  const ins  = sorted.filter((p) => p.punch_type === 'in');
+  const outs = sorted.filter((p) => p.punch_type === 'out');
+  let secs = 0;
+  const now = new Date();
+  for (let i = 0; i < ins.length; i++) {
+    if (outs[i]) {
+      secs += diffHours(ins[i].punch_time, outs[i].punch_time) * 3600;
+    } else {
+      const [h, m] = ins[i].punch_time.split(':').map(Number);
+      const inDate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), h, m, 0);
+      secs += Math.max(0, (now - inDate) / 1000);
+    }
+  }
+  return secs;
 };
 
 export const fmtDuration = (hrs) => {
@@ -432,6 +513,39 @@ export function checkGeofence(punchLat, punchLng, outlet, tenant) {
       : null;
   if (!center || punchLat == null || punchLng == null) return null;
   return distanceMeters(punchLat, punchLng, center.lat, center.lng) > center.radius;
+}
+
+/**
+ * Multi-outlet variant of checkGeofence: a punch counts as "in fence" if it
+ * falls inside ANY of the profile's accessible outlets (their home outlet plus
+ * any extra clock-in access grants — see profile_outlet_access). Falls back to
+ * the single-outlet check when only one outlet (or none) is passed, so a
+ * profile with no extra access behaves exactly as before.
+ */
+export function checkGeofenceMulti(punchLat, punchLng, outlets, tenant) {
+  if (punchLat == null || punchLng == null) return null;
+  const candidates = outlets && outlets.length ? outlets : [null];
+  let anyConfigured = false;
+  for (const outlet of candidates) {
+    const result = checkGeofence(punchLat, punchLng, outlet, tenant);
+    if (result === null) continue; // no geofence configured for this outlet
+    anyConfigured = true;
+    if (result === false) return false; // inside this outlet's fence — good enough
+  }
+  return anyConfigured ? true : null;
+}
+
+/**
+ * True if geofencing has any coordinates set up at all — either the tenant
+ * default or an override on any of the given outlets. Used to tell "no
+ * location provided because geofencing isn't configured" (fine) apart from
+ * "no location provided even though geofencing IS configured" (suspicious —
+ * a correctly-behaving client always resolves a location first in that case,
+ * so a missing one here means the check was skipped or bypassed client-side).
+ */
+export function geofenceIsConfigured(outlets, tenant) {
+  if (tenant?.geofence_lat != null && tenant?.geofence_lng != null) return true;
+  return !!(outlets || []).some((o) => o?.geofence_lat != null && o?.geofence_lng != null);
 }
 
 // PF deduction: 12% of CTC if CTC ≤ ₹15,000, else ₹1,800 (both pro-rated by work days)

@@ -34,9 +34,14 @@ export async function getOrCreateQuota(tenantId, profileId) {
   return data;
 }
 
-/** Returns 'self' | 'manager' | 'admin' based on how many approvals used this month. */
-export function determineApproverRole(quota) {
-  if (quota.self_approved_count < SELF_LIMIT) return 'self';
+/**
+ * Returns 'self' | 'manager' | 'admin' based on how many approvals used this month.
+ * `selfLimit` defaults to the global SELF_LIMIT (regularize/special requests always use
+ * this); leave requests instead pass the tenant's configured leave_auto_approval_limit
+ * (0 when a tenant has turned auto-approval off entirely) — see leaveService.requestLeave.
+ */
+export function determineApproverRole(quota, selfLimit = SELF_LIMIT) {
+  if (selfLimit > 0 && quota.self_approved_count < selfLimit) return 'self';
   if (quota.manager_approved_count < MANAGER_LIMIT) return 'manager';
   return 'admin';
 }
@@ -59,8 +64,13 @@ export async function incrementManagerCount(tenantId, profileId) {
   if (error) throw error;
 }
 
-/** Fetch current month's quota for display on employee pages. */
-export async function fetchMyQuota(tenantId, profileId) {
+/**
+ * Fetch current month's quota for display on employee pages.
+ * `selfLimitOverride` lets the leave page show the tenant's configured
+ * leave_auto_approval_limit instead of the global SELF_LIMIT that regularize/
+ * special requests use — pass null/undefined to keep the global default.
+ */
+export async function fetchMyQuota(tenantId, profileId, selfLimitOverride = null) {
   const { month, year } = currentMonthYear();
   const { data } = await supabase
     .from('request_quotas')
@@ -73,7 +83,7 @@ export async function fetchMyQuota(tenantId, profileId) {
 
   return {
     selfUsed:     data?.self_approved_count    || 0,
-    selfLimit:    SELF_LIMIT,
+    selfLimit:    selfLimitOverride ?? SELF_LIMIT,
     managerUsed:  data?.manager_approved_count || 0,
     managerLimit: MANAGER_LIMIT,
   };

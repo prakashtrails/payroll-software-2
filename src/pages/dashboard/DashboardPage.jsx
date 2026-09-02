@@ -8,8 +8,9 @@ import { useOutletView } from '@/context/OutletViewContext';
 import { fetchDashboardStats } from '@/services/tenantService';
 import { fetchTodayAttendanceSummary, fetchMyMonthAttendance, clockIn as svcClockIn, clockOut as svcClockOut } from '@/services/attendanceService';
 import { fetchRecentUpdates } from '@/services/activityFeedService';
-import { todayStr, timeStr, fmtTime12, diffHours, monthLabel } from '@/lib/helpers';
+import { todayStr, timeStr, fmtTime12, diffHours, monthLabel, elapsedSecondsToday } from '@/lib/helpers';
 import { showToast } from '@/components/Toast';
+import { useGeofenceClock } from '@/hooks/useGeofenceClock';
 
 export default function GeneralDashboard({ embedded = false }) {
   const { tenant, profile } = useAuth();
@@ -27,6 +28,9 @@ export default function GeneralDashboard({ embedded = false }) {
   const [updatesLoading, setUpdatesLoading] = useState(true);
   const clockRef = useRef(null);
   const timerRef = useRef(null);
+  const isClockedInRef = useRef(false); // ref mirror of isClockedIn for use inside stable callbacks
+
+  useEffect(() => { isClockedInRef.current = isClockedIn; }, [isClockedIn]);
 
   const fetchMyAttendance = useCallback(async () => {
     if (!profile || !tenant) return;
@@ -85,14 +89,7 @@ export default function GeneralDashboard({ embedded = false }) {
         setTimerDisplay('00:00:00');
         return;
       }
-      const sorted = [...todayRec.punches].sort((a, b) => a.punch_time.localeCompare(b.punch_time));
-      let totalSecs = 0;
-      const ins = sorted.filter((p) => p.punch_type === 'in');
-      const outs = sorted.filter((p) => p.punch_type === 'out');
-      for (let i = 0; i < ins.length; i++) {
-        const outTime = outs[i]?.punch_time || timeStr(new Date());
-        totalSecs += diffHours(ins[i].punch_time, outTime) * 3600;
-      }
+      const totalSecs = elapsedSecondsToday(todayRec.punches);
       const h = Math.floor(totalSecs / 3600);
       const m = Math.floor((totalSecs % 3600) / 60);
       const s = Math.floor(totalSecs % 60);
@@ -103,11 +100,30 @@ export default function GeneralDashboard({ embedded = false }) {
     return () => clearInterval(timerRef.current);
   }, [myPunches]);
 
+  // ── Auto clock-out (called internally, bypasses geofence check) ──────────────
+  const doAutoClockOut = useCallback(async (lat, lng) => {
+    if (!isClockedInRef.current || !profile) return;
+    setAttLoading(true);
+    try {
+      const { total } = await svcClockOut(profile.id, { lat, lng }, { allowOutsideGeofence: true });
+      showToast(`Auto clocked out — left office area. Worked ${Math.floor(total)}h ${Math.round((total - Math.floor(total)) * 60)}m`, 'warning');
+      await fetchMyAttendance();
+    } catch (err) {
+      showToast('Auto clock-out failed: ' + err.message, 'error');
+    } finally {
+      setAttLoading(false);
+    }
+  }, [profile, fetchMyAttendance]);
+
+  const { geofenceEnabled, insideFence, locationStatus, resolveClockLocation, isWfhToday } =
+    useGeofenceClock({ profile, tenant, isClockedIn, onAutoClockOut: doAutoClockOut });
+
   const handleClockIn = async () => {
     if (isClockedIn || !tenant || !profile) return;
     setAttLoading(true);
     try {
-      await svcClockIn(tenant.id, profile.id, tenant);
+      const location = await resolveClockLocation();
+      await svcClockIn(tenant.id, profile.id, tenant, location);
       showToast(`Clocked in at ${fmtTime12(timeStr(new Date()))}`, 'success');
       await fetchMyAttendance();
     } catch (err) {
@@ -121,7 +137,8 @@ export default function GeneralDashboard({ embedded = false }) {
     if (!isClockedIn || !profile) return;
     setAttLoading(true);
     try {
-      const { total } = await svcClockOut(profile.id);
+      const location = await resolveClockLocation();
+      const { total } = await svcClockOut(profile.id, location);
       showToast(`Clocked out. Worked ${Math.floor(total)}h ${Math.round((total - Math.floor(total)) * 60)}m`, 'success');
       await fetchMyAttendance();
     } catch (err) {
@@ -159,6 +176,24 @@ export default function GeneralDashboard({ embedded = false }) {
                     <span className="pulse" />
                     <span>{isClockedIn ? 'Currently Working' : (myPunches?.punches?.length ? 'Clocked Out' : 'Not Clocked In')}</span>
                   </div>
+                  {isWfhToday ? (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8, fontSize: 11, color: '#4ade80' }}>
+                      <i className="fas fa-house-laptop" />
+                      <span>Approved WFH today — clock in from anywhere</span>
+                    </div>
+                  ) : geofenceEnabled ? (
+                    <div style={{
+                      display: 'flex', alignItems: 'center', gap: 6, marginTop: 8, fontSize: 11,
+                      color: insideFence === true ? '#4ade80' : insideFence === false ? '#f87171' : 'rgba(255,255,255,.5)',
+                    }}>
+                      <i className="fas fa-location-dot" />
+                      <span>{locationStatus}</span>
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: 10, color: 'rgba(255,255,255,.4)', marginTop: 8 }}>
+                      <i className="fas fa-location-dot" /> Geofencing not configured
+                    </div>
+                  )}
                 </div>
 
                 <div style={{ textAlign: 'center' }}>
@@ -167,10 +202,10 @@ export default function GeneralDashboard({ embedded = false }) {
                 </div>
 
                 <div className="clock-actions">
-                  <button className="clock-btn clock-in" onClick={handleClockIn} disabled={isClockedIn || attLoading}>
+                  <button className="clock-btn clock-in" onClick={handleClockIn} disabled={isClockedIn || attLoading || (geofenceEnabled && insideFence === false)}>
                     <i className="fas fa-sign-in-alt" /> Clock In
                   </button>
-                  <button className="clock-btn clock-out" onClick={handleClockOut} disabled={!isClockedIn || attLoading}>
+                  <button className="clock-btn clock-out" onClick={handleClockOut} disabled={!isClockedIn || attLoading || (geofenceEnabled && insideFence === false)}>
                     <i className="fas fa-sign-out-alt" /> Clock Out
                   </button>
                 </div>

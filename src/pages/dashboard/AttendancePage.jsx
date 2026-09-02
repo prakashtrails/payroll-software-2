@@ -1,32 +1,28 @@
 import React from 'react';
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
 import Header from '@/components/Header';
 import Modal from '@/components/Modal';
 import { showToast } from '@/components/Toast';
 import { useAuth } from '@/context/AuthContext';
 import { useOutletView } from '@/context/OutletViewContext';
 import {
-  fetchMyMonthAttendance,
-  fetchTeamAttendance, saveManualAttendance, fetchAttendanceAuditLog,
-} from '@/services/attendanceService';import { listHolidays } from '@/services/tenantService';import { todayStr, dateStr, fmtTime12, fmtDuration, monthLabel, getInitials, getAvatarColor, fullName, scopedToOutlet } from '@/lib/helpers';
+  fetchTeamAttendance, fetchAllTenantAttendance, saveManualAttendance, fetchAttendanceAuditLog,
+} from '@/services/attendanceService';
+import { todayStr, fmtTime12, fmtDuration, getInitials, getAvatarColor, fullName, scopedToOutlet } from '@/lib/helpers';
 
 export default function AttendancePage() {
   const { profile, tenant } = useAuth();
   const { outletProfileIds } = useOutletView();
-  const [tab, setTab] = useState('my');
-  const [attMonth, setAttMonth] = useState(new Date().getMonth());
-  const [attYear, setAttYear] = useState(new Date().getFullYear());
-
-  // My Attendance
-  const [myRecords, setMyRecords] = useState([]);
-  const [myPunches, setMyPunches] = useState({});
-  const [holidays, setHolidays] = useState([]);
+  const [tab, setTab] = useState('team');
 
   // Team view
   const [teamDate, setTeamDate] = useState(todayStr());
   const [teamDept, setTeamDept] = useState('');
   const [teamData, setTeamData] = useState([]);
   const [departments, setDepartments] = useState([]);
+
+  // Monthly avg hours (for whichever month teamDate falls in)
+  const [monthlyAtt, setMonthlyAtt] = useState([]);
 
   // Manual attendance modal
   const [showManual, setShowManual] = useState(false);
@@ -37,30 +33,14 @@ export default function AttendancePage() {
   const [auditLogs, setAuditLogs] = useState([]);
   const [auditLoading, setAuditLoading] = useState(false);
 
-  const fetchMyAttendance = useCallback(async () => {
-    if (!profile || !tenant) return;
-    const { data } = await fetchMyMonthAttendance(profile.id, attYear, attMonth);
-    setMyRecords(data);
-    const todayRec = data.find((r) => r.date === todayStr());
-    if (todayRec) {
-      setMyPunches(todayRec);
-    } else {
-      setMyPunches({});
-    }
-  }, [profile, tenant, attMonth, attYear]);
-
-  useEffect(() => { fetchMyAttendance(); }, [fetchMyAttendance]);
-
-  const getHolidayDate = (h) => h.holiday_date || h.date;
-
-  const fetchHolidayData = useCallback(async () => {
+  const fetchMonthlyAvg = useCallback(async () => {
     if (!tenant) return;
-    const { data, error } = await listHolidays(tenant.id);
-    if (error) return showToast('Could not load holidays: ' + error.message, 'error');
-    setHolidays(data);
-  }, [tenant]);
+    const d = new Date(teamDate);
+    const { data } = await fetchAllTenantAttendance(tenant.id, d.getFullYear(), d.getMonth());
+    setMonthlyAtt(data);
+  }, [tenant, teamDate]);
 
-  useEffect(() => { fetchHolidayData(); }, [fetchHolidayData]);
+  useEffect(() => { if (tab === 'team') fetchMonthlyAvg(); }, [tab, fetchMonthlyAvg]);
 
   const fetchTeamData = useCallback(async () => {
     if (!tenant) return;
@@ -136,152 +116,46 @@ export default function AttendancePage() {
     }
   };
 
-  // Calendar rendering
-  const changeMonth = (delta) => {
-    let m = attMonth + delta, y = attYear;
-    if (m > 11) { m = 0; y++; } if (m < 0) { m = 11; y--; }
-    setAttMonth(m); setAttYear(y);
-  };
-
-  const renderCalendar = () => {
-    const firstDay = new Date(attYear, attMonth, 1).getDay();
-    const daysInMonth = new Date(attYear, attMonth + 1, 0).getDate();
-    const today = new Date();
-    const cells = [];
-
-    ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].forEach((d) =>
-      cells.push(<div className="att-cal-header" key={'h-' + d}>{d}</div>)
-    );
-
-    for (let i = 0; i < firstDay; i++) cells.push(<div className="att-cal-day empty" key={'e-' + i} />);
-
-    for (let d = 1; d <= daysInMonth; d++) {
-      const date = new Date(attYear, attMonth, d);
-      const ds = dateStr(date);
-      const isToday = d === today.getDate() && attMonth === today.getMonth() && attYear === today.getFullYear();
-      const isFuture = date > today;
-      const isWeekend = date.getDay() === 0 || date.getDay() === 6;
-      const rec = myRecords.find((r) => r.date === ds);
-      const holiday = holidays.find((h) => getHolidayDate(h) === ds && h.status === 'Approved');
-
-      let cls = '', hoursStr = '';
-      if (isFuture) cls = 'future';
-      else if (holiday) {
-        cls = 'holiday';
-        hoursStr = holiday.name;
-      } else if (isWeekend) cls = 'weekend';
-      else if (rec) {
-        const st = rec.status?.toLowerCase().replace(/\s/g, '-') || 'present';
-        cls = st;
-        if (rec.total_hours) hoursStr = fmtDuration(rec.total_hours);
-        else if (rec.punches?.length) hoursStr = 'In progress';
-      } else if (!isFuture && !isToday) {
-        cls = 'absent';
-      }
-      if (isToday) cls += ' today';
-
-      cells.push(
-        <div className={`att-cal-day ${cls}`} key={d}>
-          <div className="day-num">{d}</div>
-          {hoursStr && <div className="day-hours">{hoursStr}</div>}
-        </div>
-      );
-    }
-    return cells;
-  };
-
-  // Summary stats
-  const summary = { present: 0, absent: 0, halfDay: 0, late: 0, leaves: 0, totalHours: 0 };
-  const today = new Date();
-  const daysInMonth = new Date(attYear, attMonth + 1, 0).getDate();
-  for (let d = 1; d <= daysInMonth; d++) {
-    const date = new Date(attYear, attMonth, d);
-    if (date > today || date.getDay() === 0 || date.getDay() === 6) continue;
-    const ds = dateStr(date);
-    const holiday = holidays.find((h) => getHolidayDate(h) === ds && h.status === 'Approved');
-    if (holiday) continue;
-    const rec = myRecords.find((r) => r.date === ds);
-    if (!rec?.status) { if (date < today) summary.absent++; continue; }
-    if (rec.status === 'Present') summary.present++;
-    else if (rec.status === 'Late') { summary.late++; summary.present++; }
-    else if (rec.status === 'Half Day') summary.halfDay++;
-    else if (rec.status === 'Leave') summary.leaves++;
-    else if (rec.status === 'Absent') summary.absent++;
-    summary.totalHours += rec.total_hours || 0;
-  }
-
   // Team summary
   const teamPresent = teamData.filter((r) => r.status === 'Present' || r.status === 'Late' || r.status === 'Half Day').length;
   const teamAbsent = teamData.filter((r) => r.status === 'Absent').length;
   const teamLate = teamData.filter((r) => r.status === 'Late').length;
 
+  // Per-employee avg daily hours + days-with-hours, for the month teamDate falls in
+  const monthlyStatsByProfile = useMemo(() => {
+    const sums = {};
+    monthlyAtt.forEach((r) => {
+      if (!r.total_hours) return;
+      if (!sums[r.profile_id]) sums[r.profile_id] = { total: 0, days: 0 };
+      sums[r.profile_id].total += r.total_hours;
+      sums[r.profile_id].days += 1;
+    });
+    return sums;
+  }, [monthlyAtt]);
+
+  // Team-wide avg daily hours this month — weighted across every recorded day,
+  // so an employee who logged more days doesn't get diluted to the same weight
+  // as one who logged one.
+  const teamAvgHours = useMemo(() => {
+    let total = 0, days = 0;
+    Object.values(monthlyStatsByProfile).forEach((s) => { total += s.total; days += s.days; });
+    return days > 0 ? total / days : 0;
+  }, [monthlyStatsByProfile]);
+
+  const monthLabelForTeamDate = new Date(teamDate).toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
+
   return (
     <>
-      <Header title="Attendance" breadcrumb="Track attendance" />
+      <Header title="Attendance" breadcrumb="Team attendance & working hours" />
       <div className="page-content">
         {/* Tabs */}
         <div className="tabs">
-          {['my', 'team', 'audit'].map((t) => (
+          {['team', 'audit'].map((t) => (
             <button key={t} className={`tab-btn ${tab === t ? 'active' : ''}`} onClick={() => setTab(t)}>
-              {t === 'my' ? 'My Attendance' : t === 'team' ? 'Team View' : 'Audit Log'}
+              {t === 'team' ? 'Team View' : 'Audit Log'}
             </button>
           ))}
         </div>
-
-        {/* MY ATTENDANCE TAB */}
-        {tab === 'my' && (
-          <>
-            <div className="att-summary-bar">
-              <div className="att-summary-item"><div className="att-s-val" style={{ color: 'var(--success)' }}>{summary.present}</div><div className="att-s-lbl">Present</div></div>
-              <div className="att-summary-item"><div className="att-s-val" style={{ color: 'var(--danger)' }}>{summary.absent}</div><div className="att-s-lbl">Absent</div></div>
-              <div className="att-summary-item"><div className="att-s-val" style={{ color: 'var(--warning)' }}>{summary.halfDay}</div><div className="att-s-lbl">Half Day</div></div>
-              <div className="att-summary-item"><div className="att-s-val" style={{ color: 'var(--accent)' }}>{summary.late}</div><div className="att-s-lbl">Late</div></div>
-              <div className="att-summary-item"><div className="att-s-val" style={{ color: 'var(--purple)' }}>{summary.leaves}</div><div className="att-s-lbl">Leaves</div></div>
-              <div className="att-summary-item"><div className="att-s-val" style={{ color: 'var(--primary)' }}>{fmtDuration(summary.totalHours)}</div><div className="att-s-lbl">Total Hours</div></div>
-            </div>
-
-            <div className="grid-3-1">
-              <div className="card">
-                <div className="card-header">
-                  <h3>Monthly Calendar</h3>
-                  <div className="month-selector">
-                    <button onClick={() => changeMonth(-1)}><i className="fas fa-chevron-left" /></button>
-                    <span>{monthLabel(attMonth, attYear)}</span>
-                    <button onClick={() => changeMonth(1)}><i className="fas fa-chevron-right" /></button>
-                  </div>
-                </div>
-                <div className="card-body">
-                  <div className="att-calendar">{renderCalendar()}</div>
-                  <div className="att-legend" style={{ display: 'flex', flexWrap: 'wrap', gap: 14, padding: '12px 0', fontSize: 11 }}>
-                    {[['var(--success)', 'Present'], ['var(--danger)', 'Absent'], ['var(--warning)', 'Half Day'], ['var(--accent)', 'Late'], ['var(--purple)', 'Leave']].map(([c, l]) => (
-                      <div key={l} style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-                        <div style={{ width: 12, height: 12, borderRadius: 3, background: c }} />{l}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-
-              <div className="card">
-                <div className="card-header"><h3>Today&apos;s Timeline</h3></div>
-                <div className="card-body">
-                  {!myPunches?.punches?.length ? (
-                    <p style={{ color: 'var(--text-muted)', fontSize: 13 }}>No punches recorded today. Click &quot;Clock In&quot; to start.</p>
-                  ) : (
-                    <div className="att-timeline">
-                      {[...myPunches.punches].sort((a, b) => a.punch_time.localeCompare(b.punch_time)).map((p, i) => (
-                        <div className={`att-timeline-item ${p.punch_type === 'in' ? 'punch-in' : 'punch-out'}`} key={p.id || i}>
-                          <span className="att-timeline-time">{fmtTime12(p.punch_time)}</span>
-                          <span className="att-timeline-label">{p.punch_type === 'in' ? (i === 0 ? 'Clock In' : 'Resume') : 'Clock Out'}</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-          </>
-        )}
 
         {/* TEAM VIEW TAB */}
         {tab === 'team' && (
@@ -306,23 +180,27 @@ export default function AttendancePage() {
               <div className="att-summary-item"><div className="att-s-val" style={{ color: 'var(--primary)' }}>{teamData.length}</div><div className="att-s-lbl">Total Staff</div></div>
               <div className="att-summary-item"><div className="att-s-val" style={{ color: 'var(--success)' }}>{teamData.length > 0 ? Math.round(teamPresent / teamData.length * 100) : 0}%</div><div className="att-s-lbl">Attendance %</div></div>
               <div className="att-summary-item"><div className="att-s-val" style={{ color: 'var(--purple)' }}>{teamData.filter((r) => r.status === 'Leave').length}</div><div className="att-s-lbl">On Leave</div></div>
+              <div className="att-summary-item"><div className="att-s-val" style={{ color: 'var(--primary)' }}>{fmtDuration(teamAvgHours)}</div><div className="att-s-lbl">Team Avg Hours/Day ({monthLabelForTeamDate})</div></div>
             </div>
 
             <div className="card">
               <div className="table-wrap">
                 <table>
                   <thead>
-                    <tr><th>Employee</th><th>Department</th><th>Clock In</th><th>Clock Out</th><th>Working Hours</th><th>Status</th><th>Actions</th></tr>
+                    <tr><th>Employee</th><th>Department</th><th>Clock In</th><th>Clock Out</th><th>Working Hours</th><th>Status</th><th>Avg Hours/Day ({monthLabelForTeamDate})</th><th>Days Present ({monthLabelForTeamDate})</th><th>Actions</th></tr>
                   </thead>
                   <tbody>
                     {teamData.length === 0 ? (
-                      <tr><td colSpan={7} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 40 }}>No employees found</td></tr>
-                    ) : teamData.map((r) => (
+                      <tr><td colSpan={9} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 40 }}>No employees found</td></tr>
+                    ) : teamData.map((r) => {
+                      const monthStat = monthlyStatsByProfile[r.id];
+                      const avgHoursThisMonth = monthStat ? monthStat.total / monthStat.days : 0;
+                      return (
                       <tr key={r.id}>
                         <td>
                           <div className="emp-cell">
                             <div className="emp-avatar" style={{ background: `linear-gradient(135deg, ${getAvatarColor(r.id)})` }}>{getInitials(r.first_name, r.last_name)}</div>
-                            <div><div className="emp-name">{fullName(r)}</div><div className="emp-role">{r.id.slice(0, 8)}</div></div>
+                            <div><div className="emp-name">{fullName(r)}</div><div className="emp-role">{r.essl_employee_code ? `ESSL: ${r.essl_employee_code}` : '—'}</div></div>
                           </div>
                         </td>
                         <td>{r.department || '—'}</td>
@@ -335,13 +213,16 @@ export default function AttendancePage() {
                             <i className="fas fa-map-marker-alt" style={{ marginLeft: 6, color: 'var(--warning)' }} title="Punch was outside the configured geofence" />
                           )}
                         </td>
+                        <td>{monthStat ? fmtDuration(avgHoursThisMonth) : '—'}</td>
+                        <td>{monthStat ? monthStat.days : 0}</td>
                         <td>
                           <button className="btn btn-outline btn-sm" onClick={() => { setManualForm({ profile_id: r.id, date: teamDate, clockIn: tenant?.shift_start || '', clockOut: tenant?.shift_end || '', status: 'Present', reason: '' }); setShowManual(true); }}>
                             <i className="fas fa-edit" />
                           </button>
                         </td>
                       </tr>
-                    ))}
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>

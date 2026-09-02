@@ -41,6 +41,14 @@ export function OutletViewProvider({ children }) {
     return () => { cancelled = true; };
   }, [tenant?.id, profile?.id, canScope]);
 
+  // Re-fetch the outlets list in place (e.g. after saving per-outlet settings like
+  // geofencing) without disturbing the current selection.
+  const refreshOutlets = useCallback(async () => {
+    if (!tenant?.id || !canScope) return;
+    const { data } = await listOutlets(tenant.id);
+    setOutlets(data || []);
+  }, [tenant?.id, canScope]);
+
   // Recompute the outlet's employee-id set whenever the selection changes.
   useEffect(() => {
     if (!tenant?.id || !selectedOutletId) {
@@ -52,7 +60,13 @@ export function OutletViewProvider({ children }) {
       .from('profiles')
       .select('id')
       .eq('tenant_id', tenant.id)
-      .eq('outlet_id', selectedOutletId)
+      // Employees with no outlet assigned yet (outlet_id IS NULL — e.g. newly
+      // imported, or an admin/manager who was never assigned a branch) don't
+      // belong to any single outlet, so their records would otherwise vanish
+      // from every outlet-scoped view (visible only under "Combined") even
+      // though nobody chose to hide them. Folding them into every outlet's
+      // set instead means they're never silently invisible.
+      .or(`outlet_id.eq.${selectedOutletId},outlet_id.is.null`)
       .then(({ data }) => {
         if (!cancelled) setOutletProfileIds(new Set((data || []).map((r) => r.id)));
       });
@@ -79,7 +93,8 @@ export function OutletViewProvider({ children }) {
     needsSelection,
     ready,
     selectOutlet,
-  }), [outlets, selectedOutletId, selectedOutletName, outletProfileIds, needsSelection, ready, selectOutlet]);
+    refreshOutlets,
+  }), [outlets, selectedOutletId, selectedOutletName, outletProfileIds, needsSelection, ready, selectOutlet, refreshOutlets]);
 
   return (
     <OutletViewContext.Provider value={value}>

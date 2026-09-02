@@ -12,29 +12,9 @@ import {
   clockOut as svcClockOut,
 } from '@/services/attendanceService';
 import { fetchRecentUpdates } from '@/services/activityFeedService';
-import { submitWfhRequest, getApprovedWfhForDate } from '@/services/wfhService';
-import { getOutlet, resolveAttendanceSettings } from '@/services/tenantService';
-import { monthLabel, todayStr, timeStr, fmtTime12, diffHours, fmtDuration } from '@/lib/helpers';
-
-// Haversine distance in metres between two lat/lng points
-function calcDistance(lat1, lon1, lat2, lon2) {
-  const R = 6371e3;
-  const p1 = lat1 * Math.PI / 180, p2 = lat2 * Math.PI / 180;
-  const dp = (lat2 - lat1) * Math.PI / 180;
-  const dl = (lon2 - lon1) * Math.PI / 180;
-  const a  = Math.sin(dp / 2) ** 2 + Math.cos(p1) * Math.cos(p2) * Math.sin(dl / 2) ** 2;
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
-
-// 30 seconds outside before auto clock-out triggers
-const AUTO_CLOCKOUT_GRACE_MS = 30000;
-
-// Browsers without a GPS chip (most desktops/laptops) fall back to WiFi/IP-based
-// positioning, which in India can be off by tens or hundreds of km — sometimes
-// resolving to a completely different city. A fix with a large accuracy radius
-// can't be trusted to enforce a geofence, so we refuse to treat it as "inside"
-// even if the reported coordinates happen to land within range.
-const MAX_LOCATION_ACCURACY_M = 150;
+import { submitWfhRequest } from '@/services/wfhService';
+import { monthLabel, todayStr, timeStr, fmtTime12, diffHours, fmtDuration, elapsedSecondsToday } from '@/lib/helpers';
+import { useGeofenceClock, AUTO_CLOCKOUT_GRACE_MS } from '@/hooks/useGeofenceClock';
 
 export function DashboardContent() {
   const { profile, tenant } = useAuth();
@@ -44,47 +24,19 @@ export function DashboardContent() {
   const [liveDate,       setLiveDate]       = useState('');
   const [timerDisplay,   setTimerDisplay]   = useState('00:00:00');
   const [isClockedIn,    setIsClockedIn]    = useState(false);
-  const [locationStatus, setLocationStatus] = useState('Checking location…');
-  const [insideFence,    setInsideFence]    = useState(null); // null=unknown, true, false
   const [myPunches,      setMyPunches]      = useState({});
   const [clockingIn,     setClockingIn]     = useState(false);
   const [clockingOut,    setClockedOut]     = useState(false);
   const [updates,        setUpdates]        = useState([]);
   const [updatesLoading, setUpdatesLoading] = useState(true);
-  const [isWfhToday,     setIsWfhToday]     = useState(false);
   const [showWfhModal,   setShowWfhModal]   = useState(false);
   const [wfhForm,        setWfhForm]        = useState({ from_date: todayStr(), to_date: todayStr(), reason: '' });
   const [wfhSaving,      setWfhSaving]      = useState(false);
 
   const clockRef        = useRef(null);
   const timerRef        = useRef(null);
-  const watchRef        = useRef(null);   // geolocation watchPosition id
-  const graceTimerRef   = useRef(null);   // debounce timer for auto clock-out
-  const isClockedInRef  = useRef(false);  // ref mirror of isClockedIn for use inside callbacks
+  const isClockedInRef  = useRef(false);  // ref mirror of isClockedIn for use inside stable callbacks
 
-  const [outletSettings, setOutletSettings] = useState(null);
-  useEffect(() => {
-    if (!profile?.outlet_id) { setOutletSettings(null); return; }
-    let cancelled = false;
-    getOutlet(profile.outlet_id).then(({ data }) => { if (!cancelled) setOutletSettings(data); });
-    return () => { cancelled = true; };
-  }, [profile?.outlet_id]);
-
-  // Outlet's own geofence overrides the tenant-wide default when set.
-  const effective = resolveAttendanceSettings(tenant, outletSettings);
-  const siteGeofenceEnabled = !!(effective.geofence_lat && effective.geofence_lng);
-  // Approved WFH for today lifts the geofence entirely — clock in from anywhere.
-  const geofenceEnabled = siteGeofenceEnabled && !isWfhToday;
-  const geofenceRadius  = effective.geofence_radius;
-
-  useEffect(() => {
-    if (!profile) return;
-    let cancelled = false;
-    getApprovedWfhForDate(profile.id, todayStr()).then(({ data }) => { if (!cancelled) setIsWfhToday(!!data); });
-    return () => { cancelled = true; };
-  }, [profile]);
-
-  // Keep ref in sync
   useEffect(() => { isClockedInRef.current = isClockedIn; }, [isClockedIn]);
 
   // ── Attendance data ──────────────────────────────────────────────────────────
@@ -131,13 +83,7 @@ export function DashboardContent() {
     const tickTimer = () => {
       const todayRec = myPunches;
       if (!todayRec?.punches?.length) { setTimerDisplay('00:00:00'); return; }
-      const sorted = [...todayRec.punches].sort((a, b) => a.punch_time.localeCompare(b.punch_time));
-      const ins  = sorted.filter(p => p.punch_type === 'in');
-      const outs = sorted.filter(p => p.punch_type === 'out');
-      let secs = 0;
-      for (let i = 0; i < ins.length; i++) {
-        secs += diffHours(ins[i].punch_time, outs[i]?.punch_time || timeStr(new Date())) * 3600;
-      }
+      const secs = elapsedSecondsToday(todayRec.punches);
       const h = Math.floor(secs / 3600);
       const m = Math.floor((secs % 3600) / 60);
       const s = Math.floor(secs % 60);
@@ -153,7 +99,7 @@ export function DashboardContent() {
     if (!isClockedInRef.current) return;
     try {
       setClockedOut(true);
-      const { total } = await svcClockOut(profile.id, { lat, lng });
+      const { total } = await svcClockOut(profile.id, { lat, lng }, { allowOutsideGeofence: true });
       showToast(`Auto clocked out — left office area. Worked ${fmtDuration(total)}`, 'warning');
       fetchMyAttendance();
     } catch (err) {
@@ -163,124 +109,17 @@ export function DashboardContent() {
     }
   }, [profile, fetchMyAttendance]);
 
-  // ── Geofence watchPosition ───────────────────────────────────────────────────
-  useEffect(() => {
-    if (!geofenceEnabled) {
-      setLocationStatus(isWfhToday ? 'Approved WFH today — geofencing disabled' : 'Geofencing not configured');
-      setInsideFence(true); // treat as always inside when not configured (or WFH-approved)
-      return;
-    }
-    if (!navigator.geolocation) {
-      setLocationStatus('Geolocation not supported by this browser');
-      setInsideFence(false);
-      return;
-    }
-
-    watchRef.current = navigator.geolocation.watchPosition(
-      (pos) => {
-        const dist = calcDistance(
-          pos.coords.latitude, pos.coords.longitude,
-          effective.geofence_lat, effective.geofence_lng
-        );
-        const accuracy = pos.coords.accuracy;
-        const accuracyTooLow = accuracy != null && accuracy > MAX_LOCATION_ACCURACY_M;
-        const outside = dist > geofenceRadius || accuracyTooLow;
-        setInsideFence(!outside);
-
-        if (outside) {
-          setLocationStatus(accuracyTooLow
-            ? `Location too imprecise to verify (±${Math.round(accuracy)} m) — enable GPS/precise location`
-            : `Outside office area · ${Math.round(dist)} m away`);
-          // Only start grace timer if clocked in and no timer already running
-          if (isClockedInRef.current && !graceTimerRef.current) {
-            graceTimerRef.current = setTimeout(() => {
-              doAutoClockOut(pos.coords.latitude, pos.coords.longitude);
-              graceTimerRef.current = null;
-            }, AUTO_CLOCKOUT_GRACE_MS);
-          }
-        } else {
-          setLocationStatus(`Inside office area · ${Math.round(dist)} m from centre`);
-          // Cancel grace timer — employee came back inside
-          if (graceTimerRef.current) {
-            clearTimeout(graceTimerRef.current);
-            graceTimerRef.current = null;
-          }
-        }
-      },
-      (err) => {
-        const msg = err.code === 1
-          ? 'Location permission denied — please allow location access'
-          : err.code === 2
-          ? 'Location unavailable — check GPS/network'
-          : 'Location request timed out';
-        setLocationStatus(msg);
-        setInsideFence(null);
-      },
-      { enableHighAccuracy: true, maximumAge: 10000, timeout: 15000 }
-    );
-
-    return () => {
-      if (watchRef.current != null) navigator.geolocation.clearWatch(watchRef.current);
-      if (graceTimerRef.current) clearTimeout(graceTimerRef.current);
-    };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [geofenceEnabled, isWfhToday, effective.geofence_lat, effective.geofence_lng, geofenceRadius, doAutoClockOut]);
-
-  // Cancel grace timer the moment the employee clocks out (manual or auto)
-  useEffect(() => {
-    if (!isClockedIn && graceTimerRef.current) {
-      clearTimeout(graceTimerRef.current);
-      graceTimerRef.current = null;
-    }
-  }, [isClockedIn]);
-
-  // ── Get current position once (for clock-in / manual clock-out) ─────────────
-  const getCurrentPos = () =>
-    new Promise((resolve, reject) =>
-      navigator.geolocation.getCurrentPosition(resolve, reject, { enableHighAccuracy: true, timeout: 10000 })
-    );
-
-  // Authoritative geofence check for a fresh one-shot position: rejects both
-  // "too far" and "too imprecise to trust" fixes (see MAX_LOCATION_ACCURACY_M above).
-  const checkGeofence = (pos) => {
-    const dist = calcDistance(pos.coords.latitude, pos.coords.longitude, effective.geofence_lat, effective.geofence_lng);
-    const accuracy = pos.coords.accuracy;
-    if (accuracy != null && accuracy > MAX_LOCATION_ACCURACY_M) {
-      return { ok: false, message: `Your location is too imprecise to verify (±${Math.round(accuracy)} m). Enable GPS/precise location and try again.` };
-    }
-    if (dist > geofenceRadius) {
-      return { ok: false, message: `You are ${Math.round(dist)} m from the office. Move inside the office area.` };
-    }
-    return { ok: true };
-  };
+  const { geofenceEnabled, insideFence, locationStatus, resolveClockLocation, isWfhToday } =
+    useGeofenceClock({ profile, tenant, isClockedIn, onAutoClockOut: doAutoClockOut });
 
   // ── Clock In ─────────────────────────────────────────────────────────────────
   const clockIn = async () => {
     if (!profile || !tenant) return showToast('Account setup incomplete. Please re-login.', 'error');
     if (isClockedIn) return showToast('Already clocked in!', 'warning');
 
-    if (geofenceEnabled) {
-      if (insideFence === false) {
-        return showToast('You are outside the office area. Move closer to clock in.', 'error');
-      }
-      if (insideFence === null) {
-        return showToast('Waiting for location. Please allow location access and try again.', 'error');
-      }
-    }
-
     setClockingIn(true);
     try {
-      let location = null;
-      if (geofenceEnabled) {
-        const pos = await getCurrentPos();
-        const check = checkGeofence(pos);
-        if (!check.ok) {
-          showToast(check.message, 'error');
-          setClockingIn(false);
-          return;
-        }
-        location = { lat: pos.coords.latitude, lng: pos.coords.longitude };
-      }
+      const location = await resolveClockLocation();
       await svcClockIn(tenant.id, profile.id, tenant, location);
       showToast(`Clocked in at ${fmtTime12(timeStr(new Date()))}`, 'success');
       fetchMyAttendance();
@@ -295,28 +134,9 @@ export function DashboardContent() {
   const clockOut = async () => {
     if (!isClockedIn) return showToast('Not clocked in!', 'warning');
 
-    if (geofenceEnabled) {
-      if (insideFence === false) {
-        return showToast('You are outside the office area. You will be auto clocked-out shortly.', 'warning');
-      }
-      if (insideFence === null) {
-        return showToast('Location unavailable. Please allow location access.', 'error');
-      }
-    }
-
     setClockedOut(true);
     try {
-      let location = null;
-      if (geofenceEnabled) {
-        const pos = await getCurrentPos();
-        const check = checkGeofence(pos);
-        if (!check.ok) {
-          showToast(check.message, 'warning');
-          setClockedOut(false);
-          return;
-        }
-        location = { lat: pos.coords.latitude, lng: pos.coords.longitude };
-      }
+      const location = await resolveClockLocation();
       const { total } = await svcClockOut(profile.id, location);
       showToast(`Clocked out. Worked ${fmtDuration(total)}`, 'success');
       fetchMyAttendance();

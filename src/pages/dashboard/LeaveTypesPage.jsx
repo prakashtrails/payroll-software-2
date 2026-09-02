@@ -9,7 +9,7 @@ function blankForm() {
   return {
     name: '', is_paid: true, carry_forward: false, max_carry_forward_days: '',
     accrual_frequency: 'none', accrual_days: '', annual_quota: '', encashable: false,
-    max_continuous_days: '', is_active: true,
+    max_continuous_days: '', is_active: true, is_unlimited: false,
   };
 }
 
@@ -43,6 +43,7 @@ export default function LeaveTypesPage() {
       max_carry_forward_days: row.max_carry_forward_days, accrual_frequency: row.accrual_frequency,
       accrual_days: row.accrual_days, annual_quota: row.annual_quota, encashable: row.encashable,
       max_continuous_days: row.max_continuous_days ?? '', is_active: row.is_active,
+      is_unlimited: !!row.is_unlimited,
     } : blankForm());
     setShowModal(true);
   };
@@ -82,16 +83,17 @@ export default function LeaveTypesPage() {
           <div className="card">
             <div className="table-wrap">
               <table>
-                <thead><tr><th>Name</th><th>Paid</th><th>Accrual</th><th>Carry Forward</th><th>Encashable</th><th>Status</th><th>Actions</th></tr></thead>
+                <thead><tr><th>Name</th><th>Paid</th><th>Quota</th><th>Accrual</th><th>Carry Forward</th><th>Encashable</th><th>Status</th><th>Actions</th></tr></thead>
                 <tbody>
                   {rows.length === 0 ? (
-                    <tr><td colSpan={7} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 24 }}>
+                    <tr><td colSpan={8} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 24 }}>
                       No leave types configured — add "Casual Leave", "Sick Leave" etc. to match what employees select when requesting leave.
                     </td></tr>
                   ) : rows.map((r) => (
                     <tr key={r.id}>
                       <td><strong>{r.name}</strong></td>
                       <td><span className={`badge ${r.is_paid ? 'badge-success' : 'badge-secondary'}`}>{r.is_paid ? 'Paid' : 'Unpaid'}</span></td>
+                      <td>{r.is_unlimited ? <span className="badge badge-info">Unlimited</span> : '—'}</td>
                       <td>{r.accrual_frequency === 'none' ? '—' : `${r.accrual_days}/${r.accrual_frequency === 'monthly' ? 'mo' : 'yr'}`}</td>
                       <td>{r.carry_forward ? `Up to ${r.max_carry_forward_days} days` : '—'}</td>
                       <td>{r.encashable ? <i className="fas fa-check" style={{ color: 'var(--success)' }} /> : '—'}</td>
@@ -124,40 +126,49 @@ export default function LeaveTypesPage() {
             <input type="checkbox" checked={form.is_paid} onChange={(e) => setForm({ ...form, is_paid: e.target.checked })} /> Paid leave
           </label>
           <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
-            <input type="checkbox" checked={form.encashable} onChange={(e) => setForm({ ...form, encashable: e.target.checked })} /> Encashable
+            <input type="checkbox" checked={form.encashable} onChange={(e) => setForm({ ...form, encashable: e.target.checked })} disabled={form.is_unlimited} /> Encashable
           </label>
         </div>
         <div className="form-group">
-          <label className="form-label">Accrual</label>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <select className="form-select" value={form.accrual_frequency} onChange={(e) => setForm({ ...form, accrual_frequency: e.target.value })} style={{ maxWidth: 140 }}>
-              <option value="none">No accrual</option>
-              <option value="monthly">Monthly</option>
-              <option value="yearly">Yearly</option>
-            </select>
-            {form.accrual_frequency !== 'none' && (
-              <input className="form-input" type="number" step="0.5" placeholder="Days per period" value={form.accrual_days} onChange={(e) => setForm({ ...form, accrual_days: e.target.value })} />
-            )}
-          </div>
-        </div>
-        <div className="form-group">
-          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, marginBottom: 8 }}>
-            <input type="checkbox" checked={form.carry_forward} onChange={(e) => setForm({ ...form, carry_forward: e.target.checked })} /> Allow carry-forward to next year
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
+            <input type="checkbox" checked={form.is_unlimited} onChange={(e) => setForm({ ...form, is_unlimited: e.target.checked })} /> Unlimited (e.g. Unpaid Leave) — never blocked by a balance, no accrual/quota
           </label>
-          {form.carry_forward && (
-            <input className="form-input" type="number" placeholder="Max days carried forward" value={form.max_carry_forward_days} onChange={(e) => setForm({ ...form, max_carry_forward_days: e.target.value })} />
-          )}
         </div>
-        <div className="form-row">
-          <div className="form-group">
-            <label className="form-label">Annual Quota (reference only)</label>
-            <input className="form-input" type="number" value={form.annual_quota} onChange={(e) => setForm({ ...form, annual_quota: e.target.value })} />
-          </div>
-          <div className="form-group">
-            <label className="form-label">Max Continuous Days</label>
-            <input className="form-input" type="number" value={form.max_continuous_days} onChange={(e) => setForm({ ...form, max_continuous_days: e.target.value })} />
-          </div>
-        </div>
+        {!form.is_unlimited && (
+          <>
+            <div className="form-group">
+              <label className="form-label">Accrual</label>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <select className="form-select" value={form.accrual_frequency} onChange={(e) => setForm({ ...form, accrual_frequency: e.target.value })} style={{ maxWidth: 140 }}>
+                  <option value="none">No accrual</option>
+                  <option value="monthly">Monthly</option>
+                  <option value="yearly">Yearly</option>
+                </select>
+                {form.accrual_frequency !== 'none' && (
+                  <input className="form-input" type="number" step="0.5" placeholder="Days per period" value={form.accrual_days} onChange={(e) => setForm({ ...form, accrual_days: e.target.value })} />
+                )}
+              </div>
+            </div>
+            <div className="form-group">
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, marginBottom: 8 }}>
+                <input type="checkbox" checked={form.carry_forward} onChange={(e) => setForm({ ...form, carry_forward: e.target.checked })} /> Allow carry-forward to next year
+              </label>
+              {form.carry_forward && (
+                <input className="form-input" type="number" placeholder="Max days carried forward" value={form.max_carry_forward_days} onChange={(e) => setForm({ ...form, max_carry_forward_days: e.target.value })} />
+              )}
+            </div>
+            <div className="form-row">
+              <div className="form-group">
+                <label className="form-label">Annual Quota (reference only)</label>
+                <input className="form-input" type="number" value={form.annual_quota} onChange={(e) => setForm({ ...form, annual_quota: e.target.value })} />
+              </div>
+              <div className="form-group">
+                <label className="form-label">Max Continuous Days</label>
+                <input className="form-input" type="number" value={form.max_continuous_days} onChange={(e) => setForm({ ...form, max_continuous_days: e.target.value })} />
+              </div>
+            </div>
+          </>
+        )}
       </Modal>
     </>
   );

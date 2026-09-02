@@ -6,6 +6,7 @@ import { useAuth } from '@/context/AuthContext';
 import {
   listAllReferrals, listInterviewsForReferral, listMyInterviews,
   scheduleInterview, updateInterviewStatus, submitInterviewFeedback,
+  uploadPiqForm, getPiqFormUrl, attachPiqForm, rejectInterview,
 } from '@/services/hiringService';
 import { listActiveEmployees } from '@/services/employeeService';
 import { fullName } from '@/lib/helpers';
@@ -27,6 +28,9 @@ export default function InterviewsPage() {
   const [interviewList, setInterviewList] = useState([]);
   const [feedbackFor, setFeedbackFor] = useState(null); // interview
   const [feedbackForm, setFeedbackForm] = useState({ ratings: {}, recommendation: 'Neutral', comments: '' });
+  const [uploadingPiqFor, setUploadingPiqFor] = useState(null); // interview id
+  const [rejectingId, setRejectingId] = useState(null); // interview id
+  const [rejectReason, setRejectReason] = useState('');
 
   const fetchData = useCallback(async () => {
     if (!tenant || !profile) return;
@@ -61,6 +65,43 @@ export default function InterviewsPage() {
     setViewFor(referral);
     const { data } = await listInterviewsForReferral(referral.id);
     setInterviewList(data);
+  };
+
+  const refreshView = async () => {
+    if (viewFor) { const { data } = await listInterviewsForReferral(viewFor.id); setInterviewList(data); }
+  };
+
+  const handlePiqUpload = async (interviewId, file) => {
+    if (!file) return;
+    setUploadingPiqFor(interviewId);
+    try {
+      const { path, error: upErr } = await uploadPiqForm(tenant.id, file);
+      if (upErr) return showToast('Upload failed: ' + upErr.message, 'error');
+      const { error } = await attachPiqForm(interviewId, path);
+      if (error) return showToast('Failed: ' + error.message, 'error');
+      showToast('PIQ form attached', 'success');
+      await refreshView();
+    } finally {
+      setUploadingPiqFor(null);
+    }
+  };
+
+  const downloadPiqForm = async (path) => {
+    const { url, error } = await getPiqFormUrl(path);
+    if (error || !url) return showToast('Could not open PIQ form', 'error');
+    window.open(url, '_blank', 'noopener');
+  };
+
+  const openReject = (interviewId) => { setRejectingId(interviewId); setRejectReason(''); };
+
+  const confirmReject = async () => {
+    if (!rejectReason.trim()) return showToast('A rejection reason is required', 'error');
+    const { error } = await rejectInterview(rejectingId, viewFor.id, rejectReason.trim());
+    if (error) return showToast('Failed: ' + error.message, 'error');
+    showToast('Candidate rejected', 'success');
+    setRejectingId(null);
+    await refreshView();
+    fetchData();
   };
 
   const openFeedback = (interview) => {
@@ -169,7 +210,7 @@ export default function InterviewsPage() {
           <div key={i.id} style={{ borderBottom: '1px solid var(--border)', padding: '10px 0' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between' }}>
               <strong>{i.round_name}</strong>
-              <span className="badge badge-info">{i.status}</span>
+              <span className={`badge ${i.status === 'Rejected' ? 'badge-danger' : 'badge-info'}`}>{i.status}</span>
             </div>
             <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{fullName(i.interviewer)} — {i.scheduled_at ? new Date(i.scheduled_at).toLocaleString('en-IN') : 'not yet scheduled'}</div>
             {(i.feedback || []).map((f) => (
@@ -177,6 +218,33 @@ export default function InterviewsPage() {
                 <span className="badge badge-secondary">{f.recommendation}</span> {f.comments}
               </div>
             ))}
+            {i.rejection_reason && (
+              <div style={{ fontSize: 12, marginTop: 4, color: 'var(--danger)' }}>Rejected: {i.rejection_reason}</div>
+            )}
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+              {i.piq_form_path ? (
+                <button className="btn btn-outline btn-sm" onClick={() => downloadPiqForm(i.piq_form_path)}><i className="fas fa-file-alt" /> PIQ Form</button>
+              ) : canManage && (
+                <label className="btn btn-outline btn-sm" style={{ cursor: 'pointer', margin: 0 }}>
+                  {uploadingPiqFor === i.id ? 'Uploading…' : <><i className="fas fa-upload" /> Attach PIQ Form</>}
+                  <input type="file" accept=".pdf,.doc,.docx,.jpg,.jpeg,.png" style={{ display: 'none' }}
+                    disabled={uploadingPiqFor === i.id}
+                    onChange={(e) => handlePiqUpload(i.id, e.target.files[0])} />
+                </label>
+              )}
+              {canManage && i.status !== 'Rejected' && i.status !== 'Cancelled' && (
+                rejectingId === i.id ? (
+                  <span style={{ display: 'flex', gap: 6, alignItems: 'center', flex: 1 }}>
+                    <input className="form-input" style={{ fontSize: 12, padding: '4px 8px' }} placeholder="Rejection reason…" value={rejectReason} onChange={(e) => setRejectReason(e.target.value)} />
+                    <button className="btn btn-danger btn-sm" onClick={confirmReject}>Confirm</button>
+                    <button className="btn btn-outline btn-sm" onClick={() => setRejectingId(null)}>Cancel</button>
+                  </span>
+                ) : (
+                  <button className="btn btn-outline btn-sm" style={{ color: 'var(--danger)' }} onClick={() => openReject(i.id)}>Reject</button>
+                )
+              )}
+            </div>
           </div>
         ))}
       </Modal>

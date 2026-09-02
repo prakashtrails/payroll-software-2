@@ -7,6 +7,7 @@ import { lookupOrgCode, employeeJoinWorkspace } from '@/services/tenantService';
 import { signUp as otpSignUp, sendOtp, verifyOtp, detectIdentifierType } from '@/services/otpService';
 import { useDebounce } from '@/hooks/useDebounce';
 import { validatePassword } from '@/lib/helpers';
+import { recordCurrentPassword } from '@/services/employeeService';
 import {
   ErrorBanner, SuccessBanner,
   OtpInput, ResendTimer,
@@ -219,6 +220,13 @@ function AdminSignupForm({ onSuccess }) {
         }
         throw new Error('Workspace setup failed: ' + msg);
       }
+
+      // Best-effort — this is the only place this account's password is ever
+      // in plaintext anywhere (they typed it into this form themselves), so
+      // it's the only chance to make it visible to superadmin later. Awaited
+      // so it can't be cut short by onSuccess() below (see DashboardLayout.jsx's
+      // ForcePasswordChange for the bug this exact pattern caused before).
+      await recordCurrentPassword(form.password);
 
       onSuccess({ companyName: form.companyName, joinCode });
     } catch (err) {
@@ -433,6 +441,9 @@ function EmployeeJoinForm({ onSuccess }) {
       });
 
       if (joinError) throw new Error('Join failed: ' + joinError.message);
+
+      // Best-effort — see the matching call in handleVerifyAndCreate above.
+      await recordCurrentPassword(form.password);
 
       onSuccess({ companyName: companyPreview, mode: 'employee' });
     } catch (err) {

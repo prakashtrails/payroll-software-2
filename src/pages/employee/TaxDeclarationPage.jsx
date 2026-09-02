@@ -16,7 +16,7 @@ const STATUS_BADGE = {
   Rejected: 'badge-danger',
 };
 
-export default function TaxDeclarationPage() {
+export function TaxDeclarationContent() {
   const { profile, tenant } = useAuth();
   const fy = currentFinancialYear();
   const [rows, setRows]           = useState([]);
@@ -59,7 +59,6 @@ export default function TaxDeclarationPage() {
 
   return (
     <>
-      <Header title="Tax Declaration" breadcrumb={`Investment declarations for FY ${fy} — reduces your monthly TDS`} />
       <div className="page-content">
         <div className="filter-bar">
           <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>
@@ -127,6 +126,15 @@ export default function TaxDeclarationPage() {
           <input className="form-input" placeholder="Link to uploaded proof document" value={form.proof_url} onChange={(e) => setForm({ ...form, proof_url: e.target.value })} />
         </div>
       </Modal>
+    </>
+  );
+}
+
+export default function TaxDeclarationPage() {
+  return (
+    <>
+      <Header title="Tax Declaration" breadcrumb={`Investment declarations for FY ${currentFinancialYear()} — reduces your monthly TDS`} />
+      <TaxDeclarationContent />
     </>
   );
 }

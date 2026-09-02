@@ -73,12 +73,24 @@ export function AuthProvider({ children }) {
       async (event, session) => {
         if (!mounted) return;
 
+        // Supabase fires this on every subscribe, typically before init()'s
+        // own getSession()+fetchProfile above has finished. It carries no
+        // new information (init() already reads the same session), but
+        // falling through to `setLoading(false)` below without having set
+        // user/profile races PrivateRoute into redirecting to /login before
+        // the real session data lands — which then bounces straight back
+        // once it does. init() alone owns resolving the initial load.
+        if (event === 'INITIAL_SESSION') return;
+
         if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
           if (session?.user) {
             setUser(session.user);
             setTimeout(async () => {
-              if (mounted) await fetchProfile(session.user.id);
+              if (!mounted) return;
+              await fetchProfile(session.user.id);
+              setLoading(false);
             }, 300);
+            return; // loading clears above, once profile is actually populated
           }
         } else if (event === 'SIGNED_OUT') {
           setUser(null);

@@ -1,63 +1,14 @@
 import React, { useEffect, useState } from 'react';
 import Header from '@/components/Header';
 import Modal from '@/components/Modal';
-import StatCard from '@/components/StatCard';
+import CircularProgress from '@/components/CircularProgress';
+import QuotaRings from '@/components/QuotaRings';
 import { showToast } from '@/components/Toast';
 import { useAuth } from '@/context/AuthContext';
 import { listMyLeaveRequests, requestLeave, checkProbationStatus } from '@/services/leaveService';
-import { fetchMyQuota } from '@/services/requestQuotaService';
+import { fetchMyQuota, SELF_LIMIT } from '@/services/requestQuotaService';
 import { fetchMyLeaveBalances, listLeaveTypes } from '@/services/leaveLedgerService';
 import { fmt, todayStr, HIGH_SALARY_THRESHOLD } from '@/lib/helpers';
-
-function QuotaBanner({ quota }) {
-  const { selfUsed, selfLimit, managerUsed, managerLimit } = quota;
-  const selfLeft    = selfLimit    - selfUsed;
-  const managerLeft = managerLimit - managerUsed;
-
-  let color, icon, msg;
-  if (selfLeft > 0) {
-    color = 'var(--success)'; icon = 'fa-shield-alt';
-    msg = `${selfLeft} self-approval${selfLeft !== 1 ? 's' : ''} remaining this month — your next request auto-approves instantly.`;
-  } else if (managerLeft > 0) {
-    color = 'var(--warning-dark, #92400e)'; icon = 'fa-user-check';
-    msg = `Self-approvals used (${selfUsed}/${selfLimit}). Next request goes to Manager · ${managerLeft} manager approval${managerLeft !== 1 ? 's' : ''} available.`;
-  } else {
-    color = 'var(--danger)'; icon = 'fa-exclamation-circle';
-    msg = `All quotas used this month (${selfUsed}/${selfLimit} self · ${managerUsed}/${managerLimit} manager). Next request goes to HR.`;
-  }
-
-  return (
-    <div style={{
-      background: selfLeft > 0 ? 'var(--success-light, #d1fae5)' : managerLeft > 0 ? 'var(--warning-light, #fffbeb)' : 'var(--danger-light, #fee2e2)',
-      border: `1px solid ${color}`,
-      borderRadius: 8, padding: '10px 16px', marginTop: 16,
-      fontSize: 13, color,
-      display: 'flex', alignItems: 'center', gap: 10,
-    }}>
-      <i className={`fas ${icon}`} />
-      {msg}
-    </div>
-  );
-}
-
-// Best-effort icon/color per leave type name — falls back gracefully for any
-// custom type an admin adds beyond the seeded Planned/Emergency/Unplanned set.
-function leaveTypeIcon(name = '') {
-  const n = name.toLowerCase();
-  if (n.includes('emergency')) return 'fa-triangle-exclamation';
-  if (n.includes('unplanned')) return 'fa-question-circle';
-  if (n.includes('planned')) return 'fa-calendar-check';
-  if (n.includes('sick')) return 'fa-briefcase-medical';
-  if (n.includes('comp')) return 'fa-gift';
-  return 'fa-calendar-day';
-}
-function leaveTypeColor(name = '') {
-  const n = name.toLowerCase();
-  if (n.includes('emergency')) return 'red';
-  if (n.includes('unplanned')) return 'orange';
-  if (n.includes('planned')) return 'green';
-  return 'blue';
-}
 
 const EMPTY_REQUEST = {
   leave_type: '',
@@ -101,9 +52,12 @@ export function LeaveContent() {
     setForm((f) => (f.leave_type ? f : { ...f, leave_type: active[0]?.name || '' }));
   };
 
+  const autoApprovalEnabled = tenant?.leave_auto_approval_enabled !== false;
+  const autoApprovalLimit   = tenant?.leave_auto_approval_limit ?? SELF_LIMIT;
+
   const loadQuota = async () => {
     if (!profile || !tenant) return;
-    const q = await fetchMyQuota(tenant.id, profile.id);
+    const q = await fetchMyQuota(tenant.id, profile.id, autoApprovalEnabled ? autoApprovalLimit : 0);
     setQuota(q);
   };
 
@@ -153,7 +107,7 @@ export function LeaveContent() {
         tenant_id: tenant.id,
         status: 'Pending',
       };
-      const { error, tier } = await requestLeave(payload);
+      const { error, tier } = await requestLeave(payload, { autoApprovalEnabled, autoApprovalLimit });
 
       if (error) {
         showToast(error.message || 'Failed to submit leave request', 'error');
@@ -204,42 +158,11 @@ export function LeaveContent() {
         </div>
       )}
 
-      {quota && <QuotaBanner quota={quota} />}
-
-      {(profile?.ctc || 0) >= HIGH_SALARY_THRESHOLD && (profile?.comp_off_balance || 0) > 0 && (
-        <div style={{
-          background: 'var(--primary-light, #eff6ff)',
-          border: '1px solid var(--primary)',
-          borderRadius: 8, padding: '10px 16px', marginTop: 16,
-          fontSize: 13, color: 'var(--primary)',
-          display: 'flex', alignItems: 'center', gap: 8,
-        }}>
-          <i className="fas fa-gift" />
-          You have <strong>{profile.comp_off_balance}</strong> Comp Off{profile.comp_off_balance > 1 ? 's' : ''} available.
-          Select <em>Comp Off</em> as the leave type to use them.
-        </div>
-      )}
-
-      {leaveBalances.length > 0 && (
-        <div style={{ marginTop: 16 }}>
-          <h3 style={{ fontSize: 15, marginBottom: 10 }}>My Leave Balance</h3>
-          <div className="stats-row" style={{ gridTemplateColumns: `repeat(${Math.min(leaveBalances.length, 4)}, 1fr)` }}>
-            {leaveBalances.map((b) => (
-              <StatCard
-                key={b.leave_type_id}
-                icon={leaveTypeIcon(b.leave_type?.name)}
-                iconColor={leaveTypeColor(b.leave_type?.name)}
-                value={b.balance}
-                label={b.leave_type?.name || 'Leave'}
-              />
-            ))}
-          </div>
-        </div>
-      )}
+      {quota && <QuotaRings quota={quota} autoApprovalEnabled={autoApprovalEnabled} title="Leave Approval Quota" actionLabel="leave request" />}
 
       <div className="card" style={{ marginTop: 16 }}>
         <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
-          <h3 style={{ margin: 0 }}>My Requests</h3>
+          <h3 style={{ margin: 0 }}>Leave History</h3>
           <div className="flex gap-1" style={{ flexWrap: 'wrap' }}>
             {['Pending', 'Approved', 'Rejected', 'All'].map(s => (
               <button
@@ -300,6 +223,40 @@ export function LeaveContent() {
         </div>
       </div>
 
+      {(profile?.ctc || 0) >= HIGH_SALARY_THRESHOLD && (profile?.comp_off_balance || 0) > 0 && (
+        <div style={{
+          background: 'var(--primary-light, #eff6ff)',
+          border: '1px solid var(--primary)',
+          borderRadius: 8, padding: '10px 16px', marginTop: 16,
+          fontSize: 13, color: 'var(--primary)',
+          display: 'flex', alignItems: 'center', gap: 8,
+        }}>
+          <i className="fas fa-gift" />
+          You have <strong>{profile.comp_off_balance}</strong> Comp Off{profile.comp_off_balance > 1 ? 's' : ''} available.
+          Select <em>Comp Off</em> as the leave type to use them.
+        </div>
+      )}
+
+      {leaveBalances.length > 0 && (
+        <div className="card" style={{ marginTop: 16 }}>
+          <div className="card-header"><h3 style={{ margin: 0 }}>My Leave Balance</h3></div>
+          <div style={{ padding: 16, display: 'flex', gap: 28, flexWrap: 'wrap' }}>
+            {leaveBalances.map((b) => (
+              <CircularProgress
+                key={b.leave_type_id}
+                used={b.used || 0}
+                total={b.allocated || 0}
+                unlimited={!!b.leave_type?.is_unlimited}
+                size={110}
+                strokeWidth={10}
+                label={b.leave_type?.name || 'Leave'}
+                emptyText="not allocated"
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
       <Modal
         show={showModal}
         onClose={() => setShowModal(false)}
@@ -322,7 +279,8 @@ export function LeaveContent() {
               <>
                 {leaveTypes.map((lt) => {
                   const bal = leaveBalances.find((b) => b.leave_type_id === lt.id);
-                  return <option key={lt.id} value={lt.name}>{lt.name}{bal ? ` — ${bal.balance} available` : ''}</option>;
+                  const suffix = lt.is_unlimited ? ' — Unlimited' : bal ? ` — ${bal.balance} available` : '';
+                  return <option key={lt.id} value={lt.name}>{lt.name}{suffix}</option>;
                 })}
                 {(profile?.ctc || 0) >= HIGH_SALARY_THRESHOLD && (
                   <option value="Comp Off">Comp Off (Weekly Off Compensation)</option>

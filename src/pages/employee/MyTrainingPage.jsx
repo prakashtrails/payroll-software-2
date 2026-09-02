@@ -5,7 +5,7 @@ import { useAuth } from '@/context/AuthContext';
 import { fetchMySkillMap, listTrainingEvents, listMyEnrollments, enrollInEvent, submitTrainingFeedback } from '@/services/trainingService';
 import { fmt } from '@/lib/helpers';
 
-export default function MyTrainingPage() {
+export function MyTrainingContent() {
   const { profile, tenant } = useAuth();
   const [skills, setSkills]       = useState([]);
   const [events, setEvents]       = useState([]);
@@ -49,9 +49,7 @@ export default function MyTrainingPage() {
   };
 
   return (
-    <>
-      <Header title="My Training" breadcrumb="Skill map and available training events" />
-      <div className="page-content">
+    <div className="page-content">
         {loading ? (
           <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)' }}><div className="spinner" style={{ margin: '0 auto 16px' }} />Loading…</div>
         ) : (
@@ -121,6 +119,14 @@ export default function MyTrainingPage() {
           </div>
         )}
       </div>
+  );
+}
+
+export default function MyTrainingPage() {
+  return (
+    <>
+      <Header title="My Training" breadcrumb="Skill map and available training events" />
+      <MyTrainingContent />
     </>
   );
 }

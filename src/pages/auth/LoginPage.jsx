@@ -5,6 +5,8 @@ import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/context/AuthContext';
 import { detectIdentifierType } from '@/services/otpService';
 import { phoneToPlaceholderEmail } from '@/lib/helpers';
+import { fetchTodayHoliday } from '@/services/holidayService';
+import HolidayCelebration from '@/components/HolidayCelebration';
 import {
   ErrorBanner, SuccessBanner,
   OtpInput, ResendTimer,
@@ -103,28 +105,51 @@ function PasswordLoginForm({ onSuccess, onForgotPassword }) {
 }
 
 function ForgotPasswordModal({ show, onClose }) {
-  const [email, setEmail] = useState('');
+  const [identifier, setIdentifier] = useState('');
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+  const [noEmailNotice, setNoEmailNotice] = useState(false);
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (show) { setIdentifier(''); setError(''); setSuccess(''); setNoEmailNotice(false); }
+  }, [show]);
 
   const handleReset = async (e) => {
     e?.preventDefault();
     setError('');
     setSuccess('');
-    if (!email.trim()) {
-      setError('Please enter your email address.');
+    setNoEmailNotice(false);
+    const trimmed = identifier.trim();
+    if (!trimmed) {
+      setError('Please enter your email address or phone number.');
       return;
     }
+
+    // Employees imported without an email sign in with a synthesized
+    // placeholder address (see phoneToPlaceholderEmail) that's never shown to
+    // them and isn't a real mailbox — sending a reset link there would look
+    // like it worked but could never arrive. OTP login can't stand in either;
+    // it's email-only right now (see otpService.sendOtp). So for a phone
+    // identifier, be upfront that this self-service flow can't reach them.
+    if (!trimmed.includes('@')) {
+      if (!/^\d{10}$/.test(trimmed.replace(/\D/g, ''))) {
+        setError('Please enter a valid email address or 10-digit phone number.');
+        return;
+      }
+      setNoEmailNotice(true);
+      return;
+    }
+
     setLoading(true);
     try {
       const redirectUrl = `${window.location.origin}/reset-password`;
-      const { error } = await supabase.auth.resetPasswordForEmail(email.trim().toLowerCase(), {
+      const { error } = await supabase.auth.resetPasswordForEmail(trimmed.toLowerCase(), {
         redirectTo: redirectUrl,
       });
       if (error) throw error;
       setSuccess('If this email exists, password reset instructions have been sent.');
-      setEmail('');
+      setIdentifier('');
     } catch (err) {
       setError(err.message || 'Failed to send reset instructions.');
     } finally {
@@ -144,19 +169,37 @@ function ForgotPasswordModal({ show, onClose }) {
           <div className="modal-body">
             <ErrorBanner message={error} />
             <SuccessBanner message={success} />
-            <p style={{ marginBottom: 16, color: 'var(--text-muted)' }}>
-              Enter the email address associated with your account. You can also use OTP login if you don't remember your password.
-            </p>
-            <div className="form-group">
-              <label className="form-label">Email Address</label>
-              <input className="form-input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@company.com" />
-            </div>
+            {noEmailNotice ? (
+              <div style={{
+                background: 'var(--warning-light)', color: 'var(--warning)',
+                padding: '12px 14px', borderRadius: 'var(--radius-md)', fontSize: 13,
+              }}>
+                <i className="fas fa-info-circle" style={{ marginRight: 6 }} />
+                Accounts that sign in with a phone number don't have an email on file, so we can't send a reset
+                link. Please contact your company admin/HR — they can reset your password for you.
+              </div>
+            ) : (
+              <>
+                <p style={{ marginBottom: 16, color: 'var(--text-muted)' }}>
+                  Enter the email address associated with your account and we'll send you a reset link.
+                  If you signed in with a phone number, contact your company admin instead.
+                </p>
+                <div className="form-group">
+                  <label className="form-label">Email Address</label>
+                  <input className="form-input" type="text" inputMode="email" value={identifier}
+                    onChange={(e) => setIdentifier(e.target.value)} placeholder="you@company.com"
+                    onKeyDown={(e) => e.key === 'Enter' && handleReset(e)} />
+                </div>
+              </>
+            )}
           </div>
           <div className="modal-footer">
             <button className="btn btn-outline" onClick={onClose}>Cancel</button>
-            <button className="btn btn-primary" onClick={handleReset} disabled={loading}>
-              {loading ? 'Sending…' : 'Send reset link'}
-            </button>
+            {!noEmailNotice && (
+              <button className="btn btn-primary" onClick={handleReset} disabled={loading}>
+                {loading ? 'Sending…' : 'Send reset link'}
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -191,11 +234,11 @@ function OtpLoginForm({ onSuccess }) {
   const handleSendOtp = useCallback(async (e) => {
     e?.preventDefault();
     setError(''); setSuccess('');
-    if (!identifier.trim()) { setError('Please enter your email or mobile number.'); return; }
-    if (!idType)             { setError('Please enter a valid email or mobile number.'); return; }
+    if (!identifier.trim()) { setError('Please enter your email address.'); return; }
+    if (idType !== 'email')  { setError('Please enter a valid email address. OTP login is email-only.'); return; }
     setSending(true);
     try {
-      const result = await sendOtp(identifier, { shouldCreateUser: true });
+      const result = await sendOtp(identifier, { shouldCreateUser: false }); // login: profile must already exist
       setResolvedId(result.identifier);
       setOtp(''); setStep(2);
       setSuccess(result.type==='email'
@@ -240,26 +283,26 @@ function OtpLoginForm({ onSuccess }) {
     <form onSubmit={handleSendOtp} noValidate>
       <ErrorBanner message={error} />
       <div className="form-group">
-        <label className="form-label">Email or Mobile Number</label>
+        <label className="form-label">Email Address</label>
         <div style={{position:'relative'}}>
           <input className="form-input" type="text" inputMode="email"
             placeholder="you@company.com"
             value={identifier} onChange={handleIdentifierChange}
-            autoFocus style={{paddingLeft:38,paddingRight:idType?80:12}} />
+            autoFocus style={{paddingLeft:38,paddingRight:idType==='email'?80:12}} />
           <i className="fas fa-envelope" style={ICON_STYLE} />
-          {idType && (
+          {idType==='email' && (
             <span style={{
               position:'absolute',right:10,top:'50%',transform:'translateY(-50%)',
               fontSize:10,fontWeight:700,letterSpacing:0.5,
               background:'var(--primary-light)',color:'var(--primary)',
               padding:'2px 8px',borderRadius:99,
-            }}>{idType==='email'?'EMAIL':'PHONE'}</span>
+            }}>EMAIL</span>
           )}
         </div>
         <div className="form-hint">We&apos;ll send a 6-digit OTP to your email.</div>
       </div>
       <button type="submit" className="btn btn-primary btn-lg btn-block"
-        disabled={sending||!idType} style={{marginTop:8,borderRadius:12,fontSize:14}}>
+        disabled={sending||idType!=='email'} style={{marginTop:8,borderRadius:12,fontSize:14}}>
         {sending
           ? <><div className="spinner" style={{width:18,height:18,borderWidth:2}} /> Sending OTP…</>
           : <><i className="fas fa-paper-plane" /> Send OTP</>}
@@ -288,20 +331,45 @@ function OtpLoginForm({ onSuccess }) {
 /* ─── Main LoginPage ──────────────────────────────────────────────────────── */
 
 export default function LoginPage() {
-  const { user, profile, loading } = useAuth();
+  const { user, profile, tenant, loading } = useAuth();
   const navigate = useNavigate();
   const [loginMode, setLoginMode] = useState('password');
   const [showForgotPassword, setShowForgotPassword] = useState(false);
 
-  useEffect(() => {
-    if (!loading && user && profile) {
-      const dest = profile.role === 'superadmin' ? '/dashboard' : '/home';
-      navigate(dest, { replace: true });
-    }
-  }, [user, profile, loading, navigate]);
+  // Post-login celebration: once we know the signed-in employee's tenant, check
+  // whether today is on THEIR company's holiday calendar (any holiday they've
+  // added, present or future) and celebrate before landing on the dashboard.
+  const [loginCelebration, setLoginCelebration] = useState(null);
+  const checkedHolidayRef = useRef(false);
 
-  // no-op: redirect fires automatically from useEffect above when profile loads
+  useEffect(() => {
+    if (loading || !user || !profile || checkedHolidayRef.current) return;
+    checkedHolidayRef.current = true;
+    const dest = profile.role === 'superadmin' ? '/dashboard' : '/home';
+
+    if (profile.role === 'superadmin' || !tenant?.id) {
+      navigate(dest, { replace: true });
+      return;
+    }
+
+    fetchTodayHoliday(tenant.id).then(({ data }) => {
+      if (data) setLoginCelebration({ holiday: data, dest });
+      else navigate(dest, { replace: true });
+    });
+  }, [user, profile, tenant, loading, navigate]);
+
+  // no-op: redirect fires automatically from the effect above once profile loads
   const handleSuccess = useCallback(() => {}, []);
+
+  if (loginCelebration) {
+    return (
+      <HolidayCelebration
+        holiday={loginCelebration.holiday}
+        durationMs={2800}
+        onDone={() => navigate(loginCelebration.dest, { replace: true })}
+      />
+    );
+  }
 
   if (loading) return (
     <div className="auth-container">

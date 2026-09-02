@@ -1,5 +1,6 @@
 import { supabase } from '@/lib/supabase';
 import { getOrCreateQuota, determineApproverRole, incrementSelfCount, incrementManagerCount } from './requestQuotaService';
+import { notifyProfiles, notifyRoles, withHrRole, getRequesterLabel } from './notificationService';
 
 /**
  * Fetch special requests for a tenant.
@@ -55,7 +56,38 @@ export async function submitSpecialRequest(payload) {
     await incrementSelfCount(tenant_id, profile_id);
   }
 
-  const { error } = await supabase.from('special_requests').insert([finalPayload]);
+  const { data: inserted, error } = await supabase.from('special_requests').insert([finalPayload]).select('id').single();
+
+  if (!error && inserted?.id) {
+    const requester = await getRequesterLabel(profile_id);
+    if (tier === 'self') {
+      await notifyProfiles(tenant_id, [profile_id], {
+        type: 'special_request_auto_approved',
+        title: 'Special request auto-approved',
+        body: `Your ${payload.request_type || ''} request was automatically approved.`,
+        linkKey: 'special_requests',
+        relatedId: inserted.id,
+      });
+      await notifyRoles(tenant_id, ['admin'], {
+        type: 'special_request_auto_approved',
+        title: 'Special request auto-approved',
+        body: `${requester} submitted a ${payload.request_type || ''} request — auto-approved, no action needed.`,
+        linkKey: 'special_requests',
+        actorId: profile_id,
+        relatedId: inserted.id,
+      }, profile_id);
+    } else {
+      await notifyRoles(tenant_id, withHrRole([tier]), {
+        type: 'special_request_submitted',
+        title: 'New special request',
+        body: `${requester} submitted a new ${payload.request_type || ''} request — needs your review.`,
+        linkKey: 'special_requests',
+        actorId: profile_id,
+        relatedId: inserted.id,
+      }, profile_id);
+    }
+  }
+
   return { error, tier };
 }
 
@@ -86,6 +118,17 @@ export async function updateSpecialRequestStatus(id, status, approverId, approve
 
   if (!error && status === 'Approved' && approverRole === 'manager' && req?.tenant_id) {
     await incrementManagerCount(req.tenant_id, req.profile_id);
+  }
+
+  if (!error && req?.tenant_id && req?.profile_id) {
+    await notifyProfiles(req.tenant_id, [req.profile_id], {
+      type: `special_request_${status.toLowerCase()}`,
+      title: `Special request ${status}`,
+      body: `Your special request was ${status.toLowerCase()}.`,
+      linkKey: 'special_requests',
+      actorId: approverId,
+      relatedId: id,
+    });
   }
 
   return { error };

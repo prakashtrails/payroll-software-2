@@ -218,7 +218,7 @@ export default function MasterReportPage() {
 
     if (reportId === 'attendance_log') {
       const headers = [
-        '#', 'Employee Name', 'Department', 'Designation',
+        '#', 'Employee Name', 'ESSL Employee Code', 'Department', 'Designation',
         'Date', 'Day', 'Status', 'Clock In', 'Clock Out', 'Hours Worked',
       ];
       const dataRows = [];
@@ -232,6 +232,7 @@ export default function MasterReportPage() {
           dataRows.push([
             dataRows.length + 1,
             name,
+            emp.essl_employee_code || '',
             emp.department  || '',
             emp.designation || '',
             dt,
@@ -244,7 +245,7 @@ export default function MasterReportPage() {
         });
       });
       const ws = XLSX.utils.aoa_to_sheet([headers, ...dataRows]);
-      setColWidths(ws, [5, 24, 18, 20, 12, 6, 12, 12, 12, 13]);
+      setColWidths(ws, [5, 24, 16, 18, 20, 12, 6, 12, 12, 12, 13]);
       applySheetMeta(ws, headers.length, dataRows.length);
       return ws;
     }

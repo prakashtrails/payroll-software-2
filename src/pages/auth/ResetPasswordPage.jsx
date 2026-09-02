@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import { supabase } from '@/lib/supabase';
 import { ErrorBanner, SuccessBanner } from '@/components/OtpVerification';
 import { validatePassword } from '@/lib/helpers';
+import { clearMustChangePassword, recordCurrentPassword } from '@/services/employeeService';
 
 const ICON_STYLE = {
   position: 'absolute', left: 13, top: '50%', transform: 'translateY(-50%)',
@@ -113,8 +114,15 @@ export default function ResetPasswordPage() {
     setLoading(true);
     try {
       const { error } = await supabase.auth.updateUser({ password: newPassword });
-      
+
       if (error) throw error;
+
+      // Keep HR/superadmin's "current password" view and the forced-change
+      // flag in sync — otherwise a self-service reset here leaves them
+      // pointing at a stale password (see ForcePasswordChange for the same
+      // pairing on first-login password setup).
+      await clearMustChangePassword();
+      await recordCurrentPassword(newPassword);
 
       setSuccess('Password reset successfully! Redirecting to login...');
       

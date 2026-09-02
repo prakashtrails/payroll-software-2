@@ -1,6 +1,7 @@
 import { supabase } from '@/lib/supabase';
-import { getOrCreateQuota, determineApproverRole, incrementSelfCount, incrementManagerCount } from './requestQuotaService';
+import { getOrCreateQuota, determineApproverRole, incrementSelfCount, incrementManagerCount, SELF_LIMIT } from './requestQuotaService';
 import { getFirstApproverRole } from './approvalService';
+import { notifyProfiles, notifyRoles, withHrRole, getRequesterLabel } from './notificationService';
 
 /**
  * Fetch leave requests for a tenant.
@@ -63,10 +64,14 @@ export async function checkProbationStatus(profileId) {
 
 /**
  * Submit a leave request with tiered quota routing.
+ * `tenantSettings` carries the superadmin-configured auto-approval controls
+ * (Toggle Services → Leave Auto-Approval): pass `{ autoApprovalEnabled, autoApprovalLimit }`
+ * from the caller's already-loaded tenant record. A tenant with auto-approval
+ * turned off gets selfLimit 0, so every request skips straight to manager/admin.
  * Returns { error, tier } where tier is 'self' | 'manager' | 'admin'.
  * When tier === 'self' the request is auto-approved immediately (no HR needed).
  */
-export async function requestLeave(payload) {
+export async function requestLeave(payload, tenantSettings = {}) {
   const { tenant_id, profile_id } = payload;
 
   // Optional per-tenant override: if an admin has configured an approval
@@ -75,8 +80,12 @@ export async function requestLeave(payload) {
   // no-op for them and the existing quota-based routing is unaffected.
   const chainRole = await getFirstApproverRole(tenant_id, 'leave_requests');
 
+  const selfLimit = tenantSettings.autoApprovalEnabled === false
+    ? 0
+    : (tenantSettings.autoApprovalLimit ?? SELF_LIMIT);
+
   const quota = await getOrCreateQuota(tenant_id, profile_id);
-  const tier  = chainRole || determineApproverRole(quota);
+  const tier  = chainRole || determineApproverRole(quota, selfLimit);
 
   const finalPayload = {
     ...payload,
@@ -97,6 +106,39 @@ export async function requestLeave(payload) {
   if (!error && tier === 'self' && inserted?.id) {
     const { error: ledgerErr } = await supabase.rpc('record_leave_deduction', { p_leave_request_id: inserted.id });
     if (ledgerErr) console.error('record_leave_deduction failed:', ledgerErr); // non-fatal — the leave request itself already succeeded
+  }
+
+  if (!error && inserted?.id) {
+    const requester = await getRequesterLabel(profile_id);
+    if (tier === 'self') {
+      await notifyProfiles(tenant_id, [profile_id], {
+        type: 'leave_request_auto_approved',
+        title: 'Leave request auto-approved',
+        body: `Your ${payload.leave_type || ''} leave request was automatically approved.`,
+        linkKey: 'leave_requests',
+        relatedId: inserted.id,
+      });
+      // HR still gets a heads-up even on a self-approved request — nothing
+      // for them to act on, but they should never be left unaware a leave
+      // request came in and went through.
+      await notifyRoles(tenant_id, ['admin'], {
+        type: 'leave_request_auto_approved',
+        title: 'Leave request auto-approved',
+        body: `${requester} submitted a ${payload.leave_type || ''} leave request — auto-approved, no action needed.`,
+        linkKey: 'leave_requests',
+        actorId: profile_id,
+        relatedId: inserted.id,
+      }, profile_id);
+    } else {
+      await notifyRoles(tenant_id, withHrRole([tier]), {
+        type: 'leave_request_submitted',
+        title: 'New leave request',
+        body: `${requester} submitted a new ${payload.leave_type || ''} leave request — needs your review.`,
+        linkKey: 'leave_requests',
+        actorId: profile_id,
+        relatedId: inserted.id,
+      }, profile_id);
+    }
   }
 
   return { error, tier };
@@ -145,6 +187,17 @@ export async function updateLeaveStatus(id, status, approverId, approverRole = '
 
     const { error: ledgerErr } = await supabase.rpc('record_leave_deduction', { p_leave_request_id: id });
     if (ledgerErr) console.error('record_leave_deduction failed:', ledgerErr); // non-fatal — approval itself already succeeded
+  }
+
+  if (!error && leave?.tenant_id && leave?.profile_id) {
+    await notifyProfiles(leave.tenant_id, [leave.profile_id], {
+      type: `leave_request_${status.toLowerCase()}`,
+      title: `Leave request ${status}`,
+      body: `Your ${leave.leave_type || ''} leave request was ${status.toLowerCase()}.`,
+      linkKey: 'leave_requests',
+      actorId: approverId,
+      relatedId: id,
+    });
   }
 
   return { error };

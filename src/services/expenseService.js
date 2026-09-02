@@ -1,4 +1,5 @@
 import { supabase } from '@/lib/supabase';
+import { notifyProfiles, notifyRoles, getRequesterLabel } from './notificationService';
 
 const RECEIPT_BUCKET = 'expense-receipts';
 export const RECEIPT_MAX_BYTES = 5 * 1024 * 1024;
@@ -45,17 +46,54 @@ export async function createExpenseClaim(tenantId, profileId, advanceId, items) 
 
   const rows = items.map((i) => ({ claim_id: claim.id, category: i.category, amount: Number(i.amount) || 0, description: i.description || '', receipt_path: i.receipt_path || '' }));
   const { error: itemErr } = await supabase.from('expense_claim_items').insert(rows);
+
+  if (!itemErr) {
+    const requester = await getRequesterLabel(profileId);
+    await notifyRoles(tenantId, ['admin', 'manager'], {
+      type: 'expense_claim_submitted',
+      title: 'New expense claim',
+      body: `${requester} submitted a new expense claim (${totalAmount}) — needs your review.`,
+      linkKey: 'expense_claims',
+      actorId: profileId,
+      relatedId: claim.id,
+    }, profileId);
+  }
+
   return { error: itemErr, claimId: claim.id };
 }
 
 export async function rejectExpenseClaim(id) {
+  const { data: claim } = await supabase.from('expense_claims').select('tenant_id, profile_id').eq('id', id).single();
+
   const { error } = await supabase.from('expense_claims').update({ status: 'Rejected' }).eq('id', id);
+
+  if (!error && claim?.tenant_id && claim?.profile_id) {
+    await notifyProfiles(claim.tenant_id, [claim.profile_id], {
+      type: 'expense_claim_rejected',
+      title: 'Expense claim rejected',
+      body: 'Your expense claim was rejected.',
+      linkKey: 'expense_claims',
+      relatedId: id,
+    });
+  }
   return { error };
 }
 
 /** Approves and either nets against the linked advance or adds a reimbursement to this month's one-off pay items. */
 export async function approveExpenseClaim(id, month, year) {
+  const { data: claim } = await supabase.from('expense_claims').select('tenant_id, profile_id').eq('id', id).single();
+
   const { error } = await supabase.rpc('approve_expense_claim', { p_claim_id: id, p_month: month, p_year: year });
+
+  if (!error && claim?.tenant_id && claim?.profile_id) {
+    await notifyProfiles(claim.tenant_id, [claim.profile_id], {
+      type: 'expense_claim_approved',
+      title: 'Expense claim approved',
+      body: 'Your expense claim was approved.',
+      linkKey: 'expense_claims',
+      relatedId: id,
+    });
+  }
   return { error };
 }
 

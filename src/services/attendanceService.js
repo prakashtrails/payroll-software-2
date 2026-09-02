@@ -1,7 +1,9 @@
 import { supabase } from '@/lib/supabase';
-import { todayStr, timeStr, diffHours, checkGeofence } from '@/lib/helpers';
-import { getOrCreateQuota, determineApproverRole, incrementSelfCount, incrementManagerCount } from './requestQuotaService';
-import { resolveAttendanceSettings } from './tenantService';
+import { todayStr, timeStr, diffHours, checkGeofenceMulti, geofenceIsConfigured } from '@/lib/helpers';
+import { getOrCreateQuota, determineApproverRole, incrementSelfCount, incrementManagerCount, SELF_LIMIT } from './requestQuotaService';
+import { resolveAttendanceSettings, listAccessibleOutlets } from './tenantService';
+import { getApprovedWfhForDate } from './wfhService';
+import { notifyProfiles, notifyRoles, withHrRole, getRequesterLabel } from './notificationService';
 
 /** Full month attendance (with punches) for one employee — used in calendar views. */
 export async function fetchMyMonthAttendance(profileId, year, month) {
@@ -39,11 +41,31 @@ export async function clockIn(tenantId, profileId, tenant, locationData = null) 
   const diffMin  = (now.getHours() * 60 + now.getMinutes()) - (sh * 60 + sm);
   const status   = diffMin > lateMin ? 'Late' : 'Present';
 
-  // Geofence check — flags, never blocks, since field staff legitimately punch off-site sometimes.
-  const { data: outlet } = profile?.outlet_id
-    ? await supabase.from('outlets').select('geofence_lat, geofence_lng, geofence_radius').eq('id', profile.outlet_id).maybeSingle()
-    : { data: null };
-  const outOfGeofence = checkGeofence(locationData?.lat, locationData?.lng, outlet, tenant) || false;
+  // Authoritative, server-side geofence check for clock-IN. The dashboard already
+  // gates this client-side (useGeofenceClock), but a client can't be trusted to
+  // enforce it honestly — flaky/backgrounded mobile geolocation, a stale watch
+  // position, or a directly-called API request can all skip that check — so this
+  // re-verifies and actually rejects the punch, rather than merely flagging it.
+  // Passes if inside ANY of the employee's accessible outlets (home outlet + any
+  // extra multi-outlet access grants, or every outlet when the tenant has
+  // "allow_any_outlet_clockin" on), not just their single home outlet. Approved
+  // WFH for today lifts the requirement entirely, same as the client.
+  const [{ data: accessibleOutlets }, { data: approvedWfh }] = await Promise.all([
+    listAccessibleOutlets(profileId, profile?.outlet_id, tenant),
+    getApprovedWfhForDate(profileId, today),
+  ]);
+
+  let outOfGeofence = false;
+  if (!approvedWfh && geofenceIsConfigured(accessibleOutlets, tenant)) {
+    if (locationData?.lat == null || locationData?.lng == null) {
+      throw new Error('Location is required to clock in. Please allow location access and try again.');
+    }
+    outOfGeofence = checkGeofenceMulti(locationData.lat, locationData.lng, accessibleOutlets, tenant);
+    if (outOfGeofence === true) {
+      throw new Error('You are outside all of your allowed clock-in locations. Move inside one of them and try again.');
+    }
+    outOfGeofence = false; // reached only when inside a fence or not configured
+  }
 
   // Atomic create-if-missing on (profile_id, date) — a select-then-insert here let a
   // double-tap (or slow network + retry) create two attendance rows for the same day.
@@ -76,10 +98,27 @@ export async function clockIn(tenantId, profileId, tenant, locationData = null) 
     .from('punches')
     .insert([{ attendance_id: att.id, punch_time: timeStr(new Date()), punch_type: 'in' }]);
   if (punchErr) throw punchErr;
+
+  await notifyProfiles(tenantId, [profileId], {
+    type: 'clock_in',
+    title: 'Clocked in',
+    body: `You clocked in at ${timeStr(new Date())}.`,
+    linkKey: 'attendance',
+  });
 }
 
-/** Clock out for today. Inserts punch-out and recalculates total_hours + status. */
-export async function clockOut(profileId, locationData = null) {
+/**
+ * Clock out for today. Inserts punch-out and recalculates total_hours + status.
+ *
+ * `allowOutsideGeofence` exists ONLY for the automatic safety-net clock-out
+ * fired by useGeofenceClock when someone has been outside every allowed fence
+ * for AUTO_CLOCKOUT_GRACE_MS straight (see doAutoClockOut in the dashboard
+ * pages) — that call reports genuinely-outside coordinates in order to END an
+ * out-of-bounds session, which is the opposite of the fraud this check exists
+ * to stop, so it must always be able to go through. A manual, user-initiated
+ * clock-out must never set this flag.
+ */
+export async function clockOut(profileId, locationData = null, { allowOutsideGeofence = false } = {}) {
   const today = todayStr();
 
   const { data: att, error: fetchErr } = await supabase
@@ -90,6 +129,39 @@ export async function clockOut(profileId, locationData = null) {
     .maybeSingle();
   if (fetchErr) throw fetchErr;
   if (!att) throw new Error('No clock-in found for today. Please clock in first.');
+
+  // Thresholds: the employee's home outlet override, falling back to the tenant default.
+  const outletId = att.profile?.outlet_id;
+  const { data: tenant } = await supabase
+    .from('tenants')
+    .select('id, min_half_day_hours, min_full_day_hours, geofence_lat, geofence_lng, geofence_radius, allow_any_outlet_clockin')
+    .eq('id', att.tenant_id)
+    .single();
+  const [{ data: outlet }, { data: accessibleOutlets }, { data: approvedWfh }] = await Promise.all([
+    outletId
+      ? supabase.from('outlets').select('min_half_day_hours, min_full_day_hours, geofence_lat, geofence_lng, geofence_radius').eq('id', outletId).maybeSingle()
+      : Promise.resolve({ data: null }),
+    listAccessibleOutlets(profileId, outletId, tenant),
+    getApprovedWfhForDate(profileId, today),
+  ]);
+
+  // Authoritative, server-side geofence check for clock-OUT — same rule as
+  // clock-IN (see comment there). Previously this only *flagged*
+  // out_of_geofence and let the punch-out through regardless, which meant an
+  // employee could leave the premises and still clock out from anywhere; now
+  // it's rejected outright, same as clock-in, unless this is the automatic
+  // safety-net clock-out (see allowOutsideGeofence doc above).
+  let outOfGeofence = false;
+  if (!allowOutsideGeofence && !approvedWfh && geofenceIsConfigured(accessibleOutlets, tenant)) {
+    if (locationData?.lat == null || locationData?.lng == null) {
+      throw new Error('Location is required to clock out. Please allow location access and try again.');
+    }
+    if (checkGeofenceMulti(locationData.lat, locationData.lng, accessibleOutlets, tenant) === true) {
+      throw new Error('You are outside all of your allowed clock-in locations. Move inside one of them and try again.');
+    }
+  } else if (allowOutsideGeofence) {
+    outOfGeofence = checkGeofenceMulti(locationData?.lat, locationData?.lng, accessibleOutlets, tenant) === true;
+  }
 
   const punchOutTime = timeStr(new Date());
   const { error: punchErr } = await supabase
@@ -111,14 +183,6 @@ export async function clockOut(profileId, locationData = null) {
     if (outs[i]) total += diffHours(ins[i].punch_time, outs[i].punch_time);
   }
 
-  // Thresholds: the employee's outlet override, falling back to the tenant default.
-  const outletId = att.profile?.outlet_id;
-  const [{ data: tenant }, { data: outlet }] = await Promise.all([
-    supabase.from('tenants').select('min_half_day_hours, min_full_day_hours, geofence_lat, geofence_lng, geofence_radius').eq('id', att.tenant_id).single(),
-    outletId
-      ? supabase.from('outlets').select('min_half_day_hours, min_full_day_hours, geofence_lat, geofence_lng, geofence_radius').eq('id', outletId).maybeSingle()
-      : Promise.resolve({ data: null }),
-  ]);
   const { min_half_day_hours: halfMin, min_full_day_hours: fullMin } = resolveAttendanceSettings(tenant, outlet);
 
   let status = 'Absent';
@@ -128,10 +192,6 @@ export async function clockOut(profileId, locationData = null) {
     status = 'Half Day';
   }
 
-  // Only ever flips out_of_geofence to true, never back to false — preserves
-  // a flag already set at clock-in if this punch-out happens to be in range.
-  const outOfGeofence = checkGeofence(locationData?.lat, locationData?.lng, outlet, tenant);
-
   await supabase
     .from('attendance')
     .update({
@@ -139,9 +199,16 @@ export async function clockOut(profileId, locationData = null) {
       status,
       punch_out_lat: locationData?.lat,
       punch_out_lng: locationData?.lng,
-      ...(outOfGeofence === true ? { out_of_geofence: true } : {}),
+      ...(outOfGeofence ? { out_of_geofence: true } : {}),
     })
     .eq('id', att.id);
+
+  await notifyProfiles(att.tenant_id, [profileId], {
+    type: 'clock_out',
+    title: 'Clocked out',
+    body: `You clocked out. Total hours today: ${(Math.round(total * 100) / 100).toFixed(2)}.`,
+    linkKey: 'attendance',
+  });
 
   return { total };
 }
@@ -357,12 +424,21 @@ export async function fetchEmployeeFullHistory(profileId) {
 
 /**
  * Employee submits a regularize request with tiered quota routing.
+ * `tenantSettings` carries the superadmin-configured auto-approval controls
+ * (Toggle Services → Attendance Regularization Auto-Approval): pass
+ * `{ autoApprovalEnabled, autoApprovalLimit }` from the caller's already-loaded
+ * tenant record. A tenant with auto-approval off gets selfLimit 0, so every
+ * request skips straight to manager/admin.
  * Returns { data, error, tier } where tier is 'self' | 'manager' | 'admin'.
  * When tier === 'self' the attendance change is applied immediately (no approval wait).
  */
-export async function submitRegularizeRequest(tenantId, profileId, { date, clockInTime, clockOutTime, reason }) {
+export async function submitRegularizeRequest(tenantId, profileId, { date, clockInTime, clockOutTime, reason }, tenantSettings = {}) {
+  const selfLimit = tenantSettings.autoApprovalEnabled === false
+    ? 0
+    : (tenantSettings.autoApprovalLimit ?? SELF_LIMIT);
+
   const quota = await getOrCreateQuota(tenantId, profileId);
-  const tier  = determineApproverRole(quota);
+  const tier  = determineApproverRole(quota, selfLimit);
 
   const payload = {
     tenant_id:      tenantId,
@@ -400,6 +476,36 @@ export async function submitRegularizeRequest(tenantId, profileId, { date, clock
   // (e.g. a blocked audit-log insert) with nothing actually recorded.
   if (tier === 'self' && !error) {
     await incrementSelfCount(tenantId, profileId);
+  }
+
+  if (!error && data?.id) {
+    const requester = await getRequesterLabel(profileId);
+    if (tier === 'self') {
+      await notifyProfiles(tenantId, [profileId], {
+        type: 'regularize_auto_approved',
+        title: 'Regularize request auto-approved',
+        body: `Your attendance correction for ${date} was automatically approved.`,
+        linkKey: 'regularize_attendance',
+        relatedId: data.id,
+      });
+      await notifyRoles(tenantId, ['admin'], {
+        type: 'regularize_auto_approved',
+        title: 'Regularize request auto-approved',
+        body: `${requester} submitted an attendance correction for ${date} — auto-approved, no action needed.`,
+        linkKey: 'regularize_attendance',
+        actorId: profileId,
+        relatedId: data.id,
+      }, profileId);
+    } else {
+      await notifyRoles(tenantId, withHrRole([tier]), {
+        type: 'regularize_request_submitted',
+        title: 'New regularize request',
+        body: `${requester} submitted a new attendance correction for ${date} — needs your review.`,
+        linkKey: 'regularize_attendance',
+        actorId: profileId,
+        relatedId: data.id,
+      }, profileId);
+    }
   }
 
   return { data, error, tier };
@@ -473,11 +579,27 @@ export async function approveRegularizeRequest(request, reviewerId, reviewerRole
     await incrementManagerCount(request.tenant_id, request.profile_id);
   }
 
+  await notifyProfiles(request.tenant_id, [request.profile_id], {
+    type: 'regularize_request_approved',
+    title: 'Regularize request approved',
+    body: `Your attendance correction for ${request.date} was approved.`,
+    linkKey: 'regularize_attendance',
+    actorId: reviewerId,
+    relatedId: request.id,
+  });
+
   return { error: null };
 }
 
 /** Reject a regularization request */
 export async function rejectRegularizeRequest(requestId, reviewerId) {
+  // Fetched purely to notify the requester below — the update itself only needs the id.
+  const { data: req } = await supabase
+    .from('regularize_requests')
+    .select('tenant_id, profile_id, date')
+    .eq('id', requestId)
+    .single();
+
   const reviewedAt = new Date().toISOString();
   const { data: updated, error } = await supabase
     .from('regularize_requests')
@@ -488,6 +610,17 @@ export async function rejectRegularizeRequest(requestId, reviewerId) {
 
   if (!error && updated?.length === 0) {
     return { error: new Error('This request has already been reviewed.') };
+  }
+
+  if (!error && req?.tenant_id && req?.profile_id) {
+    await notifyProfiles(req.tenant_id, [req.profile_id], {
+      type: 'regularize_request_rejected',
+      title: 'Regularize request rejected',
+      body: `Your attendance correction for ${req.date} was rejected.`,
+      linkKey: 'regularize_attendance',
+      actorId: reviewerId,
+      relatedId: requestId,
+    });
   }
   return { error };
 }

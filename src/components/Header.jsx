@@ -1,4 +1,6 @@
 import React from 'react';
+import GlobalSearch from './GlobalSearch';
+import NotificationBell from './NotificationBell';
 
 export default function Header({ title, breadcrumb, actions }) {
   return (
@@ -10,6 +12,8 @@ export default function Header({ title, breadcrumb, actions }) {
         </div>
       </div>
       <div className="header-right">
+        <GlobalSearch />
+        <NotificationBell />
         {actions}
       </div>
     </header>

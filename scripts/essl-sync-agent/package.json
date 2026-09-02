@@ -1,0 +1,17 @@
+{
+  "name": "essl-sync-agent",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Reads new punch logs from a local ESSL/eTimeTrackLite MySQL database and pushes them to CrewCore's essl-punch Edge Function.",
+  "type": "commonjs",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "sync-once": "node index.js --once"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "mssql": "^11.0.1",
+    "mysql2": "^3.11.0"
+  }
+}

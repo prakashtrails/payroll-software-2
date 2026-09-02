@@ -1,7 +1,50 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { QRCodeSVG } from 'qrcode.react';
+import { FEATURE_REGISTRY } from '@/lib/featureRegistry';
 import './HomePage.css';
+
+const SUPPORT_EMAIL = 'crewcoreadmin@gmail.com';
+
+// Icons for every entry in FEATURE_REGISTRY — kept here (rather than in the
+// registry itself) since this page is the only consumer that needs per-item
+// icons; Toggle Services just needs the name/description/category.
+const FEATURE_ICONS = {
+  employees: 'fa-users', attendance: 'fa-fingerprint', shift_roster: 'fa-calendar-days',
+  employee_calendar: 'fa-calendar-alt', master_report: 'fa-file-alt', helpdesk: 'fa-headset',
+  announcements: 'fa-bullhorn', policies: 'fa-file-contract', onboarding: 'fa-door-open',
+  offboarding: 'fa-door-closed', training: 'fa-graduation-cap', assets: 'fa-laptop',
+  projects: 'fa-diagram-project', grievances: 'fa-gavel', outlets_multi_branch: 'fa-store',
+  leave_requests: 'fa-calendar-minus', regularize_attendance: 'fa-clock-rotate-left',
+  wfh_requests: 'fa-house-laptop', special_requests: 'fa-inbox', expense_claims: 'fa-receipt',
+  travel_requests: 'fa-plane', leave_setup: 'fa-sliders', tax_declaration: 'fa-file-invoice',
+  hiring: 'fa-briefcase', headcount_requests: 'fa-user-plus', interviews: 'fa-comments',
+  offer_letters: 'fa-file-signature', refer: 'fa-share-nodes',
+  performance_kras: 'fa-bullseye', performance_one_on_ones: 'fa-people-arrows',
+  performance_feedback: 'fa-comment-dots', performance_pip: 'fa-chart-line', performance_reviews: 'fa-star',
+  salary_structure: 'fa-sitemap', run_payroll: 'fa-money-bill-wave', payslips: 'fa-file-invoice-dollar',
+  advances_loans: 'fa-hand-holding-dollar', salary_additions: 'fa-coins', tax_slabs: 'fa-percent',
+  approval_chains: 'fa-route',
+};
+
+const CATEGORY_META = {
+  General:     { icon: 'fa-layer-group',   blurb: 'The everyday tools every company gets' },
+  Requests:    { icon: 'fa-inbox',         blurb: 'Employee-initiated requests and approvals' },
+  Hiring:      { icon: 'fa-briefcase',     blurb: 'From job posting to signed offer letter' },
+  Performance: { icon: 'fa-trophy',        blurb: 'Goals, feedback, and review cycles' },
+  Payroll:     { icon: 'fa-wallet',        blurb: 'Salary structure through payslip delivery' },
+  System:      { icon: 'fa-gears',         blurb: 'Configuration that powers everything else' },
+};
+
+const CATEGORY_ORDER = ['General', 'Requests', 'Hiring', 'Performance', 'Payroll', 'System'];
+
+const FEATURE_CATEGORIES = CATEGORY_ORDER.map((category) => ({
+  category,
+  ...CATEGORY_META[category],
+  items: FEATURE_REGISTRY
+    .filter((f) => f.category === category)
+    .sort((a, b) => a.sort_order - b.sort_order),
+})).filter((c) => c.items.length);
 
 export default function HomePage() {
   const navigate = useNavigate();
@@ -12,9 +55,15 @@ export default function HomePage() {
       <nav className="navbar">
         <div className="container">
           <div className="navbar-content">
-            <div className="logo">
-              <img src="/logo.png" alt="CrewCore" />
-              <span>CrewCore</span>
+            <div className="navbar-left">
+              <div className="logo">
+                <img src="/logo.png" alt="CrewCore" />
+                <span>CrewCore</span>
+              </div>
+              <div className="nav-links">
+                <a href="#features">Features</a>
+                <a href="#support">Support</a>
+              </div>
             </div>
             <div className="nav-buttons">
               <button className="btn-secondary" onClick={() => navigate('/login')}>
@@ -31,34 +80,36 @@ export default function HomePage() {
       {/* Hero Section */}
       <section className="hero">
         <div className="container">
-          <div className="hero-content">
-            <div className="hero-text">
-              <h1>Workforce &amp; Payroll, Made Simple</h1>
-              <p>
-                CrewCore brings your team, attendance, leaves, and payroll together in one
-                intuitive platform — built for modern, fast-moving businesses.
-              </p>
-              <div className="hero-buttons">
-                <button className="btn-primary btn-lg" onClick={() => navigate('/signup')}>
-                  Register Your Company
-                </button>
-                <button className="btn-outline btn-lg" onClick={() => navigate('/login')}>
-                  Sign In
-                </button>
-              </div>
+          <div className="hero-inner">
+            <span className="eyebrow">Payroll &amp; Workforce Management</span>
+            <h1>
+              Run your workforce.<br />
+              <span className="accent">Not the paperwork.</span>
+            </h1>
+            <p>
+              CrewCore brings your team, attendance, leaves, and payroll together in one
+              platform — built for businesses that would rather move than manage spreadsheets.
+            </p>
+            <div className="hero-buttons">
+              <button className="btn-primary btn-lg" onClick={() => navigate('/signup')}>
+                Register Your Company
+              </button>
+              <button className="btn-outline btn-lg" onClick={() => navigate('/login')}>
+                Sign In
+              </button>
             </div>
-            <div className="hero-visual">
-              <div className="dashboard-preview">
-                <div className="preview-header">
-                  <div className="dot"></div>
-                  <div className="dot"></div>
-                  <div className="dot"></div>
-                </div>
-                <div className="preview-content">
-                  <div className="chart-placeholder">
-                    <i className="fas fa-chart-bar"></i>
-                  </div>
-                </div>
+            <div className="hero-stats">
+              <div className="hero-stat">
+                <strong>{FEATURE_REGISTRY.length}+</strong>
+                <span>modules included</span>
+              </div>
+              <div className="hero-stat">
+                <strong>Multi-tenant</strong>
+                <span>isolated by design</span>
+              </div>
+              <div className="hero-stat">
+                <strong>Role-based</strong>
+                <span>access control</span>
               </div>
             </div>
           </div>
@@ -66,61 +117,87 @@ export default function HomePage() {
       </section>
 
       {/* Features Section */}
-      <section className="features">
+      <section className="features" id="features">
         <div className="container">
           <div className="section-header">
-            <h2>Powerful Features for Your Team</h2>
-            <p>Everything you need to manage payroll efficiently</p>
+            <h2>Built around how HR teams actually work</h2>
+            <p>The daily-use core, with the full catalog below for everything else</p>
           </div>
           
           <div className="features-grid">
             <div className="feature-card">
-              <div className="feature-icon">
-                <i className="fas fa-users"></i>
-              </div>
+              <span className="feature-index">01</span>
+              <i className="fas fa-users feature-icon"></i>
               <h3>Employee Management</h3>
               <p>Organize and manage all employee information in one centralized system</p>
             </div>
 
             <div className="feature-card">
-              <div className="feature-icon">
-                <i className="fas fa-clock"></i>
-              </div>
+              <span className="feature-index">02</span>
+              <i className="fas fa-clock feature-icon"></i>
               <h3>Attendance Tracking</h3>
               <p>Track attendance and time off with automated, real-time logging</p>
             </div>
 
             <div className="feature-card">
-              <div className="feature-icon">
-                <i className="fas fa-calendar-alt"></i>
-              </div>
+              <span className="feature-index">03</span>
+              <i className="fas fa-calendar-alt feature-icon"></i>
               <h3>Leave Management</h3>
               <p>Handle leave requests and approvals seamlessly with our workflow</p>
             </div>
 
             <div className="feature-card">
-              <div className="feature-icon">
-                <i className="fas fa-money-bill"></i>
-              </div>
+              <span className="feature-index">04</span>
+              <i className="fas fa-money-bill feature-icon"></i>
               <h3>Salary Management</h3>
               <p>Process salaries accurately and generate payslips automatically</p>
             </div>
 
             <div className="feature-card">
-              <div className="feature-icon">
-                <i className="fas fa-receipt"></i>
-              </div>
+              <span className="feature-index">05</span>
+              <i className="fas fa-receipt feature-icon"></i>
               <h3>Payroll Processing</h3>
               <p>Automate payroll calculations with customizable policies</p>
             </div>
 
             <div className="feature-card">
-              <div className="feature-icon">
-                <i className="fas fa-file-invoice"></i>
-              </div>
+              <span className="feature-index">06</span>
+              <i className="fas fa-file-invoice feature-icon"></i>
               <h3>Payslip Generation</h3>
               <p>Generate and distribute digital payslips instantly to employees</p>
             </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Full feature catalog, grouped exactly like the in-app Toggle Services list */}
+      <section className="all-features">
+        <div className="container">
+          <div className="section-header">
+            <h2>Everything CrewCore Includes</h2>
+            <p>One platform covering the entire employee lifecycle — no add-ons, no separate tools</p>
+          </div>
+
+          <div className="feature-category-grid">
+            {FEATURE_CATEGORIES.map((cat) => (
+              <div className="feature-category-card" key={cat.category}>
+                <div className="feature-category-header">
+                  <div className="feature-category-icon"><i className={`fas ${cat.icon}`}></i></div>
+                  <div>
+                    <h3>{cat.category}</h3>
+                    <p>{cat.blurb}</p>
+                  </div>
+                </div>
+                <ul className="feature-item-list">
+                  {cat.items.map((item) => (
+                    <li key={item.key}>
+                      <i className={`fas ${FEATURE_ICONS[item.key] || 'fa-check'}`}></i>
+                      <span>{item.name}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
           </div>
         </div>
       </section>
@@ -199,14 +276,30 @@ export default function HomePage() {
         </div>
       </section>
 
+      {/* Support Section */}
+      <section className="support" id="support">
+        <div className="container">
+          <div className="support-card">
+            <div className="support-icon"><i className="fas fa-headset"></i></div>
+            <div className="support-text">
+              <h2>Need a hand?</h2>
+              <p>Our support team replies to every email — whether it's a question about setting up your company, a billing query, or something not working the way it should.</p>
+            </div>
+            <a className="btn-primary btn-lg" href={`mailto:${SUPPORT_EMAIL}`}>
+              <i className="fas fa-envelope"></i> {SUPPORT_EMAIL}
+            </a>
+          </div>
+        </div>
+      </section>
+
       {/* CTA Section */}
       <section className="cta">
         <div className="container">
           <div className="cta-content">
-            <h2>Ready to Transform Your Payroll?</h2>
-            <p>Join hundreds of businesses managing their payroll with CrewCore</p>
+            <h2>Set your company up in minutes</h2>
+            <p>No add-ons, no separate tools to wire together — register and start today</p>
             <button className="btn-primary btn-lg" onClick={() => navigate('/signup')}>
-              Register Your Company Today
+              Register Your Company
             </button>
           </div>
         </div>
@@ -230,8 +323,14 @@ export default function HomePage() {
             <div className="footer-section">
               <h4>Company</h4>
               <ul>
-                <li><a href="#about">About</a></li>
-                <li><a href="#contact">Contact</a></li>
+                <li><a href="#features">About</a></li>
+                <li><a href={`mailto:${SUPPORT_EMAIL}`}>Contact</a></li>
+              </ul>
+            </div>
+            <div className="footer-section">
+              <h4>Support</h4>
+              <ul>
+                <li><a href={`mailto:${SUPPORT_EMAIL}`}><i className="fas fa-envelope" style={{ marginRight: 8 }}></i>{SUPPORT_EMAIL}</a></li>
               </ul>
             </div>
           </div>

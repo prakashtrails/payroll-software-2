@@ -1,42 +1,12 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import Header from '@/components/Header';
 import Modal from '@/components/Modal';
+import QuotaRings from '@/components/QuotaRings';
 import { showToast } from '@/components/Toast';
 import { useAuth } from '@/context/AuthContext';
 import { submitRegularizeRequest, listMyRegularizeRequests } from '@/services/attendanceService';
-import { fetchMyQuota } from '@/services/requestQuotaService';
+import { fetchMyQuota, SELF_LIMIT } from '@/services/requestQuotaService';
 import { todayStr, fmtTime12 } from '@/lib/helpers';
-
-function QuotaBanner({ quota }) {
-  const { selfUsed, selfLimit, managerUsed, managerLimit } = quota;
-  const selfLeft    = selfLimit    - selfUsed;
-  const managerLeft = managerLimit - managerUsed;
-
-  let color, icon, msg;
-  if (selfLeft > 0) {
-    color = 'var(--success)'; icon = 'fa-shield-alt';
-    msg = `${selfLeft} self-approval${selfLeft !== 1 ? 's' : ''} remaining this month — your next request auto-approves instantly.`;
-  } else if (managerLeft > 0) {
-    color = 'var(--warning-dark, #92400e)'; icon = 'fa-user-check';
-    msg = `Self-approvals used (${selfUsed}/${selfLimit}). Next request goes to Manager · ${managerLeft} manager approval${managerLeft !== 1 ? 's' : ''} available.`;
-  } else {
-    color = 'var(--danger)'; icon = 'fa-exclamation-circle';
-    msg = `All quotas used this month (${selfUsed}/${selfLimit} self · ${managerUsed}/${managerLimit} manager). Next request goes to HR.`;
-  }
-
-  return (
-    <div style={{
-      background: selfLeft > 0 ? 'var(--success-light, #d1fae5)' : managerLeft > 0 ? 'var(--warning-light, #fffbeb)' : 'var(--danger-light, #fee2e2)',
-      border: `1px solid ${color}`,
-      borderRadius: 8, padding: '10px 16px', marginBottom: 12,
-      fontSize: 13, color,
-      display: 'flex', alignItems: 'center', gap: 10,
-    }}>
-      <i className={`fas ${icon}`} />
-      {msg}
-    </div>
-  );
-}
 
 const STATUS_BADGE = {
   Pending:  'badge-warning',
@@ -68,11 +38,14 @@ export function RegularizeContent() {
     }
   }, [profile]);
 
+  const autoApprovalEnabled = tenant?.regularize_auto_approval_enabled !== false;
+  const autoApprovalLimit   = tenant?.regularize_auto_approval_limit ?? SELF_LIMIT;
+
   const loadQuota = useCallback(async () => {
     if (!profile || !tenant) return;
-    const q = await fetchMyQuota(tenant.id, profile.id);
+    const q = await fetchMyQuota(tenant.id, profile.id, autoApprovalEnabled ? autoApprovalLimit : 0);
     setQuota(q);
-  }, [profile, tenant]);
+  }, [profile, tenant, autoApprovalEnabled, autoApprovalLimit]);
 
   useEffect(() => { fetchRequests(); loadQuota(); }, [fetchRequests, loadQuota]);
 
@@ -101,7 +74,7 @@ export function RegularizeContent() {
         clockInTime:  form.clockInTime,
         clockOutTime: form.clockOutTime,
         reason:       form.reason.trim(),
-      });
+      }, { autoApprovalEnabled, autoApprovalLimit });
       if (error) throw error;
       const msg = tier === 'self'
         ? 'Auto-approved! Attendance updated instantly.'
@@ -125,9 +98,9 @@ export function RegularizeContent() {
     <>
       <div className="page-content">
 
-        {quota && <QuotaBanner quota={quota} />}
+        {quota && <QuotaRings quota={quota} autoApprovalEnabled={autoApprovalEnabled} title="Regularization Approval Quota" actionLabel="regularization request" />}
 
-      <div className="filter-bar">
+      <div className="filter-bar" style={{ marginTop: 16 }}>
           {['Pending', 'Approved', 'Rejected', 'All'].map(s => (
             <button
               key={s}

@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import Header from '@/components/Header';
 import { useAuth } from '@/context/AuthContext';
@@ -9,47 +9,37 @@ import WelcomeContent from './WelcomeContent';
 import { listHolidays } from '@/services/tenantService';
 import { listUpcomingBirthdays } from '@/services/profileDetailsService';
 import { fullName } from '@/lib/helpers';
-
-// Keka illustrates each holiday's card with festival-specific art. We don't have
-// a source of custom illustrations, so a themed gradient + FontAwesome icon per
-// holiday keyword stands in for it — same visual idea (colorful, festive banner)
-// without needing image assets.
-const HOLIDAY_THEMES = [
-  { match: /independence|republic/i, gradient: 'linear-gradient(120deg,#0b3d24,#15803d 45%,#f97316)', icon: 'fa-flag' },
-  { match: /diwali|deepavali/i, gradient: 'linear-gradient(120deg,#7c2d12,#c2410c 50%,#f59e0b)', icon: 'fa-fire' },
-  { match: /holi/i, gradient: 'linear-gradient(120deg,#7e22ce,#db2777 45%,#f59e0b 75%,#22c55e)', icon: 'fa-palette' },
-  { match: /christmas/i, gradient: 'linear-gradient(120deg,#14532d,#166534 50%,#dc2626)', icon: 'fa-tree' },
-  { match: /eid/i, gradient: 'linear-gradient(120deg,#0f766e,#0e7490 50%,#facc15)', icon: 'fa-moon' },
-  { match: /gandhi/i, gradient: 'linear-gradient(120deg,#1e3a8a,#3730a3 60%,#93c5fd)', icon: 'fa-dove' },
-  { match: /new year/i, gradient: 'linear-gradient(120deg,#312e81,#6d28d9 55%,#db2777)', icon: 'fa-champagne-glasses' },
-  { match: /pongal|makar|sankranti/i, gradient: 'linear-gradient(120deg,#92400e,#d97706 55%,#fde047)', icon: 'fa-sun' },
-  { match: /raksha|rakhi/i, gradient: 'linear-gradient(120deg,#9d174d,#db2777 55%,#f472b6)', icon: 'fa-hand-holding-heart' },
-  { match: /friday|easter/i, gradient: 'linear-gradient(120deg,#312e81,#4338ca 55%,#a5b4fc)', icon: 'fa-cross' },
-];
-const DEFAULT_HOLIDAY_THEME = { gradient: 'linear-gradient(120deg,#312e81,#6d28d9 60%,#db2777)', icon: 'fa-gift' };
-
-const getHolidayTheme = (name = '') => HOLIDAY_THEMES.find((t) => t.match.test(name)) || DEFAULT_HOLIDAY_THEME;
+import { getHolidayTheme } from '@/lib/holidayThemes';
+import { useTodayDate } from '@/hooks/useTodayDate';
 
 function HolidaysCard({ tenant }) {
-  const [holidays, setHolidays] = useState([]);
+  const today = useTodayDate();
+  const [allHolidays, setAllHolidays] = useState([]);
   const [loading, setLoading] = useState(true);
   const [index, setIndex] = useState(0);
 
   useEffect(() => {
     if (!tenant) return;
     let cancelled = false;
-    const today = new Date().toISOString().slice(0, 10);
     listHolidays(tenant.id).then(({ data }) => {
       if (cancelled) return;
-      const upcoming = (data || [])
-        .filter((h) => h.status === 'Approved' && h.date >= today)
-        .slice(0, 8);
-      setHolidays(upcoming);
-      setIndex(0);
+      setAllHolidays(data || []);
       setLoading(false);
     });
     return () => { cancelled = true; };
   }, [tenant]);
+
+  // Re-filtered live off `today` (which itself auto-advances at local midnight,
+  // see useTodayDate) so a holiday stays pinned to its own day and the card
+  // rolls over to the next one on its own — no page reload needed.
+  const holidays = useMemo(
+    () => allHolidays.filter((h) => h.status === 'Approved' && h.date >= today).slice(0, 8),
+    [allHolidays, today]
+  );
+
+  // A manual prev/next pick shouldn't survive a day change or a fresh fetch —
+  // snap back to the current/soonest holiday.
+  useEffect(() => { setIndex(0); }, [today, allHolidays]);
 
   const current = holidays[index];
   const theme = getHolidayTheme(current?.name);

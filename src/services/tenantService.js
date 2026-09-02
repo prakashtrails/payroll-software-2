@@ -285,6 +285,58 @@ export function resolveAttendanceSettings(tenant, outlet) {
 }
 
 /**
+ * Extra outlets (beyond the profile's own `outlet_id`) a profile is allowed to
+ * clock in/out from — e.g. HR who visits multiple branches. Returns outlet ids only.
+ */
+export async function listProfileOutletAccess(profileId) {
+  if (!profileId) return { data: [], error: null };
+  const { data, error } = await supabase
+    .from('profile_outlet_access')
+    .select('outlet_id')
+    .eq('profile_id', profileId);
+  return { data: (data || []).map((r) => r.outlet_id), error };
+}
+
+/** Replaces the full set of extra clock-in outlets for a profile. */
+export async function setProfileOutletAccess(tenantId, profileId, outletIds) {
+  const { error: delErr } = await supabase.from('profile_outlet_access').delete().eq('profile_id', profileId);
+  if (delErr) return { error: delErr };
+  if (!outletIds.length) return { error: null };
+  const { error } = await supabase
+    .from('profile_outlet_access')
+    .insert(outletIds.map((outlet_id) => ({ tenant_id: tenantId, profile_id: profileId, outlet_id })));
+  return { error };
+}
+
+/**
+ * Every outlet a profile may clock in/out from: their home outlet plus any
+ * extra access grants. Used to check geofencing against all of them at once.
+ *
+ * When `tenant.allow_any_outlet_clockin` is on ("multifencing"), the home
+ * outlet / per-employee grants are skipped entirely and every active outlet
+ * in the tenant becomes a candidate fence — any employee can clock in/out at
+ * any of the company's locations, just still nowhere outside all of them.
+ */
+export async function listAccessibleOutlets(profileId, primaryOutletId, tenant) {
+  if (tenant?.allow_any_outlet_clockin && tenant?.id) {
+    const { data, error } = await supabase
+      .from('outlets')
+      .select('*')
+      .eq('tenant_id', tenant.id)
+      .eq('is_active', true);
+    return { data: data || [], error };
+  }
+
+  const ids = new Set();
+  if (primaryOutletId) ids.add(primaryOutletId);
+  const { data: extraIds } = await listProfileOutletAccess(profileId);
+  extraIds.forEach((id) => ids.add(id));
+  if (!ids.size) return { data: [], error: null };
+  const { data, error } = await supabase.from('outlets').select('*').in('id', Array.from(ids));
+  return { data: data || [], error };
+}
+
+/**
  * Moves an employee to a different outlet within the same tenant, keeping an
  * append-only audit trail (outlet_transfers) instead of silently overwriting
  * the employee's branch — every transfer stays in the history.

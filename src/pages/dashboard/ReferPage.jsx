@@ -252,7 +252,9 @@ export default function ReferPage() {
                 </button>
               ))}
             </div>
-            {canManage && <Link to="/hiring" className="btn btn-outline btn-sm"><i className="fas fa-briefcase" /> Manage Postings</Link>}
+            <Link to="/hiring" className="btn btn-outline btn-sm">
+              <i className="fas fa-briefcase" /> {canManage ? 'Manage Postings' : 'View Open Positions'}
+            </Link>
             <button className="btn btn-primary btn-sm" onClick={() => setShowReferModal(true)} disabled={openPostings.length === 0}>
               <i className="fas fa-plus" /> Refer a Candidate
             </button>

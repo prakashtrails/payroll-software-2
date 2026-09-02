@@ -25,7 +25,7 @@ export default function OfferLettersPage() {
   const [referrals, setReferrals] = useState([]);
   const [loading, setLoading]     = useState(true);
   const [showLetterModal, setShowLetterModal] = useState(false);
-  const [letterForm, setLetterForm] = useState({ referral_id: '', template_id: '', designation: '', ctc_offered: '', joining_date: '' });
+  const [letterForm, setLetterForm] = useState({ referral_id: '', letter_type: 'Offer', template_id: '', designation: '', ctc_offered: '', joining_date: '' });
   const [showTplModal, setShowTplModal] = useState(false);
   const [tplForm, setTplForm] = useState({ type: 'Offer', name: '', body_html: DEFAULT_TEMPLATE_BODY });
   const [printLetter, setPrintLetter] = useState(null);
@@ -59,7 +59,7 @@ export default function OfferLettersPage() {
     if (error) return showToast('Failed: ' + error.message, 'error');
     showToast('Offer letter created', 'success');
     setShowLetterModal(false);
-    setLetterForm({ referral_id: '', template_id: '', designation: '', ctc_offered: '', joining_date: '' });
+    setLetterForm({ referral_id: '', letter_type: 'Offer', template_id: '', designation: '', ctc_offered: '', joining_date: '' });
     fetchData();
   };
 
@@ -106,13 +106,14 @@ export default function OfferLettersPage() {
           <div className="card">
             <div className="table-wrap">
               <table>
-                <thead><tr><th>Candidate</th><th>Designation</th><th>CTC</th><th>Joining</th><th>Status</th><th>Actions</th></tr></thead>
+                <thead><tr><th>Candidate</th><th>Type</th><th>Designation</th><th>CTC</th><th>Joining</th><th>Status</th><th>Actions</th></tr></thead>
                 <tbody>
                   {letters.length === 0 ? (
-                    <tr><td colSpan={6} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 24 }}>No offer letters yet</td></tr>
+                    <tr><td colSpan={7} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 24 }}>No offer letters yet</td></tr>
                   ) : letters.map((l) => (
                     <tr key={l.id}>
                       <td>{l.referral?.candidate_name}</td>
+                      <td><span className="badge badge-secondary">{l.letter_type || 'Offer'}</span></td>
                       <td>{l.designation}</td>
                       <td>{fmt(l.ctc_offered)}</td>
                       <td>{fmtDate.date(l.joining_date)}</td>
@@ -167,10 +168,18 @@ export default function OfferLettersPage() {
           </select>
         </div>
         <div className="form-group">
+          <label className="form-label">Letter Type</label>
+          <select className="form-select" value={letterForm.letter_type} onChange={(e) => setLetterForm({ ...letterForm, letter_type: e.target.value, template_id: '' })}>
+            <option value="Offer">Offer</option>
+            <option value="Appointment">Appointment</option>
+            <option value="LOI">LOI (Letter of Intent)</option>
+          </select>
+        </div>
+        <div className="form-group">
           <label className="form-label">Template</label>
           <select className="form-select" value={letterForm.template_id} onChange={(e) => setLetterForm({ ...letterForm, template_id: e.target.value })}>
             <option value="">Select Template</option>
-            {templates.filter((t) => t.type === 'Offer').map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+            {templates.filter((t) => t.type === letterForm.letter_type).map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
           </select>
         </div>
         <div className="form-row">
@@ -205,6 +214,7 @@ export default function OfferLettersPage() {
             <select className="form-select" value={tplForm.type} onChange={(e) => setTplForm({ ...tplForm, type: e.target.value })}>
               <option value="Offer">Offer</option>
               <option value="Appointment">Appointment</option>
+              <option value="LOI">LOI (Letter of Intent)</option>
             </select>
           </div>
         </div>

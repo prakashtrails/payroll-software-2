@@ -28,7 +28,7 @@ import { createGroup, linkToGroup, leaveGroup } from '@/services/groupService';
 
 export default function SettingsPage() {
   const { tenant, profile, refreshProfile } = useAuth();
-  const { outlets, selectedOutletId, selectedOutletName, selectOutlet } = useOutletView();
+  const { outlets, selectedOutletId, selectedOutletName, selectOutlet, refreshOutlets } = useOutletView();
   const navigate = useNavigate();
   const [form, setForm] = useState({
     company_name: '', pay_day: 1, currency: '₹',
@@ -40,6 +40,7 @@ export default function SettingsPage() {
     geofence_lat: '', geofence_lng: '', geofence_radius: '',
   });
   const [savingAtt, setSavingAtt] = useState(false);
+  const [allowAnyOutletClockin, setAllowAnyOutletClockin] = useState(false);
   const [departments, setDepartments] = useState([]);
   const [shifts, setShifts]           = useState([]);
   const [saving, setSaving]           = useState(false);
@@ -173,6 +174,7 @@ export default function SettingsPage() {
       weekly_off_day: tenant.weekly_off_day ?? 0,
       location_code: tenant.location_code || '',
     });
+    setAllowAnyOutletClockin(!!tenant.allow_any_outlet_clockin);
     fetchData();
   }, [tenant, fetchData]);
 
@@ -229,10 +231,12 @@ export default function SettingsPage() {
           geofence_lat: payload.geofence_lat,
           geofence_lng: payload.geofence_lng,
           geofence_radius: payload.geofence_radius ?? 200,
+          allow_any_outlet_clockin: allowAnyOutletClockin,
         });
     setSavingAtt(false);
     if (error) return showToast('Save failed: ' + error.message, 'error');
     showToast(selectedOutletId ? `Attendance rules saved for ${selectedOutletName}` : 'Company-wide attendance rules saved', 'success');
+    if (selectedOutletId) await refreshOutlets();
     refreshProfile();
   };
 
@@ -628,6 +632,33 @@ export default function SettingsPage() {
               <div className="settings-geofence">
                 <h4><i className="fas fa-map-marker-alt" /> Geofencing</h4>
                 <p>Restrict employee clock-in/out to a specific location.</p>
+
+                {!selectedOutletId && outlets.length > 1 && (
+                  <div className="form-group" style={{ marginBottom: 14 }}>
+                    <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, cursor: 'pointer', fontWeight: 600, fontSize: 13 }}>
+                      <input
+                        type="checkbox"
+                        style={{ marginTop: 2 }}
+                        checked={allowAnyOutletClockin}
+                        onChange={(e) => setAllowAnyOutletClockin(e.target.checked)}
+                      />
+                      Allow clock-in/out at any outlet (multifencing)
+                    </label>
+                    <div className="form-hint">
+                      Any employee can clock in/out from inside any of the company's outlet
+                      geofences — not just their home outlet — but still nowhere outside all of them.
+                      Overrides per-employee outlet access on the Employees page.
+                    </div>
+                  </div>
+                )}
+
+                {selectedOutletId && allowAnyOutletClockin && (
+                  <div className="form-hint" style={{ marginBottom: 14 }}>
+                    "Allow clock-in/out at any outlet" is on for the whole company, so every
+                    employee can already use this outlet's fence — switch to "Combined" to change it.
+                  </div>
+                )}
+
                 <div className="form-row">
                   <div className="form-group">
                     <label className="form-label">Latitude</label>
@@ -687,7 +718,10 @@ export default function SettingsPage() {
                   for (let i = 0; i < firstDay; i++) cells.push(<div className="att-cal-day empty" key={`empty-${i}`} />);
                   for (let d = 1; d <= daysInMonth; d++) {
                     const date = new Date(holidayYear, holidayMonth, d);
-                    const ds = date.toISOString().slice(0, 10);
+                    // Build the key from local y/m/d, not date.toISOString() — that converts to UTC
+                    // first, which for any UTC+ timezone (e.g. IST) rolls local midnight back to the
+                    // previous day and shifts every holiday marker one day later than the stored date.
+                    const ds = `${holidayYear}-${String(holidayMonth + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
                     const holiday = holidayMap.get(ds);
                     const isToday = d === today.getDate() && holidayMonth === today.getMonth() && holidayYear === today.getFullYear();
                     const cls = holiday ? 'holiday' : (date.getDay() === 0 || date.getDay() === 6 ? 'weekend' : '');

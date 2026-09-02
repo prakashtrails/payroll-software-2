@@ -36,8 +36,11 @@ export async function sendOtp(identifier, options = { shouldCreateUser: true }) 
     const resolvedId = id.toLowerCase();
 
     try {
+        // send-otp gates on account existence: login requires a profile to
+        // already exist, signup requires one *not* to exist yet. shouldCreateUser
+        // is this call's only signal for which side of that gate applies.
         const { data, error } = await supabase.functions.invoke('send-otp', {
-            body: { identifier: resolvedId, type: 'email' },
+            body: { identifier: resolvedId, type: 'email', isSignup: !!options.shouldCreateUser },
         });
 
         if (error) {

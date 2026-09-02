@@ -1,7 +1,8 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useContext, createContext } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '@/context/AuthContext';
 import { useOutletView } from '@/context/OutletViewContext';
+import { useFeatures } from '@/context/FeatureContext';
 import { getInitials, fullName } from '@/lib/helpers';
 
 const HOME_NAV_ITEM = {
@@ -25,17 +26,43 @@ const ME_NAV_ITEM = {
     },
     { label: 'Leave', href: '/me?tab=leave' },
     { label: 'Performance', href: '/me?tab=performance' },
-    { label: 'Tax Declaration', href: '/my-tax-declaration' },
-    { label: 'My Training', href: '/my-training' },
+    { label: 'My Training', href: '/me?tab=training', featureKey: 'training' },
+    { label: 'My Onboarding', href: '/me?tab=onboarding', featureKey: 'onboarding' },
+    { label: 'My Offboarding', href: '/me?tab=offboarding', featureKey: 'offboarding' },
+    { label: 'My Assets', href: '/me?tab=assets', featureKey: 'assets' },
+    { label: 'My Projects', href: '/me?tab=projects', featureKey: 'projects' },
   ],
 };
 
-const PERFORMANCE_NAV_ITEMS = [
-  { label: 'KRAs', icon: 'fa-bullseye', href: '/performance/kras' },
-  { label: '1:1 Meetings', icon: 'fa-people-arrows', href: '/performance/one-on-ones' },
-  { label: 'Feedback', icon: 'fa-comment-dots', href: '/performance/feedback' },
-  { label: 'PIP', icon: 'fa-chart-line', href: '/performance/pip' },
-  { label: 'Reviews', icon: 'fa-star', href: '/performance/reviews' },
+// Personal finance-related self-service items — Payslips, Tax Declaration, and
+// Grievances all moved out of the Me flyout/tabs into their own section so
+// they read as a distinct "My Finances" area rather than being buried among
+// Me's attendance/performance/onboarding tabs. Each already has its own
+// standalone route+page (not a /me?tab= query tab), shared identically across
+// admin/manager/employee.
+const MY_FINANCES_SECTION = {
+  title: 'My Finances',
+  items: [
+    { label: 'My Payslips', icon: 'fa-file-invoice-dollar', href: '/my-payslips', featureKey: 'payslips' },
+    { label: 'Tax Declaration', icon: 'fa-file-invoice', href: '/my-tax-declaration', featureKey: 'tax_declaration' },
+    { label: 'Grievances', icon: 'fa-gavel', href: '/grievances', featureKey: 'grievances' },
+  ],
+};
+
+// Shared building blocks for the category flyouts below — reused across roles
+// wherever the underlying route/feature-key is identical, so a fix to one
+// role's menu doesn't silently drift from the others.
+const COMPANY_FLYOUT = [
+  { label: 'Announcements', href: '/announcements', featureKey: 'announcements' },
+  { label: 'Policies', href: '/policies', featureKey: 'policies' },
+];
+
+const PERFORMANCE_FLYOUT_BASE = [
+  { label: 'KRAs', href: '/performance/kras', featureKey: 'performance_kras' },
+  { label: '1:1 Meetings', href: '/performance/one-on-ones', featureKey: 'performance_one_on_ones' },
+  { label: 'Feedback', href: '/performance/feedback', featureKey: 'performance_feedback' },
+  { label: 'PIP', href: '/performance/pip', featureKey: 'performance_pip' },
+  { label: 'Reviews', href: '/performance/reviews', featureKey: 'performance_reviews' },
 ];
 
 const NAV_CONFIG = {
@@ -45,6 +72,8 @@ const NAV_CONFIG = {
       items: [
         { label: 'Master Dashboard', icon: 'fa-chart-line', href: '/master-dashboard' },
         { label: 'Tenants', icon: 'fa-building', href: '/tenants' },
+        { label: 'Org Structure', icon: 'fa-sitemap', href: '/org-structure' },
+        { label: 'Toggle Services', icon: 'fa-toggle-on', href: '/toggle-services' },
         { label: 'All Employees', icon: 'fa-users', href: '/platform-employees' },
         { label: 'Helpdesk', icon: 'fa-headset', href: '/helpdesk-admin' },
       ],
@@ -52,155 +81,260 @@ const NAV_CONFIG = {
   ],
   admin: [
     {
-      title: 'Main',
+      title: 'Overview',
+      items: [HOME_NAV_ITEM, ME_NAV_ITEM],
+    },
+    MY_FINANCES_SECTION,
+    {
+      title: 'Workforce',
       items: [
-        HOME_NAV_ITEM,
-        ME_NAV_ITEM,
-        { label: 'All Outlets', icon: 'fa-store', href: '/outlets' },
-        { label: 'Combined Dashboard', icon: 'fa-layer-group', href: '/outlets/combined' },
-        { label: 'Employees', icon: 'fa-users', href: '/employees' },
-        { label: 'Grievances', icon: 'fa-exclamation-circle', href: '/grievances' },
-        { label: 'Attendance', icon: 'fa-fingerprint', href: '/attendance' },
-        { label: 'Shift Roster', icon: 'fa-calendar-week', href: '/shift-roster' },
+        // flyout populated at render time from live outlet/group data — see injectOutletsFlyout()
+        { label: 'Outlets', icon: 'fa-store', href: '/outlets', flyout: 'DYNAMIC_OUTLETS' },
+        {
+          label: 'People', icon: 'fa-users', href: '/employees',
+          flyout: [
+            { label: 'Employees', href: '/employees', featureKey: 'employees' },
+            { label: 'Org Structure', href: '/org-structure', featureKey: 'org_hierarchy' },
+            { label: 'Assets', href: '/assets', featureKey: 'assets' },
+            { label: 'Onboarding', href: '/onboarding', featureKey: 'onboarding' },
+            { label: 'Offboarding', href: '/offboarding', featureKey: 'offboarding' },
+            { label: 'Grievances', href: '/grievances', featureKey: 'grievances' },
+          ],
+        },
+        {
+          label: 'Attendance', icon: 'fa-fingerprint', href: '/attendance',
+          flyout: [
+            { label: 'Attendance Log', href: '/attendance', featureKey: 'attendance' },
+            { label: 'Shift Roster', href: '/shift-roster', featureKey: 'shift_roster' },
+            { label: 'Employee Calendar', href: '/employee-calendar', featureKey: 'employee_calendar' },
+          ],
+        },
         {
           label: 'Requests', icon: 'fa-inbox', href: '/leaves',
           flyout: [
-            { label: 'Leave Requests', href: '/leaves' },
-            { label: 'Regularize Attendance', href: '/regularize' },
-            { label: 'WFH Requests', href: '/wfh-requests' },
-            { label: 'Special Requests', href: '/special-requests' },
-            { label: 'Expense Claims', href: '/expense-claims' },
-            { label: 'Travel Requests', href: '/travel-requests' },
+            { label: 'Leave Requests', href: '/leaves', featureKey: 'leave_requests' },
+            { label: 'Regularize Attendance', href: '/regularize', featureKey: 'regularize_attendance' },
+            { label: 'WFH Requests', href: '/wfh-requests', featureKey: 'wfh_requests' },
+            { label: 'Special Requests', href: '/special-requests', featureKey: 'special_requests' },
+            { label: 'Expense Claims', href: '/expense-claims', featureKey: 'expense_claims' },
+            { label: 'Travel Requests', href: '/travel-requests', featureKey: 'travel_requests' },
           ],
         },
         {
-          label: 'Leave Setup', icon: 'fa-calendar-check', href: '/leave-types',
+          label: 'Recruitment', icon: 'fa-briefcase', href: '/hiring',
           flyout: [
-            { label: 'Leave Types', href: '/leave-types' },
-            { label: 'Leave Balances', href: '/leave-balances' },
+            { label: 'Job Postings', href: '/hiring', featureKey: 'hiring' },
+            { label: 'Recruitment Pipeline', href: '/recruitment-pipeline', featureKey: 'recruitment_pipeline' },
+            { label: 'Headcount Requests', href: '/headcount-requests', featureKey: 'headcount_requests' },
+            { label: 'Interviews', href: '/interviews', featureKey: 'interviews' },
+            { label: 'Offer Letters', href: '/offer-letters', featureKey: 'offer_letters' },
+            { label: 'Refer', href: '/refer', featureKey: 'refer' },
           ],
         },
-        { label: 'Employee Calendar', icon: 'fa-calendar-day', href: '/employee-calendar' },
-        { label: 'Master Report', icon: 'fa-file-alt', href: '/master-report' },
-        { label: 'Helpdesk', icon: 'fa-headset', href: '/helpdesk' },
-        {
-          label: 'Hiring', icon: 'fa-briefcase', href: '/hiring',
-          flyout: [
-            { label: 'Job Postings', href: '/hiring' },
-            { label: 'Headcount Requests', href: '/headcount-requests' },
-            { label: 'Interviews', href: '/interviews' },
-            { label: 'Offer Letters', href: '/offer-letters' },
-            { label: 'Refer', href: '/refer' },
-          ],
-        },
-        { label: 'Announcements', icon: 'fa-bullhorn', href: '/announcements' },
-        { label: 'Policies', icon: 'fa-file-contract', href: '/policies' },
-        { label: 'Training & Skills', icon: 'fa-graduation-cap', href: '/training' },
       ],
     },
     {
-      title: 'Performance',
-      items: PERFORMANCE_NAV_ITEMS,
+      title: 'Growth',
+      items: [
+        {
+          label: 'Performance', icon: 'fa-trophy', href: '/performance/kras',
+          flyout: [...PERFORMANCE_FLYOUT_BASE, { label: 'Training & Skills', href: '/training', featureKey: 'training' }],
+        },
+        { label: 'Projects', icon: 'fa-diagram-project', href: '/projects', featureKey: 'projects' },
+      ],
     },
     {
-      title: 'Payroll',
+      title: 'Finance',
       items: [
-        { label: 'Salary Structure', icon: 'fa-sliders-h', href: '/salary' },
-        { label: 'Run Payroll', icon: 'fa-money-bill-wave', href: '/payroll' },
-        { label: 'Payslips', icon: 'fa-file-invoice-dollar', href: '/payslips' },
-        { label: 'Advances & Loans', icon: 'fa-hand-holding-usd', href: '/advances' },
-        { label: 'One-Off Pay Items', icon: 'fa-coins', href: '/salary-additions' },
-        { label: 'Income Tax Slabs', icon: 'fa-receipt', href: '/tax-slabs' },
+        {
+          label: 'Payroll', icon: 'fa-wallet', href: '/salary',
+          flyout: [
+            { label: 'Salary Structure', href: '/salary', featureKey: 'salary_structure' },
+            { label: 'Run Payroll', href: '/payroll', featureKey: 'run_payroll' },
+            { label: 'Payslips', href: '/payslips', featureKey: 'payslips' },
+            { label: 'Advances & Loans', href: '/advances', featureKey: 'advances_loans' },
+            { label: 'One-Off Pay Items', href: '/salary-additions', featureKey: 'salary_additions' },
+            { label: 'Income Tax Slabs', href: '/tax-slabs', featureKey: 'tax_slabs' },
+          ],
+        },
+      ],
+    },
+    {
+      title: 'Company',
+      items: [
+        { label: 'Company', icon: 'fa-building', href: '/announcements', flyout: COMPANY_FLYOUT },
+        { label: 'Master Report', icon: 'fa-file-alt', href: '/master-report', featureKey: 'master_report' },
+        { label: 'Helpdesk', icon: 'fa-headset', href: '/helpdesk', featureKey: 'helpdesk' },
       ],
     },
     {
       title: 'System',
       items: [
-        { label: 'Approval Chains', icon: 'fa-route', href: '/approval-chains' },
-        { label: 'Settings', icon: 'fa-cog', href: '/settings' },
+        {
+          label: 'Settings', icon: 'fa-gears', href: '/settings',
+          flyout: [
+            { label: 'Leave Types', href: '/leave-types', featureKey: 'leave_setup' },
+            { label: 'Leave Balances', href: '/leave-balances', featureKey: 'leave_setup' },
+            { label: 'Approval Chains', href: '/approval-chains', featureKey: 'approval_chains' },
+            { label: 'General Settings', href: '/settings' },
+          ],
+        },
       ],
     },
   ],
   manager: [
     {
-      title: 'Main',
+      title: 'Overview',
+      items: [HOME_NAV_ITEM, ME_NAV_ITEM],
+    },
+    MY_FINANCES_SECTION,
+    {
+      title: 'Workforce',
       items: [
-        HOME_NAV_ITEM,
-        ME_NAV_ITEM,
-        { label: 'Employees', icon: 'fa-users', href: '/manager-employees' },
-        { label: 'Attendance', icon: 'fa-fingerprint', href: '/manager-attendance' },
+        { label: 'Employees', icon: 'fa-users', href: '/manager-employees', featureKey: 'employees' },
+        {
+          label: 'Attendance', icon: 'fa-fingerprint', href: '/manager-attendance',
+          flyout: [
+            { label: 'Attendance Log', href: '/manager-attendance', featureKey: 'attendance' },
+            { label: 'Employee Calendar', href: '/manager-employee-calendar', featureKey: 'employee_calendar' },
+          ],
+        },
         {
           label: 'Requests', icon: 'fa-inbox', href: '/manager-leaves',
           flyout: [
-            { label: 'Leave Requests', href: '/manager-leaves' },
-            { label: 'Regularize Attendance', href: '/manager-regularize' },
-            { label: 'WFH Requests', href: '/manager-wfh-requests' },
-            { label: 'Special Requests', href: '/manager-special-requests' },
-            { label: 'Expense Claims', href: '/expense-claims' },
-            { label: 'Travel Requests', href: '/travel-requests' },
+            { label: 'Leave Requests', href: '/manager-leaves', featureKey: 'leave_requests' },
+            { label: 'Regularize Attendance', href: '/manager-regularize', featureKey: 'regularize_attendance' },
+            { label: 'WFH Requests', href: '/manager-wfh-requests', featureKey: 'wfh_requests' },
+            { label: 'Special Requests', href: '/manager-special-requests', featureKey: 'special_requests' },
+            { label: 'Expense Claims', href: '/expense-claims', featureKey: 'expense_claims' },
+            { label: 'Travel Requests', href: '/travel-requests', featureKey: 'travel_requests' },
           ],
         },
-        { label: 'Employee Calendar', icon: 'fa-calendar-day', href: '/manager-employee-calendar' },
         {
-          label: 'Hiring', icon: 'fa-briefcase', href: '/hiring',
+          label: 'Recruitment', icon: 'fa-briefcase', href: '/hiring',
           flyout: [
-            { label: 'Job Postings', href: '/hiring' },
-            { label: 'Headcount Requests', href: '/headcount-requests' },
-            { label: 'Interviews', href: '/interviews' },
-            { label: 'Offer Letters', href: '/offer-letters' },
-            { label: 'Refer', href: '/refer' },
+            { label: 'Job Postings', href: '/hiring', featureKey: 'hiring' },
+            { label: 'Recruitment Pipeline', href: '/recruitment-pipeline', featureKey: 'recruitment_pipeline' },
+            { label: 'Headcount Requests', href: '/headcount-requests', featureKey: 'headcount_requests' },
+            { label: 'Interviews', href: '/interviews', featureKey: 'interviews' },
+            { label: 'Offer Letters', href: '/offer-letters', featureKey: 'offer_letters' },
+            { label: 'Refer', href: '/refer', featureKey: 'refer' },
           ],
         },
-        { label: 'Announcements', icon: 'fa-bullhorn', href: '/announcements' },
-        { label: 'Policies', icon: 'fa-file-contract', href: '/policies' },
-        { label: 'Grievances', icon: 'fa-exclamation-circle', href: '/grievances' },
       ],
     },
     {
-      title: 'Performance',
-      items: PERFORMANCE_NAV_ITEMS,
+      title: 'Growth',
+      items: [
+        { label: 'Performance', icon: 'fa-trophy', href: '/performance/kras', flyout: PERFORMANCE_FLYOUT_BASE },
+        { label: 'Projects', icon: 'fa-diagram-project', href: '/projects', featureKey: 'projects' },
+      ],
     },
     {
-      title: 'Payroll',
+      title: 'Finance',
       items: [
-        { label: 'Payroll', icon: 'fa-money-bill-wave', href: '/manager-payroll' },
-        { label: 'Payslips', icon: 'fa-file-invoice-dollar', href: '/manager-payslips' },
-        { label: 'Advances & Loans', icon: 'fa-hand-holding-usd', href: '/manager-advances' },
-        { label: 'One-Off Pay Items', icon: 'fa-coins', href: '/manager-salary-additions' },
+        {
+          label: 'Payroll', icon: 'fa-wallet', href: '/manager-payroll',
+          flyout: [
+            { label: 'Run Payroll', href: '/manager-payroll', featureKey: 'run_payroll' },
+            { label: 'Payslips', href: '/manager-payslips', featureKey: 'payslips' },
+            { label: 'Advances & Loans', href: '/manager-advances', featureKey: 'advances_loans' },
+            { label: 'One-Off Pay Items', href: '/manager-salary-additions', featureKey: 'salary_additions' },
+          ],
+        },
+      ],
+    },
+    {
+      title: 'Company',
+      items: [
+        { label: 'Company', icon: 'fa-building', href: '/announcements', flyout: COMPANY_FLYOUT },
       ],
     },
   ],
   employee: [
     {
-      title: 'My Space',
+      title: 'Overview',
+      items: [HOME_NAV_ITEM, ME_NAV_ITEM],
+    },
+    MY_FINANCES_SECTION,
+    {
+      title: 'My Work',
       items: [
-        HOME_NAV_ITEM,
-        ME_NAV_ITEM,
-        { label: 'My Payslips', icon: 'fa-file-invoice-dollar', href: '/my-payslips' },
-        { label: 'Special Requests', icon: 'fa-star-half-alt', href: '/my-special-requests' },
-        { label: 'Expense Claims', icon: 'fa-receipt', href: '/expense-claims' },
-        { label: 'Travel Requests', icon: 'fa-plane', href: '/travel-requests' },
         {
-          label: 'Hiring', icon: 'fa-briefcase', href: '/hiring',
+          label: 'Requests', icon: 'fa-inbox', href: '/my-special-requests',
           flyout: [
-            { label: 'Job Postings', href: '/hiring' },
-            { label: 'My Interviews', href: '/interviews' },
-            { label: 'Refer', href: '/refer' },
+            { label: 'Special Requests', href: '/my-special-requests', featureKey: 'special_requests' },
+            { label: 'Expense Claims', href: '/expense-claims', featureKey: 'expense_claims' },
+            { label: 'Travel Requests', href: '/travel-requests', featureKey: 'travel_requests' },
           ],
         },
-        { label: 'Announcements', icon: 'fa-bullhorn', href: '/announcements' },
-        { label: 'Policies', icon: 'fa-file-contract', href: '/policies' },
-        { label: 'Grievances', icon: 'fa-exclamation-circle', href: '/grievances' },
+        {
+          label: 'Recruitment', icon: 'fa-briefcase', href: '/hiring',
+          flyout: [
+            { label: 'Job Postings', href: '/hiring', featureKey: 'hiring' },
+            { label: 'My Interviews', href: '/interviews', featureKey: 'interviews' },
+            { label: 'Refer', href: '/refer', featureKey: 'refer' },
+          ],
+        },
       ],
     },
     {
-      title: 'Performance',
-      items: PERFORMANCE_NAV_ITEMS,
+      title: 'Growth',
+      items: [
+        { label: 'Performance', icon: 'fa-trophy', href: '/performance/kras', flyout: PERFORMANCE_FLYOUT_BASE },
+      ],
+    },
+    {
+      title: 'Company',
+      items: [
+        { label: 'Company', icon: 'fa-building', href: '/announcements', flyout: COMPANY_FLYOUT },
+      ],
     },
   ],
 };
 
+// Strips any nav item (or flyout child) whose featureKey is disabled for the
+// current tenant/outlet. A parent item is defined purely by its children here
+// (Requests/Leave Setup/Hiring never carry their own featureKey) — once every
+// child is filtered out, the parent itself is dropped rather than left as a
+// dead-end link.
+function filterNavByFeatures(sections, isEnabled) {
+  const keepItem = (item) => {
+    if (item.flyout && item.flyout.length > 0) {
+      const flyout = item.flyout.map(keepItem).filter(Boolean);
+      if (flyout.length === 0) return null;
+      return { ...item, flyout };
+    }
+    if (item.featureKey && !isEnabled(item.featureKey)) return null;
+    return item;
+  };
 
+  return sections.map((section) => ({
+    ...section,
+    items: section.items.map(keepItem).filter(Boolean),
+  }));
+}
+
+// The "Outlets" item's children depend on live data (how many outlets exist,
+// whether the tenant belongs to a group) rather than being statically known
+// up front, so NAV_CONFIG just marks the spot with the 'DYNAMIC_OUTLETS'
+// sentinel and this fills in the real flyout array at render time.
+function injectOutletsFlyout(sections, { outlets, tenant }) {
+  const children = [
+    { label: 'All Outlets', href: '/outlets', featureKey: 'outlets_multi_branch' },
+  ];
+  if (outlets.length > 1) {
+    children.push({ label: 'Combined Dashboard', href: '/outlets/combined', featureKey: 'outlets_multi_branch' });
+  }
+  if (tenant?.group_code) {
+    children.push({ label: 'Group Dashboard', href: '/group-dashboard' });
+  }
+
+  return sections.map((section) => ({
+    ...section,
+    items: section.items.map((item) => (item.flyout === 'DYNAMIC_OUTLETS' ? { ...item, flyout: children } : item)),
+  }));
+}
 
 // iOS/touch browsers have no real hover — an element with a mouseenter
 // listener needs a first "confirming" tap before a second tap registers as a
@@ -217,16 +351,64 @@ const supportsHover = typeof window !== 'undefined'
 // (cancelled if the pointer lands on the trigger OR the flyout) covers that gap.
 const FLYOUT_CLOSE_DELAY = 300;
 
+// Siblings in the same flyout list (or the same top-level nav list) share this
+// context so that opening one immediately closes any other that's still open.
+// Without it, each item's close was gated behind its own FLYOUT_CLOSE_DELAY
+// grace timer, so moving the pointer from one trigger straight into the next
+// left both panels rendered at once — visibly overlapping — until the first
+// one's timer finally caught up.
+const FlyoutGroupContext = createContext(null);
+
+// Manages the open/close-with-grace-period state for one trigger within a
+// FlyoutGroupContext. Opening always wins immediately (via shared state);
+// closing still waits out FLYOUT_CLOSE_DELAY so crossing the gap to the
+// flyout panel doesn't close it, but only takes effect if nothing else has
+// claimed the group in the meantime.
+function useFlyoutState(key) {
+  const group = useContext(FlyoutGroupContext);
+  const closeTimer = useRef(null);
+
+  useEffect(() => () => clearTimeout(closeTimer.current), []);
+
+  const isOpen = group.activeKey === key;
+
+  const cancelClose = () => {
+    if (closeTimer.current) {
+      clearTimeout(closeTimer.current);
+      closeTimer.current = null;
+    }
+  };
+
+  const open = () => {
+    cancelClose();
+    group.setActiveKey(key);
+  };
+
+  // Closes immediately, skipping the grace period — used after a real
+  // navigation (link click), where there's no pointer gap left to protect.
+  const close = () => {
+    cancelClose();
+    group.setActiveKey((prev) => (prev === key ? null : prev));
+  };
+
+  const scheduleClose = () => {
+    cancelClose();
+    closeTimer.current = setTimeout(() => {
+      group.setActiveKey((prev) => (prev === key ? null : prev));
+    }, FLYOUT_CLOSE_DELAY);
+  };
+
+  return { isOpen, open, close, cancelClose, scheduleClose };
+}
+
 // A flyout entry that itself has a `flyout` (e.g. Attendance's Log/Regularize/WFH)
 // opens a second-level menu to its right, using the same hover-delay dance as
 // the top-level trigger so the gap between the two panels doesn't close it.
 function FlyoutItem({ item, onNavigate }) {
-  const [hover, setHover] = useState(false);
+  const { isOpen, open, cancelClose, scheduleClose } = useFlyoutState(item.href);
   const [coords, setCoords] = useState({ top: 0, left: 0 });
+  const [panelActiveKey, setPanelActiveKey] = useState(null);
   const ref = useRef(null);
-  const closeTimer = useRef(null);
-
-  useEffect(() => () => clearTimeout(closeTimer.current), []);
 
   if (!item.flyout) {
     return (
@@ -236,25 +418,12 @@ function FlyoutItem({ item, onNavigate }) {
     );
   }
 
-  const cancelClose = () => {
-    if (closeTimer.current) {
-      clearTimeout(closeTimer.current);
-      closeTimer.current = null;
-    }
-  };
-
-  const scheduleClose = () => {
-    cancelClose();
-    closeTimer.current = setTimeout(() => setHover(false), FLYOUT_CLOSE_DELAY);
-  };
-
   const handleEnter = () => {
-    cancelClose();
     if (ref.current) {
       const rect = ref.current.getBoundingClientRect();
       setCoords({ top: rect.top, left: rect.right + 6 });
     }
-    setHover(true);
+    open();
   };
 
   return (
@@ -263,14 +432,16 @@ function FlyoutItem({ item, onNavigate }) {
         {item.label}
         <i className="fas fa-chevron-right nav-flyout-arrow" />
       </Link>
-      {hover && (
+      {isOpen && (
         <div
           className="nav-flyout" style={{ top: coords.top, left: coords.left }}
           onMouseEnter={cancelClose} onMouseLeave={scheduleClose}
         >
-          {item.flyout.map((f) => (
-            <FlyoutItem key={f.href} item={f} onNavigate={onNavigate} />
-          ))}
+          <FlyoutGroupContext.Provider value={{ activeKey: panelActiveKey, setActiveKey: setPanelActiveKey }}>
+            {item.flyout.map((f) => (
+              <FlyoutItem key={f.href} item={f} onNavigate={onNavigate} />
+            ))}
+          </FlyoutGroupContext.Provider>
         </div>
       )}
     </div>
@@ -287,15 +458,9 @@ function itemMatchesPath(item, pathname) {
 }
 
 function NavItem({ item, pathname, onClose }) {
-  const [hover, setHover] = useState(false);
-  const [coords, setCoords] = useState({ top: 0, left: 0 });
-  const ref = useRef(null);
-  const closeTimer = useRef(null);
   const isActive = itemMatchesPath(item, pathname);
 
-  useEffect(() => () => clearTimeout(closeTimer.current), []);
-
-  if (!item.flyout || !supportsHover) {
+  if (!item.flyout) {
     return (
       <Link to={item.href} className={`nav-item ${isActive ? 'active' : ''}`} onClick={onClose}>
         <span className="icon"><i className={`fas ${item.icon}`} /></span>
@@ -304,25 +469,88 @@ function NavItem({ item, pathname, onClose }) {
     );
   }
 
-  const cancelClose = () => {
-    if (closeTimer.current) {
-      clearTimeout(closeTimer.current);
-      closeTimer.current = null;
-    }
-  };
+  // Touch devices have no reliable hover, so a category's children would
+  // otherwise be completely unreachable (the desktop flyout never opens) —
+  // this renders the exact same NAV_CONFIG data as a tap-to-expand accordion
+  // instead, recursing for the one category (Me → Attendance) that nests
+  // a second level.
+  return supportsHover
+    ? <NavItemWithFlyout item={item} isActive={isActive} onClose={onClose} />
+    : <MobileAccordionItem item={item} isActive={isActive} pathname={pathname} onClose={onClose} />;
+}
 
-  const scheduleClose = () => {
-    cancelClose();
-    closeTimer.current = setTimeout(() => setHover(false), FLYOUT_CLOSE_DELAY);
-  };
+function MobileAccordionItem({ item, isActive, pathname, onClose }) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <div className="nav-accordion">
+      <button
+        type="button"
+        className={`nav-item nav-item-toggle ${isActive ? 'active' : ''}`}
+        onClick={() => setExpanded((e) => !e)}
+        aria-expanded={expanded}
+      >
+        <span className="icon"><i className={`fas ${item.icon}`} /></span>
+        <span className="nav-item-label">{item.label}</span>
+        <i className={`fas fa-chevron-down nav-item-caret ${expanded ? 'open' : ''}`} />
+      </button>
+      {expanded && (
+        <div className="nav-accordion-panel">
+          {item.flyout.map((f) => (
+            <MobileAccordionChild key={f.href} item={f} pathname={pathname} onClose={onClose} depth={1} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MobileAccordionChild({ item, pathname, onClose, depth }) {
+  const isActive = itemMatchesPath(item, pathname);
+  const [expanded, setExpanded] = useState(false);
+  const indent = 14 + depth * 16;
+
+  if (!item.flyout) {
+    return (
+      <Link to={item.href} className={`nav-accordion-link ${isActive ? 'active' : ''}`} style={{ paddingLeft: indent }} onClick={onClose}>
+        {item.label}
+      </Link>
+    );
+  }
+
+  return (
+    <div>
+      <button
+        type="button"
+        className={`nav-accordion-link nav-accordion-toggle ${isActive ? 'active' : ''}`}
+        style={{ paddingLeft: indent }}
+        onClick={() => setExpanded((e) => !e)}
+        aria-expanded={expanded}
+      >
+        <span>{item.label}</span>
+        <i className={`fas fa-chevron-down nav-item-caret ${expanded ? 'open' : ''}`} />
+      </button>
+      {expanded && item.flyout.map((f) => (
+        <MobileAccordionChild key={f.href} item={f} pathname={pathname} onClose={onClose} depth={depth + 1} />
+      ))}
+    </div>
+  );
+}
+
+// Split out so the useFlyoutState hook (which needs FlyoutGroupContext) is only
+// ever called for items that actually have a flyout — keeps NavItem's early
+// return above hook-rule-safe.
+function NavItemWithFlyout({ item, isActive, onClose }) {
+  const { isOpen, open, close, cancelClose, scheduleClose } = useFlyoutState(item.href);
+  const [coords, setCoords] = useState({ top: 0, left: 0 });
+  const [panelActiveKey, setPanelActiveKey] = useState(null);
+  const ref = useRef(null);
 
   const handleEnter = () => {
-    cancelClose();
     if (ref.current) {
       const rect = ref.current.getBoundingClientRect();
       setCoords({ top: rect.top, left: rect.right + 6 });
     }
-    setHover(true);
+    open();
   };
 
   return (
@@ -332,17 +560,19 @@ function NavItem({ item, pathname, onClose }) {
         {item.label}
         <i className="fas fa-chevron-right nav-item-arrow" />
       </Link>
-      {hover && (
+      {isOpen && (
         <div
           className="nav-flyout" style={{ top: coords.top, left: coords.left }}
           onMouseEnter={cancelClose} onMouseLeave={scheduleClose}
         >
-          {item.flyout.map((f) => (
-            <FlyoutItem
-              key={f.href} item={f}
-              onNavigate={() => { cancelClose(); setHover(false); onClose(); }}
-            />
-          ))}
+          <FlyoutGroupContext.Provider value={{ activeKey: panelActiveKey, setActiveKey: setPanelActiveKey }}>
+            {item.flyout.map((f) => (
+              <FlyoutItem
+                key={f.href} item={f}
+                onNavigate={() => { close(); setPanelActiveKey(null); onClose(); }}
+              />
+            ))}
+          </FlyoutGroupContext.Provider>
         </div>
       )}
     </div>
@@ -352,38 +582,24 @@ function NavItem({ item, pathname, onClose }) {
 export default function Sidebar({ open = false, onClose = () => {} }) {
   const { profile, tenant, signOut } = useAuth();
   const { outlets, selectedOutletName } = useOutletView();
+  const { isEnabled } = useFeatures();
   const location = useLocation();
   const pathname = location.pathname;
+
+  // One shared group for the whole top-level nav list — item hrefs are unique
+  // across sections, so a single active key keeps at most one flyout open at
+  // a time regardless of which section it's in. Declared before the early
+  // return below so hook-call order stays stable across renders.
+  const [topActiveKey, setTopActiveKey] = useState(null);
 
   if (!profile) return null;
 
   const role = profile.role || 'employee';
-
-  // Inject Group Dashboard link for admin/superadmin when tenant is part of a group
   const rawSections = NAV_CONFIG[role] || NAV_CONFIG.employee;
-  const withGroupDashboard = (role === 'admin' || role === 'superadmin') && tenant?.group_code
-    ? rawSections.map(section =>
-        section.title === 'Main'
-          ? {
-              ...section,
-              items: [
-                section.items[0], // Home
-                { label: 'Group Dashboard', icon: 'fa-layer-group', href: '/group-dashboard' },
-                ...section.items.slice(1),
-              ],
-            }
-          : section
-      )
-    : rawSections;
 
-  // "Combined Dashboard" only makes sense with 2+ outlets to combine — one outlet's
-  // totals are just the company's totals, so hide it rather than show a pointless duplicate.
-  const sections = outlets.length > 1
-    ? withGroupDashboard
-    : withGroupDashboard.map(section => ({
-        ...section,
-        items: section.items.filter(item => item.href !== '/outlets/combined'),
-      }));
+  // Fill in the Outlets flyout from live data, then strip anything the
+  // superadmin has turned off for this company/outlet.
+  const sections = filterNavByFeatures(injectOutletsFlyout(rawSections, { outlets, tenant }), isEnabled);
 
   const initials = getInitials(profile.first_name, profile.last_name);
   const displayName = fullName(profile) || 'User';
@@ -393,32 +609,41 @@ export default function Sidebar({ open = false, onClose = () => {} }) {
     <>
       <div className={`sidebar-backdrop ${open ? 'show' : ''}`} onClick={onClose} />
       <aside className={`sidebar ${open ? 'open' : ''}`}>
-      <button className="sidebar-close-btn" onClick={onClose} aria-label="Close menu">
-        <i className="fas fa-times" />
-      </button>
       <div className="sidebar-logo">
         <div className="logo-icon"><img src="/logo.png" alt="CrewCore" /></div>
-        <div>
-          <h2>CrewCore</h2>
-          <span>{tenant?.company_name || 'CrewCore'}</span>
+        <div className="sidebar-logo-text">
+          {/* The tenant's own company name is what an HR admin or employee
+              actually wants to see front and center — it's their workspace,
+              not ours. CrewCore stays visible as a small "powered by"-style
+              mark rather than the headline. */}
+          <h2 title={tenant?.company_name || 'CrewCore'}>{tenant?.company_name || 'CrewCore'}</h2>
+          <span>CrewCore</span>
           {(role === 'admin' || role === 'superadmin') && outlets.length > 0 && (
             <div style={{ fontSize: 10, opacity: 0.75, marginTop: 2 }}>
               <i className="fas fa-store" style={{ marginRight: 4 }} />
-              Viewing: {selectedOutletName || 'All Outlets'}
+              Outlet — {selectedOutletName || 'All Outlets'}
             </div>
           )}
         </div>
+        {/* A flex sibling rather than an absolutely-positioned overlay, so it
+            can never collide with a company name that wraps onto a second
+            line — it just sits at the end of the row instead. */}
+        <button className="sidebar-close-btn" onClick={onClose} aria-label="Close menu">
+          <i className="fas fa-times" />
+        </button>
       </div>
 
       <nav className="sidebar-nav">
-        {sections.map((section, si) => (
-          <div className="nav-section" key={si}>
-            <div className="nav-section-title">{section.title}</div>
-            {section.items.map((item) => (
-              <NavItem key={item.href} item={item} pathname={pathname} onClose={onClose} />
-            ))}
-          </div>
-        ))}
+        <FlyoutGroupContext.Provider value={{ activeKey: topActiveKey, setActiveKey: setTopActiveKey }}>
+          {sections.map((section, si) => (
+            <div className="nav-section" key={si}>
+              <div className="nav-section-title">{section.title}</div>
+              {section.items.map((item) => (
+                <NavItem key={item.href} item={item} pathname={pathname} onClose={onClose} />
+              ))}
+            </div>
+          ))}
+        </FlyoutGroupContext.Provider>
       </nav>
 
       <div className="sidebar-footer">

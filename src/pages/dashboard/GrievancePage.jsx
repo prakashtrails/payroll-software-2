@@ -9,7 +9,7 @@ import { fmt, fullName } from '@/lib/helpers';
 const TYPES = ['Harassment', 'Discrimination', 'Workplace Safety', 'Policy Violation', 'Compensation', 'Other'];
 const STATUS_BADGE = { Open: 'badge-warning', 'Under Review': 'badge-info', Resolved: 'badge-success', Dismissed: 'badge-secondary' };
 
-export default function GrievancePage() {
+export function GrievanceContent() {
   const { profile, tenant } = useAuth();
   const canManage = profile?.role === 'admin' || profile?.role === 'superadmin';
   const [rows, setRows]           = useState([]);
@@ -59,7 +59,6 @@ export default function GrievancePage() {
 
   return (
     <>
-      <Header title="Grievances" breadcrumb={canManage ? 'Confidential — visible only to HR admins, not managers' : 'File a confidential issue directly with HR'} />
       <div className="page-content">
         <div className="filter-bar">
           <div style={{ marginLeft: 'auto' }}>
@@ -133,6 +132,17 @@ export default function GrievancePage() {
           <textarea className="form-input" rows={4} value={resolveNotes} onChange={(e) => setResolveNotes(e.target.value)} />
         </div>
       </Modal>
+    </>
+  );
+}
+
+export default function GrievancePage() {
+  const { profile } = useAuth();
+  const canManage = profile?.role === 'admin' || profile?.role === 'superadmin';
+  return (
+    <>
+      <Header title="Grievances" breadcrumb={canManage ? 'Confidential — visible only to HR admins, not managers' : 'File a confidential issue directly with HR'} />
+      <GrievanceContent />
     </>
   );
 }

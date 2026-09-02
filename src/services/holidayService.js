@@ -1,4 +1,5 @@
 import { supabase } from '@/lib/supabase';
+import { getLocalDateString } from '@/lib/helpers';
 
 export async function fetchHolidays(tenantId, year, month) {
   let query = supabase
@@ -17,6 +18,24 @@ export async function fetchHolidays(tenantId, year, month) {
   if (error) {
     console.error('fetchHolidays err:', error);
     return { data: [], error };
+  }
+  return { data, error: null };
+}
+
+/** Today's holiday for a tenant, if any — used to trigger the post-login celebration overlay. */
+export async function fetchTodayHoliday(tenantId) {
+  if (!tenantId) return { data: null, error: null };
+  const today = getLocalDateString();
+  const { data, error } = await supabase
+    .from('holidays')
+    .select('*')
+    .eq('tenant_id', tenantId)
+    .eq('date', today)
+    .limit(1)
+    .maybeSingle();
+  if (error) {
+    console.error('fetchTodayHoliday err:', error);
+    return { data: null, error };
   }
   return { data, error: null };
 }

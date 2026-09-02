@@ -10,7 +10,7 @@ import {
 import { listTenantMembers } from '@/services/platformService';
 import { updateEmployee, updateEmployeeEmail, setEmployeeStatus, removeEmployee } from '@/services/employeeService';
 import { parseImportFile, runBulkImport, downloadSampleCSV } from '@/lib/employeeImport';
-import { getInitials, getAvatarColor, fmt, fullName } from '@/lib/helpers';
+import { getInitials, getAvatarColor, fmt, fullName, resolveEmployeeCredentials } from '@/lib/helpers';
 
 const EMPTY_CREATE_FORM = {
   companyName: '', domain: '', currency: '₹', workDays: 26,
@@ -165,6 +165,9 @@ function CreateCompanyModal({ show, onClose, onCreated }) {
 function BranchesTab({ tenantId, outlets, onChanged }) {
   const [form, setForm] = useState({ name: '', address: '', city: '' });
   const [saving, setSaving] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [editForm, setEditForm] = useState({ name: '', address: '', city: '' });
+  const [editSaving, setEditSaving] = useState(false);
 
   const addBranch = async () => {
     if (!form.name.trim()) return showToast('Branch name is required', 'error');
@@ -186,6 +189,28 @@ function BranchesTab({ tenantId, outlets, onChanged }) {
     if (!confirm(`Remove branch "${outlet.name}"? Employees assigned to it will be unassigned, not deleted.`)) return;
     const { error } = await removeOutlet(outlet.id);
     if (error) return showToast('Failed to remove branch: ' + error.message, 'error');
+    onChanged();
+  };
+
+  const startEdit = (outlet) => {
+    setEditingId(outlet.id);
+    setEditForm({ name: outlet.name || '', address: outlet.address || '', city: outlet.city || '' });
+  };
+
+  const cancelEdit = () => setEditingId(null);
+
+  const saveEdit = async (outlet) => {
+    if (!editForm.name.trim()) return showToast('Branch name is required', 'error');
+    setEditSaving(true);
+    const { error } = await updateOutlet(outlet.id, {
+      name: editForm.name.trim(),
+      address: editForm.address.trim(),
+      city: editForm.city.trim(),
+    });
+    setEditSaving(false);
+    if (error) return showToast('Failed to rename branch: ' + error.message, 'error');
+    showToast('Branch updated', 'success');
+    setEditingId(null);
     onChanged();
   };
 
@@ -218,13 +243,31 @@ function BranchesTab({ tenantId, outlets, onChanged }) {
           <table>
             <thead><tr><th>Name</th><th>City</th><th>Status</th><th></th></tr></thead>
             <tbody>
-              {outlets.map((o) => (
+              {outlets.map((o) => editingId === o.id ? (
+                <tr key={o.id}>
+                  <td>
+                    <input className="form-input" style={{ marginBottom: 4 }} value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} placeholder="Branch name" autoFocus />
+                    <input className="form-input" value={editForm.address} onChange={(e) => setEditForm({ ...editForm, address: e.target.value })} placeholder="Address" />
+                  </td>
+                  <td><input className="form-input" value={editForm.city} onChange={(e) => setEditForm({ ...editForm, city: e.target.value })} placeholder="City" /></td>
+                  <td><span className={`badge ${o.is_active ? 'badge-success' : 'badge-secondary'}`}>{o.is_active ? 'Active' : 'Inactive'}</span></td>
+                  <td>
+                    <div style={{ display: 'flex', gap: 4 }}>
+                      <button className="btn btn-primary btn-icon btn-sm" onClick={() => saveEdit(o)} disabled={editSaving} title="Save">
+                        {editSaving ? <div className="spinner" style={{ width: 12, height: 12, borderWidth: 2 }} /> : <i className="fas fa-check" />}
+                      </button>
+                      <button className="btn btn-outline btn-icon btn-sm" onClick={cancelEdit} disabled={editSaving} title="Cancel"><i className="fas fa-times" /></button>
+                    </div>
+                  </td>
+                </tr>
+              ) : (
                 <tr key={o.id}>
                   <td><strong>{o.name}</strong>{o.address && <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{o.address}</div>}</td>
                   <td>{o.city || '—'}</td>
                   <td><span className={`badge ${o.is_active ? 'badge-success' : 'badge-secondary'}`}>{o.is_active ? 'Active' : 'Inactive'}</span></td>
                   <td>
                     <div style={{ display: 'flex', gap: 4 }}>
+                      <button className="btn btn-outline btn-icon btn-sm" onClick={() => startEdit(o)} title="Rename / Edit"><i className="fas fa-edit" /></button>
                       <button className="btn btn-outline btn-icon btn-sm" onClick={() => toggleActive(o)} title="Toggle active"><i className="fas fa-power-off" /></button>
                       <button className="btn btn-outline btn-icon btn-sm" style={{ color: 'var(--danger)' }} onClick={() => remove(o)} title="Remove"><i className="fas fa-trash" /></button>
                     </div>
@@ -243,6 +286,7 @@ function BulkUploadTab({ tenantId, outlets, onImported }) {
   const [rows, setRows] = useState(null);
   const [importProgress, setImportProgress] = useState(null);
   const [summary, setSummary] = useState(null);
+  const [allowPlaceholderLogins, setAllowPlaceholderLogins] = useState(false);
 
   const outletsByName = new Map(outlets.map((o) => [o.name.trim().toLowerCase(), o.id]));
 
@@ -267,6 +311,7 @@ function BulkUploadTab({ tenantId, outlets, onImported }) {
       const result = await runBulkImport({
         tenantId, rows,
         onProgress: (current, total) => setImportProgress({ current, total }),
+        allowPlaceholderLogins,
       });
       setSummary(result);
       onImported();
@@ -286,6 +331,18 @@ function BulkUploadTab({ tenantId, outlets, onImported }) {
         <button className="btn btn-outline" disabled={!!importProgress} onClick={downloadSampleCSV}>
           <i className="fas fa-file-csv" /> Download Template
         </button>
+        <label
+          style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-muted)', cursor: 'pointer' }}
+          title="Rows with no email or phone are normally rejected (nothing to log in with). Check this to create them anyway with a placeholder login — useful for a biometric-only import where contact info comes later."
+        >
+          <input
+            type="checkbox"
+            checked={allowPlaceholderLogins}
+            onChange={(e) => setAllowPlaceholderLogins(e.target.checked)}
+            disabled={!!importProgress}
+          />
+          Allow rows without email/phone
+        </label>
       </div>
 
       {importProgress && (
@@ -300,9 +357,8 @@ function BulkUploadTab({ tenantId, outlets, onImported }) {
           <div style={{ fontSize: 13, marginBottom: 8 }}>
             <strong>{rows.length}</strong> row(s) parsed. Preview (first 20 shown) — branch names are matched
             against this company's branches above; any branch name not seen before is created automatically,
-            same as departments. Dates in any format are normalized automatically. Phone number is required
-            for every row (used as the login when there's no email) — email is the only field that's allowed
-            to be missing.
+            same as departments. Dates in any format are normalized automatically. A row needs at least a
+            phone or an email to log in{allowPlaceholderLogins ? ' — or, with "Allow rows without email/phone" checked, neither: those rows still get created, with a placeholder login to fix later' : ''}.
           </div>
           <div className="table-wrap" style={{ maxHeight: 260, overflowY: 'auto' }}>
             <table>
@@ -340,10 +396,21 @@ function BulkUploadTab({ tenantId, outlets, onImported }) {
           {summary.updateCount > 0 && <>, <strong>{summary.updateCount}</strong> updated</>}
           {summary.skipCount > 0 && <>, <strong>{summary.skipCount}</strong> skipped</>}
           {summary.failCount > 0 && <>, <strong>{summary.failCount}</strong> failed</>}
+          {summary.duplicatesInFile > 0 && <>, <strong>{summary.duplicatesInFile}</strong> duplicate rows merged</>}
+          {summary.departmentsCreated?.length > 0 && <>, <strong>{summary.departmentsCreated.length}</strong> department(s) created</>}
+          {summary.departmentsMerged?.length > 0 && <>, <strong>{summary.departmentsMerged.length}</strong> department spelling(s) normalized</>}
           {summary.failErrors.length > 0 && (
             <ul style={{ marginTop: 8, paddingLeft: 18, color: 'var(--danger)' }}>
               {summary.failErrors.map((e, i) => <li key={i} style={{ fontSize: 12 }}>{e}</li>)}
             </ul>
+          )}
+          {summary.manualReview?.length > 0 && (
+            <>
+              <div style={{ marginTop: 8, fontWeight: 600, color: 'var(--warning)' }}>Needs a look:</div>
+              <ul style={{ marginTop: 4, paddingLeft: 18, color: 'var(--warning)' }}>
+                {summary.manualReview.map((e, i) => <li key={i} style={{ fontSize: 12 }}>{e}</li>)}
+              </ul>
+            </>
           )}
         </div>
       )}
@@ -351,7 +418,7 @@ function BulkUploadTab({ tenantId, outlets, onImported }) {
   );
 }
 
-const EMPTY_MEMBER_FORM = { role: 'employee', status: 'Active', department: '', designation: '', ctc: '', email: '' };
+const EMPTY_MEMBER_FORM = { role: 'employee', status: 'Active', department: '', designation: '', ctc: '', email: '', phone: '' };
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 function EditMemberModal({ member, onClose, onSaved }) {
@@ -367,6 +434,7 @@ function EditMemberModal({ member, onClose, onSaved }) {
       designation: member.designation || '',
       ctc: member.ctc || '',
       email: member.email || '',
+      phone: member.phone || '',
     });
   }, [member]);
 
@@ -397,6 +465,7 @@ function EditMemberModal({ member, onClose, onSaved }) {
       department: form.department.trim(),
       designation: form.designation.trim(),
       ctc: parseFloat(form.ctc) || 0,
+      phone: form.phone.trim(),
     });
     setSaving(false);
     if (error) return showToast('Failed to update member: ' + error.message, 'error');
@@ -423,6 +492,10 @@ function EditMemberModal({ member, onClose, onSaved }) {
           <label className="form-label">Login Email</label>
           <input className="form-input" type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
           <div className="form-hint">Updates their sign-in email too. Their existing password is unaffected.</div>
+        </div>
+        <div className="form-group">
+          <label className="form-label">Phone</label>
+          <input className="form-input" type="tel" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
         </div>
         <div className="form-row">
           <div className="form-group">
@@ -469,15 +542,12 @@ function MemberCredentialsModal({ member, onClose }) {
   // employee_current_passwords is superadmin-only (RLS) and only exists once
   // the member has set their own password — it reflects their live password,
   // unlike temp_password which is only ever the original onboarding value.
-  const cpEntry = Array.isArray(member?.employee_current_passwords)
-    ? member.employee_current_passwords[0]
-    : member?.employee_current_passwords;
-  const currentPassword = cpEntry?.password;
-  const displayPassword = currentPassword || member?.temp_password;
-  const passwordLabel = currentPassword ? 'Current Password' : 'Temporary Password';
+  // See resolveEmployeeCredentials for the third case: they've already
+  // changed it but the record of the new one never landed.
+  const { password: displayPassword, label: passwordLabel, note: passwordNote } = resolveEmployeeCredentials(member);
 
   const copy = () => {
-    navigator.clipboard.writeText(`${loginLabel}: ${loginValue}\nPassword: ${displayPassword || '********'}`);
+    navigator.clipboard.writeText(`${loginLabel}: ${loginValue}\nPassword: ${displayPassword || '—'}`);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
@@ -494,20 +564,22 @@ function MemberCredentialsModal({ member, onClose }) {
         <p style={{ fontSize: 13, color: 'var(--text-secondary)' }}>Login credentials for this member</p>
       </div>
       <div style={{ background: 'var(--bg)', borderRadius: 'var(--radius-md)', padding: 16, position: 'relative' }}>
-        <button
-          onClick={copy}
-          style={{ position: 'absolute', right: 10, top: 10, border: 'none', background: 'none', cursor: 'pointer', color: copied ? 'var(--success)' : 'var(--text-muted)' }}
-          title="Copy to clipboard"
-        >
-          <i className={`fas ${copied ? 'fa-check' : 'fa-copy'}`} />
-        </button>
+        {!!displayPassword && (
+          <button
+            onClick={copy}
+            style={{ position: 'absolute', right: 10, top: 10, border: 'none', background: 'none', cursor: 'pointer', color: copied ? 'var(--success)' : 'var(--text-muted)' }}
+            title="Copy to clipboard"
+          >
+            <i className={`fas ${copied ? 'fa-check' : 'fa-copy'}`} />
+          </button>
+        )}
         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 10, fontSize: 13 }}>
           <span style={{ color: 'var(--text-muted)' }}>{loginLabel}</span>
           <strong>{loginValue || '—'}</strong>
         </div>
         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13 }}>
           <span style={{ color: 'var(--text-muted)' }}>{passwordLabel}</span>
-          <strong style={{ fontFamily: 'monospace', color: 'var(--primary)' }}>{displayPassword || '********'}</strong>
+          <strong style={{ fontFamily: 'monospace', color: displayPassword ? 'var(--primary)' : 'var(--warning)' }}>{displayPassword || '—'}</strong>
         </div>
       </div>
       {!hasEmail && (
@@ -515,9 +587,9 @@ function MemberCredentialsModal({ member, onClose }) {
           <i className="fas fa-info-circle" /> No email on file — this member logs in with their phone number instead.
         </p>
       )}
-      {!displayPassword && (
-        <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 12, textAlign: 'center' }}>
-          <i className="fas fa-info-circle" /> No stored password on file for this member.
+      {passwordNote && (
+        <p style={{ fontSize: 11, color: 'var(--warning)', marginTop: 12, textAlign: 'center' }}>
+          <i className="fas fa-exclamation-triangle" /> {passwordNote}
         </p>
       )}
     </Modal>
@@ -527,6 +599,20 @@ function MemberCredentialsModal({ member, onClose }) {
 function MembersTab({ tenantId, members, loading, onChanged }) {
   const [editMember, setEditMember] = useState(null);
   const [credsMember, setCredsMember] = useState(null);
+  const [searchInput, setSearchInput] = useState('');
+  const [search, setSearch] = useState('');
+
+  const runSearch = () => setSearch(searchInput.trim().toLowerCase());
+  const clearSearch = () => { setSearchInput(''); setSearch(''); };
+
+  const filteredMembers = search
+    ? members.filter((m) => {
+        const haystack = [
+          fullName(m), m.email, m.phone, m.role, m.department, m.designation,
+        ].filter(Boolean).join(' ').toLowerCase();
+        return haystack.includes(search);
+      })
+    : members;
 
   const toggleStatus = async (m) => {
     const newStatus = m.status === 'Active' ? 'Inactive' : 'Active';
@@ -552,14 +638,37 @@ function MembersTab({ tenantId, members, loading, onChanged }) {
 
   return (
     <div>
+      {members.length > 0 && (
+        <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
+          <input
+            className="form-input"
+            style={{ maxWidth: 320 }}
+            placeholder="Search by name, email, phone, department, designation…"
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && runSearch()}
+          />
+          <button className="btn btn-outline" onClick={runSearch} title="Search">
+            <i className="fas fa-search" /> Search
+          </button>
+          {search && (
+            <button className="btn btn-outline" onClick={clearSearch} title="Clear search">
+              <i className="fas fa-times" /> Clear
+            </button>
+          )}
+        </div>
+      )}
+
       {members.length === 0 ? (
         <div style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 24, fontSize: 13 }}>No members yet.</div>
+      ) : filteredMembers.length === 0 ? (
+        <div style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 24, fontSize: 13 }}>No members match "{searchInput}".</div>
       ) : (
         <div className="table-wrap">
           <table>
             <thead><tr><th>Member</th><th>Role</th><th>Department</th><th>CTC</th><th>Status</th><th></th></tr></thead>
             <tbody>
-              {members.map((m) => (
+              {filteredMembers.map((m) => (
                 <tr key={m.id}>
                   <td>
                     <div className="emp-cell">

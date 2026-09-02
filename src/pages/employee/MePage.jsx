@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import Header from '@/components/Header';
 import { useAuth } from '@/context/AuthContext';
+import { useFeatures } from '@/context/FeatureContext';
 import { fullName } from '@/lib/helpers';
 
 import { AttendanceContent } from './MyAttendancePage';
@@ -13,6 +14,11 @@ import { OneOnOnesContent } from '@/pages/dashboard/OneOnOnesPage';
 import { FeedbackContent } from '@/pages/dashboard/FeedbackPage';
 import { PIPContent } from '@/pages/dashboard/PIPPage';
 import { ReviewsContent } from '@/pages/dashboard/ReviewsPage';
+import { MyTrainingContent } from './MyTrainingPage';
+import { MyOnboardingContent } from './MyOnboardingPage';
+import { MyOffboardingContent } from './MyOffboardingPage';
+import { MyAssetsContent } from './MyAssetsPage';
+import { MyProjectsContent } from './MyProjectsPage';
 
 const ATTENDANCE_SUBTABS = [
   { key: 'log', label: 'Log' },
@@ -26,6 +32,21 @@ const PERFORMANCE_SUBTABS = [
   { key: 'feedback', label: 'Feedback' },
   { key: 'pip', label: 'PIP' },
   { key: 'reviews', label: 'Reviews' },
+];
+
+// Every tab beyond the core three (Attendance/Leave/Performance) mirrors a
+// destination in the sidebar's "Me" flyout — keeping this list and that
+// flyout in sync is what makes "hover the sidebar" and "land on the page"
+// show the same set of features, tab-for-tab, the way Keka's Me section does.
+// Tax Declaration and Grievances live under the sidebar's "My Finances"
+// section instead (standalone routes: /my-tax-declaration, /grievances),
+// not as tabs here.
+const EXTRA_TABS = [
+  { key: 'training', label: 'Training', featureKey: 'training', Content: MyTrainingContent },
+  { key: 'onboarding', label: 'Onboarding', featureKey: 'onboarding', Content: MyOnboardingContent },
+  { key: 'offboarding', label: 'Offboarding', featureKey: 'offboarding', Content: MyOffboardingContent },
+  { key: 'assets', label: 'Assets', featureKey: 'assets', Content: MyAssetsContent },
+  { key: 'projects', label: 'Projects', featureKey: 'projects', Content: MyProjectsContent },
 ];
 
 function SubTabs({ items, active, onChange }) {
@@ -45,13 +66,16 @@ function SubTabs({ items, active, onChange }) {
   );
 }
 
-const VALID_TABS = ['attendance', 'leave', 'performance'];
-
 export default function MePage() {
   const { profile } = useAuth();
+  const { isEnabled } = useFeatures();
   const [searchParams, setSearchParams] = useSearchParams();
+
+  const availableExtraTabs = EXTRA_TABS.filter((t) => isEnabled(t.featureKey));
+  const validTabs = ['attendance', 'leave', 'performance', ...availableExtraTabs.map((t) => t.key)];
+
   const requestedTab = searchParams.get('tab');
-  const tab = VALID_TABS.includes(requestedTab) ? requestedTab : 'attendance';
+  const tab = validTabs.includes(requestedTab) ? requestedTab : 'attendance';
   const setTab = (t) => setSearchParams(t === 'attendance' ? {} : { tab: t });
 
   const requestedSub = searchParams.get('sub');
@@ -61,6 +85,8 @@ export default function MePage() {
   const [perfSubtab, setPerfSubtab] = useState('kras');
 
   const roleLabel = profile?.role === 'admin' ? 'HR' : profile?.role === 'manager' ? 'Manager' : 'Employee';
+
+  const activeExtra = availableExtraTabs.find((t) => t.key === tab);
 
   return (
     <>
@@ -74,6 +100,11 @@ export default function MePage() {
           {['attendance', 'leave', 'performance'].map((t) => (
             <button key={t} className={`tab-btn ${tab === t ? 'active' : ''}`} onClick={() => setTab(t)}>
               {t === 'attendance' ? 'Attendance' : t === 'leave' ? 'Leave' : 'Performance'}
+            </button>
+          ))}
+          {availableExtraTabs.map((t) => (
+            <button key={t.key} className={`tab-btn ${tab === t.key ? 'active' : ''}`} onClick={() => setTab(t.key)}>
+              {t.label}
             </button>
           ))}
         </div>
@@ -104,6 +135,8 @@ export default function MePage() {
           {perfSubtab === 'reviews' && <ReviewsContent />}
         </>
       )}
+
+      {activeExtra && <activeExtra.Content />}
     </>
   );
 }

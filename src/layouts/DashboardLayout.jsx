@@ -1,16 +1,18 @@
 import React, { useState, useEffect } from 'react';
-import { Outlet, useLocation } from 'react-router-dom';
+import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import Sidebar from '../components/Sidebar';
-import { ToastContainer } from '../components/Toast';
+import { ToastContainer, showToast } from '../components/Toast';
 import { useAuth } from '@/context/AuthContext';
 import { OutletViewProvider } from '@/context/OutletViewContext';
+import { FeatureProvider } from '@/context/FeatureContext';
+import { NotificationProvider } from '@/context/NotificationContext';
 import { supabase } from '@/lib/supabase';
 import { clearMustChangePassword, recordCurrentPassword } from '@/services/employeeService';
 import { validatePassword } from '@/lib/helpers';
 
 // ─── Force-password-change modal ─────────────────────────────────────────────
 
-function ForcePasswordChange({ onDone }) {
+function ForcePasswordChange({ onDone, onSessionExpired }) {
   const [form, setForm]       = useState({ password: '', confirm: '' });
   const [showPw, setShowPw]   = useState(false);
   const [error, setError]     = useState('');
@@ -34,12 +36,22 @@ function ForcePasswordChange({ onDone }) {
       const { error: dbError } = await clearMustChangePassword();
       if (dbError) throw new Error('Could not save password change: ' + dbError.message);
 
-      // Best-effort — superadmin's live-password record shouldn't block the
-      // employee's own password change if it fails.
-      recordCurrentPassword(password);
+      // Best-effort (awaited so it can't be cut short by onDone() unmounting
+      // this modal before the request lands) — a failure here shouldn't block
+      // the employee's own password change, just leave HR's copy stale.
+      await recordCurrentPassword(password);
 
       onDone();
     } catch (err) {
+      // An admin resetting this same employee's password (e.g. a second reset
+      // while this modal was already open) revokes the browser's existing Auth
+      // session server-side. Without this check, updateUser() would keep failing
+      // with "Auth session missing!" forever, trapping the employee in this
+      // non-dismissable modal with no way out — the fix is a fresh login instead.
+      if (err.message?.includes('Auth session missing') || err.name === 'AuthSessionMissingError') {
+        onSessionExpired();
+        return;
+      }
       setError(err.message || 'Could not update password. Please try again.');
     } finally {
       setSaving(false);
@@ -148,37 +160,54 @@ function ForcePasswordChange({ onDone }) {
 // ─── Layout ───────────────────────────────────────────────────────────────────
 
 export default function DashboardLayout() {
-  const { profile, refreshProfile } = useAuth();
+  const { profile, refreshProfile, signOut } = useAuth();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const location = useLocation();
+  const navigate = useNavigate();
 
   // Auto-close the mobile drawer whenever the route changes.
   useEffect(() => { setSidebarOpen(false); }, [location.pathname]);
+
+  // Prevent the page behind the drawer from scrolling while it's open.
+  useEffect(() => {
+    document.body.style.overflow = sidebarOpen ? 'hidden' : '';
+    return () => { document.body.style.overflow = ''; };
+  }, [sidebarOpen]);
 
   const handlePasswordSet = async () => {
     await refreshProfile();
   };
 
-  return (
-    <OutletViewProvider>
-      <div className="layout">
-        <button
-          className="mobile-menu-btn"
-          onClick={() => setSidebarOpen(true)}
-          aria-label="Open menu"
-        >
-          <i className="fas fa-bars" />
-        </button>
-        <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
-        <main className="main-content">
-          <Outlet />
-        </main>
-        <ToastContainer />
+  const handleSessionExpired = async () => {
+    await signOut();
+    showToast('Your session expired because the password was changed. Please log in again with your temporary password.', 'warning');
+    navigate('/login', { replace: true });
+  };
 
-        {profile?.must_change_password && (
-          <ForcePasswordChange onDone={handlePasswordSet} />
-        )}
-      </div>
-    </OutletViewProvider>
+  return (
+    <NotificationProvider>
+      <OutletViewProvider>
+        <FeatureProvider>
+          <div className="layout">
+            <button
+              className="mobile-menu-btn"
+              onClick={() => setSidebarOpen(true)}
+              aria-label="Open menu"
+            >
+              <i className="fas fa-bars" />
+            </button>
+            <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
+            <main className="main-content">
+              <Outlet />
+            </main>
+            <ToastContainer />
+
+            {profile?.must_change_password && (
+              <ForcePasswordChange onDone={handlePasswordSet} onSessionExpired={handleSessionExpired} />
+            )}
+          </div>
+        </FeatureProvider>
+      </OutletViewProvider>
+    </NotificationProvider>
   );
 }

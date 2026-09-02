@@ -48,9 +48,12 @@ async function invokeWithRetry(fnName, body, maxRetries = 2) {
  * Returns { data, count, error } — count is the total matching rows.
  */
 export async function listEmployees(tenantId, { page = 1, search = '', department = '', status = '', branch = '', outletId = '' } = {}) {
+  // employee_current_passwords is RLS-scoped to superadmin, or an admin
+  // reading their own tenant (see 20260901_1_hr_current_password_read.sql) —
+  // it comes back empty for any other caller, so it's safe to always embed.
   let q = supabase
     .from('profiles')
-    .select('*, outlets(name)', { count: 'exact' })
+    .select('*, outlets(name), employee_current_passwords(password, updated_at)', { count: 'exact' })
     .eq('tenant_id', tenantId)
     .neq('role', 'superadmin')
     .order('first_name');
@@ -60,9 +63,17 @@ export async function listEmployees(tenantId, { page = 1, search = '', departmen
   if (branch)     q = q.eq('outlet_location', branch);
   if (outletId)   q = q.eq('outlet_id', outletId);
   if (search) {
-    q = q.or(
-      `first_name.ilike.%${search}%,middle_name.ilike.%${search}%,last_name.ilike.%${search}%,email.ilike.%${search}%,department.ilike.%${search}%`
-    );
+    // A single-word query matches any one field directly. A multi-word query
+    // (e.g. "Suraj Yadav") can't match any single column that way — no column
+    // holds the full name — so each word is required to match *some* field
+    // independently (chained .or() calls AND together in PostgREST), which
+    // finds the row via first_name="Suraj" AND last_name="Yadav" without
+    // needing a concatenated-name column.
+    search.trim().split(/\s+/).filter(Boolean).forEach((word) => {
+      q = q.or(
+        `first_name.ilike.%${word}%,middle_name.ilike.%${word}%,last_name.ilike.%${word}%,email.ilike.%${word}%,department.ilike.%${word}%`
+      );
+    });
   }
 
   const from = (page - 1) * EMPLOYEE_PAGE_SIZE;
@@ -88,7 +99,7 @@ export async function listBranches(tenantId) {
 export async function listActiveEmployees(tenantId) {
   const { data, error } = await supabase
     .from('profiles')
-    .select('id, first_name, middle_name, last_name, department, designation, ctc, role, country, join_date, pf_enabled, pf_amount, esic_enabled, esic_amount, leave_allocation, employee_id, outlet_location, is_withheld, withheld_reason, bank_acc, bank_name, ifsc_code, manager_id')
+    .select('id, first_name, middle_name, last_name, department, designation, ctc, role, country, join_date, pf_enabled, pf_amount, esic_enabled, esic_amount, leave_allocation, employee_id, essl_employee_code, outlet_location, is_withheld, withheld_reason, bank_acc, bank_name, ifsc_code, manager_id')
     .eq('tenant_id', tenantId)
     .eq('status', 'Active')
     .in('role', ['employee', 'admin', 'manager'])
@@ -96,6 +107,12 @@ export async function listActiveEmployees(tenantId) {
   return { data: data || [], error };
 }
 
+// NOTE: when payload.manager_id changes, this writes profiles.manager_id
+// directly and does NOT touch reporting_relationships (the org-hierarchy
+// source of truth used by src/services/orgHierarchyService.js's
+// set_direct_manager RPC). That means a manager reassigned here can leave
+// reporting_relationships stale relative to it — accepted gap for now; a
+// follow-up should add a sync trigger so either write path stays consistent.
 export async function updateEmployee(id, payload) {
   const { error } = await supabase.from('profiles').update(payload).eq('id', id);
   return { error };
@@ -119,6 +136,22 @@ export async function updateEmployeeAdmin(id, payload) {
 export async function updateEmployeeEmail(id, email) {
   try {
     await invokeWithRetry('update-employee-email', { id, email });
+    return { error: null };
+  } catch (err) {
+    return { error: err };
+  }
+}
+
+/**
+ * Corrects an employee's phone number via the update-employee-phone edge
+ * function. If they have no real login email (i.e. they sign in with a
+ * phone-derived placeholder — see phoneToPlaceholderEmail), this also moves
+ * their Auth account to the new placeholder so login keeps matching the
+ * number they type. Password is left untouched either way.
+ */
+export async function updateEmployeePhone(id, phone) {
+  try {
+    await invokeWithRetry('update-employee-phone', { id, phone });
     return { error: null };
   } catch (err) {
     return { error: err };
@@ -153,6 +186,17 @@ export async function removeEmployee(id) {
 export async function createEmployee(tenantId, profileData) {
   const data = await invokeWithRetry('create-employee-user', { tenantId, profileData });
   return { tempPassword: data.tempPassword, userId: data.userId };
+}
+
+/**
+ * Admin-triggered password reset for an existing employee via the
+ * reset-employee-password edge function: generates a fresh temporary
+ * password, sets it on their Auth account, and forces a change on next
+ * login. Returns { tempPassword } on success, throws on failure.
+ */
+export async function resetEmployeePassword(id) {
+  const data = await invokeWithRetry('reset-employee-password', { id });
+  return { tempPassword: data.tempPassword };
 }
 
 /** Clears the must_change_password flag after employee sets their own password.

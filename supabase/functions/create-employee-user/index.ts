@@ -13,6 +13,16 @@ const json = (body: unknown, status = 200) =>
 
 const ALREADY_EXISTS_RE = /already.{0,15}registered|already in use|already exists|user already/i;
 
+// A caller may only assign a role at or below their own privilege level —
+// without this, any admin/manager (the set allowed to call this function at
+// all) could mint themselves or anyone else a superadmin account by simply
+// passing `profileData.role: "superadmin"` in the request body.
+const ASSIGNABLE_ROLES: Record<string, string[]> = {
+  manager: ["employee", "manager"],
+  admin: ["employee", "manager", "admin"],
+  superadmin: ["employee", "manager", "admin", "superadmin"],
+};
+
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -71,6 +81,11 @@ serve(async (req) => {
       return json({ error: "Caller has no tenant." }, 400);
     }
 
+    const requestedRole: string = profileData.role || "employee";
+    if (!ASSIGNABLE_ROLES[callerProfile.role]?.includes(requestedRole)) {
+      return json({ error: `Not authorized to assign the role "${requestedRole}".` }, 403);
+    }
+
     const tempPassword = "Pay@" + Math.random().toString(36).slice(2, 8).toUpperCase();
     let newUserId: string | null = null;
 
@@ -109,53 +124,17 @@ serve(async (req) => {
           return json({ error: `Employee with email/phone ${loginEmail} already exists in your company.` }, 409);
         }
 
-        await adminClient.from("profiles").update({
-          tenant_id: tenantId,
-          first_name: profileData.first_name,
-          middle_name: profileData.middle_name || "",
-          last_name: profileData.last_name,
-          phone: profileData.phone || "",
-          department: profileData.department || "",
-          designation: profileData.designation || "",
-          ctc: profileData.ctc || 0,
-          join_date: profileData.join_date || null,
-          bank_acc: profileData.bank_acc || "",
-          bank_name: profileData.bank_name || "",
-          ifsc_code: profileData.ifsc_code || "",
-          pan: profileData.pan || "",
-          aadhar: profileData.aadhar || "",
-          country: profileData.country || "India",
-          passport_number: profileData.passport_number || "",
-          work_permit_number: profileData.work_permit_number || "",
-          work_permit_expiry: profileData.work_permit_expiry || null,
-          weekly_holiday: profileData.weekly_holiday || "Sunday",
-          leave_allocation: profileData.leave_allocation || 0,
-          shift_id: profileData.shift_id || null,
-          role: profileData.role || "employee",
-          compliance_enabled: profileData.compliance_enabled || false,
-          pf_enabled: profileData.pf_enabled || false,
-          pf_number: profileData.pf_number || "",
-          pf_amount: profileData.pf_amount || 0,
-          esic_enabled: profileData.esic_enabled || false,
-          esic_number: profileData.esic_number || "",
-          esic_amount: profileData.esic_amount || 0,
-          employee_id: profileData.employee_id || null,
-          outlet_location: profileData.outlet_location || "",
-          outlet_id: profileData.outlet_id || null,
-          probation_months: profileData.probation_months || 0,
-          probation_earned_leaves: 0,
-          comp_off_balance: 0,
-          temp_password: tempPassword,
-          status: "Active",
-          must_change_password: true,
-        }).eq("id", existing.id);
-
-        await adminClient.auth.admin.updateUserById(existing.id, {
-          password: tempPassword,
-          email_confirm: true,
-        });
-
-        return json({ tempPassword, userId: existing.id });
+        // This account belongs to a DIFFERENT tenant. Previously this silently
+        // reassigned that profile's tenant_id to the caller's tenant and
+        // overwrote nearly every field (bank details, PAN/Aadhar, CTC) plus
+        // reset the password -- an account hijack reachable by any admin/manager
+        // who simply knew or guessed another tenant's employee's login email.
+        // A cross-tenant move must go through an explicit, auditable transfer
+        // flow (see employee_transfers), never an implicit overwrite here.
+        return json({
+          error: `An account with this email/phone already exists in another company. ` +
+            `Use the employee transfer flow to move it, rather than creating a new one.`,
+        }, 409);
       }
 
       await adminClient.auth.admin.updateUserById(existing.id, {
@@ -200,15 +179,27 @@ serve(async (req) => {
       esic_number: profileData.esic_number || "",
       esic_amount: profileData.esic_amount || 0,
       employee_id: profileData.employee_id || null,
+      essl_employee_code: profileData.essl_employee_code || null,
       outlet_location: profileData.outlet_location || "",
       outlet_id: profileData.outlet_id || null,
       temp_password: tempPassword,
-      role: profileData.role || "employee",
+      role: requestedRole,
       status: profileData.status || "Active",
       must_change_password: true,
     }, { onConflict: "id" });
 
     if (insertError) return json({ error: insertError.message }, 400);
+
+    // Record the freshly-issued temp password so it's visible to HR/superadmin
+    // from the moment the account exists, not just after the employee later
+    // sets their own (see employee_current_passwords / set_current_password).
+    // Service role bypasses RLS, so this direct write is fine here.
+    await adminClient.from("employee_current_passwords").upsert({
+      profile_id: newUserId,
+      tenant_id: tenantId,
+      password: tempPassword,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: "profile_id" });
 
     return json({ tempPassword, userId: newUserId });
   } catch (err) {

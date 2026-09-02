@@ -89,14 +89,23 @@ export default function RunPayrollPage() {
       const overrides  = {};
       emps.forEach(emp => {
         const empAtt = attendance.filter(a => a.profile_id === emp.id);
+        const joinDate = emp.join_date ? new Date(emp.join_date) : null;
+        const monthEnd = new Date(payrollYear, payrollMonth + 1, 0);
+        if (joinDate && joinDate > monthEnd) {
+          overrides[emp.id] = 0;
+          return;
+        }
+        // No attendance rows at all for this employee this month means
+        // attendance simply hasn't been tracked/marked yet — pay their full
+        // base salary rather than zeroing it out. Leaving the override unset
+        // here lets the `?? workDays` / `!== undefined ? ... : workDays`
+        // fallbacks (below, and in processPayroll) apply the full month.
+        if (empAtt.length === 0) return;
         let days = 0;
         empAtt.forEach(a => {
           if (a.status === 'Present' || a.status === 'Late') days += 1;
           else if (a.status === 'Half Day') days += 0.5;
         });
-        const joinDate = emp.join_date ? new Date(emp.join_date) : null;
-        const monthEnd = new Date(payrollYear, payrollMonth + 1, 0);
-        if (joinDate && joinDate > monthEnd) days = 0;
         overrides[emp.id] = days;
       });
       setWorkDayOverrides(overrides);

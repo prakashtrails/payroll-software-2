@@ -102,11 +102,13 @@ export default function LeaveBalancesPage() {
                           <div><div className="emp-name">{fullName(emp)}</div></div>
                         </div>
                       </td>
-                      <td>{leaveType.name}</td>
-                      <td><strong>{balance}</strong> days</td>
+                      <td>{leaveType.name}{leaveType.is_unlimited && <span className="badge badge-info" style={{ marginLeft: 6 }}>Unlimited</span>}</td>
+                      <td>{leaveType.is_unlimited ? <span style={{ color: 'var(--text-muted)' }}>Unlimited</span> : <><strong>{balance}</strong> days</>}</td>
                       <td>
                         <div style={{ display: 'flex', gap: 4 }}>
-                          <button className="btn btn-outline btn-sm" onClick={() => setAllocateFor({ emp, leaveType })}>Allocate</button>
+                          {!leaveType.is_unlimited && (
+                            <button className="btn btn-outline btn-sm" onClick={() => setAllocateFor({ emp, leaveType })}>Allocate</button>
+                          )}
                           {leaveType.encashable && (
                             <button className="btn btn-outline btn-sm" onClick={() => setEncashFor({ emp, leaveType })} disabled={balance <= 0}>Encash</button>
                           )}
