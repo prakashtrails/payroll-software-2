@@ -9,7 +9,7 @@ import { useAuth } from '@/context/AuthContext';
 import { useOutletView } from '@/context/OutletViewContext';
 import { useDebounce } from '@/hooks/useDebounce';
 import {
-  listEmployees, listBranches, createEmployee, updateEmployee,
+  listEmployees, listDivisions, listDistinctDepartments, createEmployee, updateEmployee,
   setEmployeeStatus, removeEmployee, EMPLOYEE_PAGE_SIZE, listActiveEmployees,
   setEmployeeWithholding, resetEmployeePassword, updateEmployeeEmail, updateEmployeePhone,
 } from '@/services/employeeService';
@@ -21,7 +21,7 @@ import {
   listProfileOutletAccess, setProfileOutletAccess,
 } from '@/services/tenantService';
 import { supabase } from '@/lib/supabase';
-import { fmt, getInitials, getAvatarColor, todayStr, fullName, resolveEmployeeCredentials } from '@/lib/helpers';
+import { fmt, getInitials, getAvatarColor, todayStr, fullName, resolveEmployeeCredentials, isRaniwalaTenant } from '@/lib/helpers';
 import { parseImportFile, runBulkImport, downloadSampleCSV, resolveLoginEmail, isValidEmail } from '@/lib/employeeImport';
 import { startProcess as startOnboardingProcess } from '@/services/onboardingService';
 import { advanceReferralStage } from '@/services/hiringService';
@@ -515,7 +515,7 @@ function TempPasswordModal({ show, onClose, empName, username, password, passwor
 
 const EMPTY_FORM = {
   first_name: '', middle_name: '', last_name: '', email: '', phone: '',
-  department: '', designation: '', join_date: '', ctc: '',
+  department: '', designation: '', division: '', join_date: '', date_of_birth: '', ctc: '',
   bank_acc: '', pan: '', aadhar: '', role: 'employee',
   weekly_holiday: 'Sunday', shift_id: '', leave_allocation: 0,
   country: 'India', passport_number: '', work_permit_number: '', work_permit_expiry: '',
@@ -541,9 +541,13 @@ const COMPLIANCE_BADGE = {
 export default function EmployeesPage() {
   const { tenant, profile } = useAuth();
   const isManager = profile?.role === 'manager';
+  // Raniwala doesn't want Leave/CTC/Compliance surfaced on this list — those
+  // stay payroll-only for them, unlike every other tenant.
+  const showFinanceCols = !isManager && !isRaniwalaTenant(tenant);
 
-  // Outlet scoping — follows whatever outlet HR currently has selected app-wide
-  const { selectedOutletId: outletId, selectedOutletName: outletName, outlets } = useOutletView();
+  // Outlet scoping — follows whatever outlet HR currently has selected app-wide;
+  // selectOutlet lets HR switch it right here instead of going to the Outlets page.
+  const { selectedOutletId: outletId, selectedOutletName: outletName, outlets, selectOutlet } = useOutletView();
 
   // ---- filter state ----
   // Seeded from ?q= so the global header search can land HR directly on a
@@ -554,8 +558,8 @@ export default function EmployeesPage() {
   const navigate = useNavigate();
   const [search, setSearch] = useState(searchParams.get('q') || '');
   const [deptFilter, setDeptFilter] = useState('');
+  const [divisionFilter, setDivisionFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
-  const [branchFilter, setBranchFilter] = useState('');
   const debouncedSearch = useDebounce(search, 350);
 
   // ---- pagination ----
@@ -567,7 +571,12 @@ export default function EmployeesPage() {
   const [employees, setEmployees] = useState([]);
   const [managerOptions, setManagerOptions] = useState([]);
   const [departments, setDepartments] = useState([]);
-  const [branches, setBranches] = useState([]);
+  const [divisions, setDivisions] = useState([]);
+  // Department options for the filter bar only, narrowed to the currently
+  // selected outlet + division (Outlet -> Division -> Department cascade) —
+  // distinct from `departments` above, which stays the full tenant-wide
+  // master list for the Add/Edit Employee form's Department dropdown.
+  const [filterDepartments, setFilterDepartments] = useState([]);
   const [shifts, setShifts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [clockedInSet, setClockedInSet] = useState(new Set());
@@ -595,16 +604,17 @@ export default function EmployeesPage() {
   const [promotionEmp,  setPromotionEmp]  = useState(null);
 
   // Reset to page 1 whenever filters change
-  useEffect(() => { setPage(1); }, [debouncedSearch, deptFilter, statusFilter, branchFilter, outletId]);
+  useEffect(() => { setPage(1); }, [debouncedSearch, deptFilter, divisionFilter, statusFilter, outletId]);
 
   const fetchData = useCallback(async () => {
     if (!tenant) return;
     setLoading(true);
     try {
-      const [empRes, deptRes, branchRes, shiftRes, attRes, managerRes] = await Promise.all([
-        listEmployees(tenant.id, { page, search: debouncedSearch, department: deptFilter, status: statusFilter, branch: branchFilter, outletId }),
+      const [empRes, deptRes, divisionRes, filterDeptRes, shiftRes, attRes, managerRes] = await Promise.all([
+        listEmployees(tenant.id, { page, search: debouncedSearch, department: deptFilter, division: divisionFilter, status: statusFilter, outletId, managerId: isManager ? profile?.id : '' }),
         listDepartments(tenant.id),
-        listBranches(tenant.id),
+        listDivisions(tenant.id, outletId),
+        listDistinctDepartments(tenant.id, { outletId, division: divisionFilter }),
         listShifts(tenant.id),
 
         supabase
@@ -617,7 +627,15 @@ export default function EmployeesPage() {
       setEmployees(empRes.data);
       setTotalCount(empRes.count);
       setDepartments((deptRes.data || []).map((d) => d.name));
-      setBranches(branchRes.data || []);
+      const nextDivisions = divisionRes.data || [];
+      setDivisions(nextDivisions);
+      const nextFilterDepartments = filterDeptRes.data || [];
+      setFilterDepartments(nextFilterDepartments);
+      // Outlet/division changed and the current selection no longer applies
+      // (e.g. switching from Delhi to Mumbai while "B2C (DELHI)" was picked)
+      // — clear it back to "All" instead of silently filtering to zero rows.
+      if (divisionFilter && !nextDivisions.includes(divisionFilter)) setDivisionFilter('');
+      if (deptFilter && !nextFilterDepartments.includes(deptFilter)) setDeptFilter('');
       setShifts(shiftRes.data || []);
       setManagerOptions((managerRes.data || []).filter((e) => e.role === 'manager' || e.role === 'admin'));
 
@@ -632,7 +650,7 @@ export default function EmployeesPage() {
     } finally {
       setLoading(false);
     }
-  }, [tenant, page, debouncedSearch, deptFilter, statusFilter, branchFilter, outletId]);
+  }, [tenant, page, debouncedSearch, deptFilter, divisionFilter, statusFilter, outletId, isManager, profile?.id]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
@@ -647,7 +665,9 @@ export default function EmployeesPage() {
       phone: emp.phone || '',
       department: emp.department || '',
       designation: emp.designation || '',
+      division: emp.division || '',
       join_date: emp.join_date || '',
+      date_of_birth: emp.date_of_birth || '',
       ctc: emp.ctc || '',
       bank_acc: emp.bank_acc || '',
       pan: emp.pan || '',
@@ -692,9 +712,11 @@ export default function EmployeesPage() {
   const saveEmployee = async () => {
     if (!form.first_name || !form.last_name) return showToast('First and last name required', 'error');
     if (!form.email && !form.phone) return showToast('Either email or phone number is required', 'error');
+    if (form.phone && !/^\d{10}$/.test(form.phone.trim())) return showToast('Phone number must be exactly 10 digits', 'error');
     if (!form.department) return showToast('Department is mandatory', 'error');
     if (!form.join_date) return showToast('Joining date is mandatory', 'error');
-    if (!form.bank_acc) return showToast('Bank account details are mandatory', 'error');
+    // TEMP: bank details optional pre-launch — restore mandatory check before go-live.
+    if (form.bank_acc && !/^\d{9,18}$/.test(form.bank_acc.trim())) return showToast('Bank account number must be 9-18 digits', 'error');
     if (!form.ctc || parseFloat(form.ctc) <= 0) return showToast('Valid Monthly CTC is required', 'error');
 
     const profileData = {
@@ -705,7 +727,9 @@ export default function EmployeesPage() {
       phone: form.phone.trim(),
       department: form.department,
       designation: form.designation.trim(),
+      division: form.division.trim(),
       join_date: form.join_date || null,
+      date_of_birth: form.date_of_birth || null,
       ctc: parseFloat(form.ctc) || 0,
       bank_acc: form.bank_acc.trim(),
       pan: form.pan.trim(),
@@ -848,13 +872,14 @@ export default function EmployeesPage() {
     }
 
     const {
-      successCount, updateCount, skipCount, failCount, failErrors,
+      successCount, updateCount, skipCount, failCount, failErrors, managerAssigned,
       departmentsCreated, departmentsMerged, outletsCreated, outletsMerged, duplicatesInFile, manualReview,
     } = result;
     const parts = [`${successCount} imported`];
     if (updateCount > 0) parts.push(`${updateCount} updated`);
     if (skipCount > 0) parts.push(`${skipCount} skipped (already complete)`);
     if (failCount > 0) parts.push(`${failCount} failed`);
+    if (managerAssigned > 0) parts.push(`${managerAssigned} manager(s) assigned`);
     if (duplicatesInFile > 0) parts.push(`${duplicatesInFile} duplicate rows merged`);
     if (departmentsCreated?.length) parts.push(`${departmentsCreated.length} department(s) created`);
     if (departmentsMerged?.length) parts.push(`${departmentsMerged.length} department spelling(s) normalized`);
@@ -960,28 +985,39 @@ export default function EmployeesPage() {
   return (
     <>
       <Header
-        title={outletId ? `Employees — ${outletName || 'Outlet'}` : 'Employees'}
+        title={outletId ? `Employees — ${outletName || 'Outlet'}` : isManager ? 'My Team' : 'Employees'}
         breadcrumb={outletId
           ? <>{totalCount} employees at this outlet · <Link to="/outlets">All Outlets</Link></>
-          : `${totalCount} employees`}
+          : isManager ? `${totalCount} direct report${totalCount === 1 ? '' : 's'}` : `${totalCount} employees`}
       />
       <div className="page-content">
         <div className="filter-bar">
+          {outlets.length > 0 && (
+            <select
+              className="form-select"
+              value={outletId || ''}
+              onChange={(e) => selectOutlet(e.target.value || null)}
+              title="Location (Outlet)"
+            >
+              <option value="">All Outlets (Combined)</option>
+              {outlets.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
+            </select>
+          )}
+          {divisions.length > 0 && (
+            <select className="form-select" value={divisionFilter} onChange={(e) => setDivisionFilter(e.target.value)}>
+              <option value="">All Divisions</option>
+              {divisions.map((d) => <option key={d}>{d}</option>)}
+            </select>
+          )}
           <select className="form-select" value={deptFilter} onChange={(e) => setDeptFilter(e.target.value)}>
             <option value="">All Departments</option>
-            {departments.map((d) => <option key={d}>{d}</option>)}
+            {filterDepartments.map((d) => <option key={d}>{d}</option>)}
           </select>
           <select className="form-select" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
             <option value="">All Status</option>
             <option value="Active">Active</option>
             <option value="Inactive">Inactive</option>
           </select>
-          {branches.length > 0 && (
-            <select className="form-select" value={branchFilter} onChange={(e) => setBranchFilter(e.target.value)}>
-              <option value="">All Branches</option>
-              {branches.map((b) => <option key={b} value={b}>{b}</option>)}
-            </select>
-          )}
           <input
             className="form-input"
             placeholder="🔍 Search name, email, department…"
@@ -991,35 +1027,41 @@ export default function EmployeesPage() {
           />
           {!isManager && (
             <div style={{ marginLeft: 'auto', display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
-              {importProgress && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--text-muted)' }}>
-                  <div className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} />
-                  Importing {importProgress.current} / {importProgress.total}…
-                </div>
+              {/* Bulk import is platform-superadmin only — tenant HR no longer
+                  gets an Import button, only superadmin does bulk sheet imports. */}
+              {profile?.role === 'superadmin' && (
+                <>
+                  {importProgress && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--text-muted)' }}>
+                      <div className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} />
+                      Importing {importProgress.current} / {importProgress.total}…
+                    </div>
+                  )}
+                  <label
+                    style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-muted)', cursor: 'pointer' }}
+                    title="Rows with no email or phone are normally rejected (nothing to log in with). Check this to create them anyway with a placeholder login — useful for a biometric-only import where contact info comes later."
+                  >
+                    <input
+                      type="checkbox"
+                      checked={allowPlaceholderLogins}
+                      onChange={(e) => setAllowPlaceholderLogins(e.target.checked)}
+                      disabled={!!importProgress}
+                    />
+                    Allow rows without email/phone
+                  </label>
+                  <button
+                    className="btn btn-outline"
+                    disabled={!!importProgress}
+                    onClick={() => document.getElementById('import-csv').click()}
+                  >
+                    <i className="fas fa-file-import" /> Import CSV / XLSX
+                  </button>
+                  <input id="import-csv" type="file" accept=".csv,.txt,.xlsx,.xls,.xlsm" style={{ display: 'none' }} onChange={handleImport} disabled={!!importProgress} />
+                  <button className="btn btn-outline" disabled={!!importProgress} onClick={downloadSampleCSV}>
+                    <i className="fas fa-file-csv" /> Sample CSV
+                  </button>
+                </>
               )}
-              <label
-                style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-muted)', cursor: 'pointer' }}
-                title="Rows with no email or phone are normally rejected (nothing to log in with). Check this to create them anyway with a placeholder login — useful for a biometric-only import where contact info comes later."
-              >
-                <input
-                  type="checkbox"
-                  checked={allowPlaceholderLogins}
-                  onChange={(e) => setAllowPlaceholderLogins(e.target.checked)}
-                  disabled={!!importProgress}
-                />
-                Allow rows without email/phone
-              </label>
-              <button
-                className="btn btn-outline"
-                disabled={!!importProgress}
-                onClick={() => document.getElementById('import-csv').click()}
-              >
-                <i className="fas fa-file-import" /> Import CSV / XLSX
-              </button>
-              <input id="import-csv" type="file" accept=".csv,.txt,.xlsx,.xls,.xlsm" style={{ display: 'none' }} onChange={handleImport} disabled={!!importProgress} />
-              <button className="btn btn-outline" disabled={!!importProgress} onClick={downloadSampleCSV}>
-                <i className="fas fa-file-csv" /> Sample CSV
-              </button>
               {outlets.length > 0 && (
                 <button className="btn btn-outline" onClick={() => setShowBulkAssign(true)} title="Assign employees who don't have an outlet yet">
                   <i className="fas fa-people-arrows" /> Assign Unassigned to Outlet
@@ -1043,19 +1085,21 @@ export default function EmployeesPage() {
                 <thead>
                   <tr>
                     <th>Employee</th><th>Department</th><th>Designation</th>
-                    {!isManager && <th>Leaves</th>}
-                    {!isManager && <th>Monthly CTC</th>}
-                    {!isManager && <th>Compliance</th>}
+                    {showFinanceCols && <th>Leaves</th>}
+                    {showFinanceCols && <th>Monthly CTC</th>}
+                    {showFinanceCols && <th>Compliance</th>}
                     <th>Status</th><th>Today</th><th>Actions</th>
                   </tr>
                 </thead>
                 <tbody>
                   {employees.length === 0 ? (
                     <tr>
-                      <td colSpan={isManager ? 6 : 9} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 40 }}>
-                        {debouncedSearch || deptFilter || statusFilter
+                      <td colSpan={showFinanceCols ? 9 : 6} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 40 }}>
+                        {debouncedSearch || deptFilter || divisionFilter || statusFilter
                           ? 'No employees match your filters.'
-                          : 'No employees yet. Click "Add Employee" to get started.'}
+                          : isManager
+                            ? 'No one reports to you yet.'
+                            : 'No employees yet. Click "Add Employee" to get started.'}
                       </td>
                     </tr>
                   ) : employees.map((e) => (
@@ -1088,10 +1132,15 @@ export default function EmployeesPage() {
                         </div>
                       </td>
                       <td>{e.department || '—'}</td>
-                      <td>{e.designation || '—'}</td>
-                      {!isManager && <td>{typeof e.leave_allocation === 'number' ? e.leave_allocation : (e.leave_allocation || 0)}</td>}
-                      {!isManager && <td>{fmt(e.ctc)}</td>}
-                      {!isManager && (
+                      <td>
+                        {e.designation || '—'}
+                        {e.division && (
+                          <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 1 }}>{e.division}</div>
+                        )}
+                      </td>
+                      {showFinanceCols && <td>{typeof e.leave_allocation === 'number' ? e.leave_allocation : (e.leave_allocation || 0)}</td>}
+                      {showFinanceCols && <td>{fmt(e.ctc)}</td>}
+                      {showFinanceCols && (
                         <td>
                           {(() => {
                             const cs = getComplianceStatus(e);
@@ -1218,7 +1267,14 @@ export default function EmployeesPage() {
             </div>
             <div className="form-group">
               <label className="form-label">Phone {!form.email && '*'}</label>
-              <input className="form-input" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
+              <input
+                className="form-input"
+                value={form.phone}
+                onChange={(e) => setForm({ ...form, phone: e.target.value.replace(/\D/g, '').slice(0, 10) })}
+                inputMode="numeric"
+                maxLength={10}
+                placeholder="10-digit mobile number"
+              />
               {!form.email && (
                 <div className="form-hint">
                   {editEmp ? 'They log in with this — changing it updates their sign-in username too.' : 'Used as login username since no email was entered'}
@@ -1237,8 +1293,14 @@ export default function EmployeesPage() {
             <div className="form-group"><label className="form-label">Designation</label><input className="form-input" value={form.designation} onChange={(e) => setForm({ ...form, designation: e.target.value })} /></div>
           </div>
           <div className="form-row">
+            <div className="form-group"><label className="form-label">Division</label><input className="form-input" value={form.division} onChange={(e) => setForm({ ...form, division: e.target.value })} /></div>
+          </div>
+          <div className="form-row">
             <div className="form-group"><label className="form-label">Joining Date *</label><input className="form-input" type="date" value={form.join_date} onChange={(e) => setForm({ ...form, join_date: e.target.value })} /></div>
             <div className="form-group"><label className="form-label">Monthly CTC (₹) *</label><input className="form-input" type="number" min="0" value={form.ctc} onChange={(e) => setForm({ ...form, ctc: e.target.value })} /></div>
+          </div>
+          <div className="form-row">
+            <div className="form-group"><label className="form-label">Date of Birth</label><input className="form-input" type="date" value={form.date_of_birth} onChange={(e) => setForm({ ...form, date_of_birth: e.target.value })} /></div>
           </div>
           <div className="form-row">
             <div className="form-group">
@@ -1248,8 +1310,16 @@ export default function EmployeesPage() {
             </div>
           </div>
           <div className="form-group">
-            <label className="form-label">Bank Account Number *</label>
-            <input className="form-input" value={form.bank_acc} onChange={(e) => setForm({ ...form, bank_acc: e.target.value })} placeholder="Enter bank account number" />
+            <label className="form-label">Bank Account Number</label>
+            <input
+              className="form-input"
+              value={form.bank_acc}
+              onChange={(e) => setForm({ ...form, bank_acc: e.target.value.replace(/\D/g, '').slice(0, 18) })}
+              inputMode="numeric"
+              maxLength={18}
+              placeholder="Enter bank account number"
+            />
+            <div className="form-hint">9-18 digit account number, numbers only.</div>
           </div>
 
           {/* Compliance Section */}

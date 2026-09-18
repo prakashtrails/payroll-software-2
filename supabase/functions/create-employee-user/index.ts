@@ -159,6 +159,7 @@ serve(async (req) => {
       designation: profileData.designation || "",
       ctc: profileData.ctc || 0,
       join_date: profileData.join_date || null,
+      date_of_birth: profileData.date_of_birth || null,
       bank_acc: profileData.bank_acc || "",
       bank_name: profileData.bank_name || "",
       ifsc_code: profileData.ifsc_code || "",

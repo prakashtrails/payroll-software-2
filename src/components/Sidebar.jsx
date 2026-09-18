@@ -248,6 +248,7 @@ const NAV_CONFIG = {
       title: 'Company',
       items: [
         { label: 'Company', icon: 'fa-building', href: '/announcements', flyout: COMPANY_FLYOUT },
+        { label: 'HR Settings', icon: 'fa-sliders', href: '/hr-settings' },
       ],
     },
   ],

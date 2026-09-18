@@ -26,6 +26,7 @@ import MasterDashboardPage from './pages/dashboard/MasterDashboardPage';
 import HelpdeskPage from './pages/dashboard/HelpdeskPage';
 import HelpdeskAdminPage from './pages/dashboard/HelpdeskAdminPage';
 import ToggleServicesPage from './pages/dashboard/ToggleServicesPage';
+import HrFeatureSettingsPage from './pages/dashboard/HrFeatureSettingsPage';
 import NotificationsPage from './pages/dashboard/NotificationsPage';
 import HiringPage from './pages/dashboard/HiringPage';
 import ReferPage from './pages/dashboard/ReferPage';
@@ -174,6 +175,7 @@ export default function App() {
         <Route path="/manager-payslips" element={<PrivateRoute allowedRoles={['manager']} featureKey="payslips"><PayslipsPage /></PrivateRoute>} />
         <Route path="/manager-advances" element={<PrivateRoute allowedRoles={['manager']} featureKey="advances_loans"><AdvancesPage /></PrivateRoute>} />
         <Route path="/manager-salary-additions" element={<PrivateRoute allowedRoles={['manager']} featureKey="salary_additions"><SalaryAdditionsPage /></PrivateRoute>} />
+        <Route path="/hr-settings" element={<PrivateRoute allowedRoles={['manager']}><HrFeatureSettingsPage /></PrivateRoute>} />
 
         {/* Superadmin specific */}
         <Route path="/master-dashboard" element={<PrivateRoute allowedRoles={['superadmin']}><MasterDashboardPage /></PrivateRoute>} />

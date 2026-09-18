@@ -419,6 +419,27 @@ WITH checks AS (
          EXISTS (SELECT 1 FROM pg_policies
                  WHERE tablename = 'employee_current_passwords'
                    AND policyname = 'employee_current_passwords: admin tenant read')
+  UNION ALL
+  SELECT '20260918_4_profiles_date_of_birth.sql',
+         EXISTS (SELECT 1 FROM information_schema.columns
+                 WHERE table_name = 'profiles' AND column_name = 'date_of_birth')
+  UNION ALL
+  SELECT '20260918_5_raniwala_b2b_sales_rename.sql',
+         EXISTS (SELECT 1 FROM outlets o JOIN tenants t ON t.id = o.tenant_id
+                 WHERE t.company_name ILIKE '%Raniwala%' AND o.name = 'B2B SALES')
+  UNION ALL
+  SELECT '20260918_6_raniwala_retire_worklocation_outlet.sql',
+         NOT EXISTS (SELECT 1 FROM outlets o JOIN tenants t ON t.id = o.tenant_id
+                     WHERE t.company_name ILIKE '%Raniwala%' AND o.name = 'Worklocation')
+  UNION ALL
+  SELECT '20260918_7_birthday_notifications.sql',
+         EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'send_birthday_notifications')
+         AND EXISTS (SELECT 1 FROM cron.job WHERE jobname = 'birthday-notifications')
+  UNION ALL
+  SELECT '20260918_8_outlet_manager_feature_toggle_rls.sql',
+         EXISTS (SELECT 1 FROM pg_policies
+                 WHERE tablename = 'company_feature_toggles'
+                   AND policyname = 'company_feature_toggles: outlet manager can manage curated features')
 )
 SELECT migration, CASE WHEN applied THEN 'APPLIED' ELSE 'MISSING — run this one' END AS status
 FROM checks
