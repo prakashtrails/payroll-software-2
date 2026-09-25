@@ -78,7 +78,7 @@ export async function fetchMyLeaveBalances(profileId) {
 export async function fetchTenantLeaveBalances(tenantId) {
   const { data, error } = await supabase
     .from('leave_balances')
-    .select('*, leave_type:leave_types(name, encashable, is_unlimited), profile:profiles!leave_balances_profile_id_fkey(first_name, middle_name, last_name, department)')
+    .select('*, leave_type:leave_types(name, encashable, is_unlimited)')
     .eq('tenant_id', tenantId);
   return { data: data || [], error };
 }

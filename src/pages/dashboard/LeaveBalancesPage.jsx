@@ -32,6 +32,7 @@ export default function LeaveBalancesPage() {
         listLeaveTypes(tenant.id),
         listActiveEmployees(tenant.id),
       ]);
+      if (balRes.error) showToast('Could not load leave balances: ' + balRes.error.message, 'error');
       setBalances(scopedToOutlet(balRes.data, outletProfileIds));
       setLeaveTypes(typesRes.data);
       setEmployees(scopedToOutlet(empRes.data, outletProfileIds, 'id'));
