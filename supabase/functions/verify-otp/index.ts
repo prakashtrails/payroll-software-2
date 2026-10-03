@@ -23,7 +23,16 @@ serve(async (req) => {
       );
     }
 
-    const email = identifier.toLowerCase().trim();
+    // A 10-digit mobile number is an SMS OTP from send-sms-otp (stored under
+    // "phone:<digits>"); it can only log in an existing account, never sign up.
+    const phoneDigits = /^\d{10}$/.test(String(identifier).trim()) ? String(identifier).trim() : null;
+    if (phoneDigits && isSignup) {
+      return new Response(
+        JSON.stringify({ error: "Sign up with an email address." }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+    const email = phoneDigits ? `phone:${phoneDigits}` : identifier.toLowerCase().trim();
 
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const serviceKey  = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -49,7 +58,7 @@ serve(async (req) => {
 
     if (!record) {
       return new Response(
-        JSON.stringify({ error: "No OTP found for this email. Please request a new one." }),
+        JSON.stringify({ error: "No code found. Please request a new one." }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
@@ -134,10 +143,32 @@ serve(async (req) => {
     }
 
     // ── LOGIN FLOW ───────────────────────────────────────────────────────────
+    // Phone login: the session is for the auth user that owns this number
+    // (often a placeholder p<digits>@phone.crewcore.internal address).
+    let loginEmail = email;
+    if (phoneDigits) {
+      const variants = [phoneDigits, `+91${phoneDigits}`, `91${phoneDigits}`, `0${phoneDigits}`, `+91 ${phoneDigits}`];
+      const { data: owners } = await db.from("profiles").select("id").in("phone", variants).eq("status", "Active").limit(2);
+      if (!owners || owners.length !== 1) {
+        return new Response(
+          JSON.stringify({ error: "Couldn't match this number to one account. Please sign in with email or password." }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+      const { data: authUser } = await db.auth.admin.getUserById(owners[0].id);
+      if (!authUser?.user?.email) {
+        return new Response(
+          JSON.stringify({ error: "This account can't use SMS login. Please contact your HR." }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+      loginEmail = authUser.user.email;
+    }
+
     // Generate a magic link so the client can exchange it for a session
     const { data: linkData, error: linkErr } = await db.auth.admin.generateLink({
       type:  "magiclink",
-      email,
+      email: loginEmail,
     });
 
     if (linkErr || !linkData?.properties?.hashed_token) {

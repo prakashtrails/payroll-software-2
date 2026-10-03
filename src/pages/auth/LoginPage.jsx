@@ -234,8 +234,8 @@ function OtpLoginForm({ onSuccess }) {
   const handleSendOtp = useCallback(async (e) => {
     e?.preventDefault();
     setError(''); setSuccess('');
-    if (!identifier.trim()) { setError('Please enter your email address.'); return; }
-    if (idType !== 'email')  { setError('Please enter a valid email address. OTP login is email-only.'); return; }
+    if (!identifier.trim()) { setError('Please enter your email address or mobile number.'); return; }
+    if (!idType)             { setError('Please enter a valid email address or 10-digit mobile number.'); return; }
     setSending(true);
     try {
       const result = await sendOtp(identifier, { shouldCreateUser: false }); // login: profile must already exist
@@ -283,26 +283,26 @@ function OtpLoginForm({ onSuccess }) {
     <form onSubmit={handleSendOtp} noValidate>
       <ErrorBanner message={error} />
       <div className="form-group">
-        <label className="form-label">Email Address</label>
+        <label className="form-label">Email or Mobile Number</label>
         <div style={{position:'relative'}}>
-          <input className="form-input" type="text" inputMode="email"
-            placeholder="you@company.com"
+          <input className="form-input" type="text" inputMode={idType==='phone'?'numeric':'email'}
+            placeholder="you@company.com or 9876543210"
             value={identifier} onChange={handleIdentifierChange}
-            autoFocus style={{paddingLeft:38,paddingRight:idType==='email'?80:12}} />
-          <i className="fas fa-envelope" style={ICON_STYLE} />
-          {idType==='email' && (
+            autoFocus style={{paddingLeft:38,paddingRight:idType?80:12}} />
+          <i className={`fas ${idType==='phone'?'fa-mobile-alt':'fa-envelope'}`} style={ICON_STYLE} />
+          {idType && (
             <span style={{
               position:'absolute',right:10,top:'50%',transform:'translateY(-50%)',
               fontSize:10,fontWeight:700,letterSpacing:0.5,
               background:'var(--primary-light)',color:'var(--primary)',
               padding:'2px 8px',borderRadius:99,
-            }}>EMAIL</span>
+            }}>{idType==='phone'?'SMS':'EMAIL'}</span>
           )}
         </div>
-        <div className="form-hint">We&apos;ll send a 6-digit OTP to your email.</div>
+        <div className="form-hint">We&apos;ll send a 6-digit OTP to your {idType==='phone'?'mobile by SMS':'email or mobile'}.</div>
       </div>
       <button type="submit" className="btn btn-primary btn-lg btn-block"
-        disabled={sending||idType!=='email'} style={{marginTop:8,borderRadius:12,fontSize:14}}>
+        disabled={sending||!idType} style={{marginTop:8,borderRadius:12,fontSize:14}}>
         {sending
           ? <><div className="spinner" style={{width:18,height:18,borderWidth:2}} /> Sending OTP…</>
           : <><i className="fas fa-paper-plane" /> Send OTP</>}

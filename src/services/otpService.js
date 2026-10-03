@@ -26,11 +26,19 @@ export async function sendOtp(identifier, options = { shouldCreateUser: true }) 
     const type = detectIdentifierType(id);
 
     if (!type) {
-        throw new Error('Please enter a valid email address.');
+        throw new Error('Please enter a valid email address or 10-digit mobile number.');
     }
 
-    if (type !== 'email') {
-        throw new Error('Phone OTP is currently disabled. Please use your email address.');
+    if (type === 'phone') {
+        // SMS OTP (MSG91) — login only; signup stays email-based.
+        if (options.shouldCreateUser) throw new Error('Please sign up with your email address.');
+        const { data, error } = await supabase.functions.invoke('send-sms-otp', { body: { phone: id } });
+        if (error) {
+            let msg = error.message || '';
+            try { msg = (await error.context.clone().json()).error || msg; } catch (_) { /* not JSON */ }
+            throw new Error(msg || 'Failed to send OTP. Please try again.');
+        }
+        return { type: 'phone', identifier: data?.identifier || id };
     }
 
     const resolvedId = id.toLowerCase();
