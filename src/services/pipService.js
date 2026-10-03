@@ -2,8 +2,8 @@ import { supabase } from '@/lib/supabase';
 
 const SELECT = `
   *,
-  employee:profiles!pips_profile_id_fkey(first_name, middle_name, last_name),
-  manager:profiles!pips_manager_id_fkey(first_name, middle_name, last_name),
+  employee:profile_directory!pips_profile_id_fkey(first_name, middle_name, last_name),
+  manager:profile_directory!pips_manager_id_fkey(first_name, middle_name, last_name),
   pip_goals(*)
 `;
 
@@ -69,7 +69,7 @@ export async function updatePipGoal(id, payload) {
 export async function listPipCheckins(pipId) {
   const { data, error } = await supabase
     .from('pip_checkins')
-    .select('*, author:profiles!pip_checkins_author_id_fkey(first_name, middle_name, last_name)')
+    .select('*, author:profile_directory!pip_checkins_author_id_fkey(first_name, middle_name, last_name)')
     .eq('pip_id', pipId)
     .order('created_at', { ascending: false });
   return { data: data || [], error };

@@ -1,13 +1,15 @@
 import { supabase } from '@/lib/supabase';
 import { notifyTenant } from './notificationService';
 
-/** List announcements for a tenant, newest first. */
-export async function listAnnouncements(tenantId) {
-  const { data, error } = await supabase
+/** List announcements for a tenant, newest first. `limit` caps the rows fetched (e.g. the Home dashboard). */
+export async function listAnnouncements(tenantId, { limit } = {}) {
+  let query = supabase
     .from('announcements')
-    .select('*, author:profiles!announcements_created_by_fkey(first_name, middle_name, last_name)')
+    .select('*, author:profile_directory!announcements_created_by_fkey(first_name, middle_name, last_name)')
     .eq('tenant_id', tenantId)
     .order('created_at', { ascending: false });
+  if (limit) query = query.limit(limit);
+  const { data, error } = await query;
   return { data: data || [], error };
 }
 

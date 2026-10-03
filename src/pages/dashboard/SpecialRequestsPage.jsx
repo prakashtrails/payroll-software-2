@@ -35,8 +35,10 @@ export default function SpecialRequestsPage() {
     if (!tenant) return;
     setLoading(true);
     try {
-      // Manager only sees requests routed to their level; admin sees all
-      const { data, error } = await listAllSpecialRequests(tenant.id, isManager ? 'manager' : null);
+      // Everyone sees every special request tenant-wide (any status, any
+      // approval tier) so managers stay aware of auto-approved / admin-approved
+      // requests too -- only the ability to act on one is role-gated below.
+      const { data, error } = await listAllSpecialRequests(tenant.id);
       if (error) showToast(error.message, 'error');
       else setRequests(scopedToOutlet(data, outletProfileIds));
     } finally {
@@ -188,7 +190,12 @@ export default function SpecialRequestsPage() {
                     }`}>
                       {req.status}
                     </span>
-                    {req.status !== 'Pending' && req.approver && (
+                    {req.status !== 'Pending' && req.approval_level === 'self' && (
+                      <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2 }}>
+                        Auto-approved
+                      </div>
+                    )}
+                    {req.status !== 'Pending' && req.approval_level !== 'self' && req.approver && (
                       <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2 }}>
                         By: {req.approver.first_name}
                       </div>
@@ -200,7 +207,7 @@ export default function SpecialRequestsPage() {
                     )}
                   </td>
                   <td>
-                    {req.status === 'Pending' && (
+                    {req.status === 'Pending' && (!isManager || req.required_approver_role === 'manager') && (
                       <div className="flex gap-1">
                         <button
                           className="btn btn-sm btn-success"
@@ -224,6 +231,11 @@ export default function SpecialRequestsPage() {
                         >
                           <i className="fas fa-times" />
                         </button>
+                      </div>
+                    )}
+                    {req.status === 'Pending' && isManager && req.required_approver_role !== 'manager' && (
+                      <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                        Awaiting {req.required_approver_role === 'admin' ? 'HR' : req.required_approver_role}
                       </div>
                     )}
                   </td>

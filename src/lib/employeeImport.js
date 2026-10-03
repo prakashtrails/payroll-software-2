@@ -2,6 +2,7 @@ import * as XLSX from 'xlsx';
 import { supabase } from '@/lib/supabase';
 import { createEmployee, updateEmployeeAdmin } from '@/services/employeeService';
 import { listDepartments } from '@/services/tenantService';
+import { setDirectManager } from '@/services/orgHierarchyService';
 import { todayStr, phoneToPlaceholderEmail, normalizePhone } from '@/lib/helpers';
 
 /**
@@ -219,8 +220,14 @@ const toDateStr = (val) => {
     const date = new Date(Math.round((val - 25569) * 86400 * 1000));
     return date.toISOString().slice(0, 10);
   }
-  // JS Date object (when cellDates:true is used)
-  if (val instanceof Date) return val.toISOString().slice(0, 10);
+  // JS Date object (when cellDates:true is used). SheetJS builds these at
+  // *local* midnight, minus a few seconds of historical-offset drift (IST
+  // gives 8 Jan as 2024-01-07T18:29:50Z), so toISOString() alone lands on the
+  // previous day. Shift to local wall-clock time and round to the nearest day.
+  if (val instanceof Date) {
+    const localMs = val.getTime() - val.getTimezoneOffset() * 60000;
+    return new Date(Math.round(localMs / 86400000) * 86400000).toISOString().slice(0, 10);
+  }
 
   const s = String(val).trim();
   if (!s) return '';
@@ -401,6 +408,12 @@ export function mapRowToProfileData(data) {
 
   const rawDept = t(d.department || d.dept);
   const rawDesignation = t(d.designation || d.position || d.job_title || d.title);
+  const rawDivision = t(d.division);
+  // "Manager" is a person's name (e.g. "ABHISHEK SIR"), not a profiles column —
+  // resolved to manager_id in a separate pass after every row is created/updated
+  // (see resolveManagerAssignments), since the named manager may appear later
+  // in the same sheet or already exist as another tenant employee.
+  const managerName = t(d.manager || d.manager_name || d.reporting_manager || d.reports_to);
 
   const profileData = {
     first_name: firstName || 'Imported',
@@ -410,6 +423,8 @@ export function mapRowToProfileData(data) {
     phone: identifierToString(d.phone ?? d.mobile ?? d.contact ?? d.phone_number ?? d.mobile_number),
     department: rawDept, // canonicalized in-place by runBulkImport once every row's department is known
     designation: rawDesignation ? formatDesignation(rawDesignation) : '',
+    division: rawDivision ? titleCaseWithAcronyms(rawDivision.toLowerCase()) : '',
+    manager_name: managerName,
     join_date: joinDate || todayStr(),
     ctc: parseFloat(t(d.ctc || d.salary || d.annual_ctc || d.gross_salary || d.gross)) || 0,
     bank_acc: identifierToString(d.bank_acc ?? d.bank_account ?? d.account_number ?? d.acc_no),
@@ -427,7 +442,7 @@ export function mapRowToProfileData(data) {
     status: /^inactive$/i.test(t(d.status)) ? 'Inactive' : 'Active',
     weekly_holiday: normalizeWeeklyHoliday(d.weekly_holiday || d.holiday),
     leave_allocation: parseInt(t(d.leave_allocation || d.leaves || d.annual_leaves), 10) || 0,
-    employee_id: t(d.employee_id || d.emp_id || d.staff_id).toUpperCase() || null,
+    employee_id: t(d.employee_id || d.emp_id || d.staff_id || d.emp_code).toUpperCase() || null,
     essl_employee_code: identifierToString(d.essl_employee_code ?? d.essl_id ?? d.essl_code ?? d.device_user_id ?? d.biometric_code) || null,
     outlet_location: outletLocation,
     outlet_id: null,
@@ -560,10 +575,29 @@ export function computeOutletCanonicalization(existingNames, rawValues) {
 
 const onlyDigits = (s) => String(s || '').replace(/\D/g, '');
 
+const rowFullName = (row) => normalizeManagerName([row.first_name, row.middle_name, row.last_name].filter(Boolean).join(' '));
+
+/** Employee IDs that the sheet gives to more than one differently-named
+ *  person (an HR typo, e.g. five people all under code 666). For these the
+ *  code alone can't identify anyone, so matching also requires the name. */
+function findSharedEmployeeIds(rows) {
+  const namesById = new Map();
+  for (const r of rows) {
+    if (!r.employee_id) continue;
+    if (!namesById.has(r.employee_id)) namesById.set(r.employee_id, new Set());
+    namesById.get(r.employee_id).add(rowFullName(r));
+  }
+  return new Set([...namesById].filter(([, names]) => names.size > 1).map(([id]) => id.toUpperCase()));
+}
+
 /** Identifiers strong enough to say "this is the same person" on their own. */
-function matchKeys(row) {
+function matchKeys(row, sharedIds = new Set()) {
   const keys = [];
-  if (row.employee_id) keys.push('eid:' + row.employee_id);
+  if (row.employee_id) {
+    keys.push(sharedIds.has(row.employee_id.toUpperCase())
+      ? 'eidname:' + row.employee_id + '|' + rowFullName(row)
+      : 'eid:' + row.employee_id);
+  }
   if (row.essl_employee_code) keys.push('essl:' + row.essl_employee_code);
   if (row.email) keys.push('email:' + row.email);
   const phone10 = normalizePhone(row.phone);
@@ -580,9 +614,9 @@ function matchKeys(row) {
 
 const MERGE_FIELDS = [
   'first_name', 'middle_name', 'last_name', 'email', 'phone', 'department', 'designation',
-  'join_date', 'ctc', 'bank_acc', 'bank_name', 'ifsc_code', 'pan', 'aadhar', 'country',
+  'division', 'join_date', 'ctc', 'bank_acc', 'bank_name', 'ifsc_code', 'pan', 'aadhar', 'country',
   'passport_number', 'work_permit_number', 'work_permit_expiry', 'weekly_holiday',
-  'leave_allocation', 'employee_id', 'outlet_location',
+  'leave_allocation', 'employee_id', 'outlet_location', 'manager_name',
 ];
 
 /**
@@ -595,9 +629,10 @@ function dedupeWithinFile(mappedRows) {
   const groups = [];          // array of merged rows
   const keyToGroupIdx = new Map();
   let duplicateCount = 0;
+  const sharedIds = findSharedEmployeeIds(mappedRows);
 
   for (const row of mappedRows) {
-    const keys = matchKeys(row);
+    const keys = matchKeys(row, sharedIds);
     let groupIdx = null;
     for (const k of keys) {
       if (keyToGroupIdx.has(k)) { groupIdx = keyToGroupIdx.get(k); break; }
@@ -628,7 +663,8 @@ function dedupeWithinFile(mappedRows) {
 // ============================================================
 
 /** Priority-ordered lookup maps for matching an imported row to an existing
- *  CrewCore employee: Employee ID > Email > Mobile > Aadhaar/PAN > Name+DOJ. */
+ *  CrewCore employee: Employee ID > ESSL code > Email > Mobile > Aadhaar/PAN
+ *  > Name+DOJ > name alone (see byFullName/byFirstLast). */
 function buildExistingIndexes(existingProfiles) {
   const byEmployeeId = new Map();
   const byEsslCode = new Map();
@@ -637,6 +673,17 @@ function buildExistingIndexes(existingProfiles) {
   const byAadhar = new Map();
   const byPan = new Map();
   const byNameDoj = new Map();
+  // Name-only fallback (no employee ID/ESSL code in the sheet at all yet, or
+  // it doesn't match what's on file) — grouped as arrays so a name shared by
+  // more than one employee can be told apart from a genuine unique match
+  // instead of silently updating the wrong person.
+  const byFullName = new Map();
+  const byFirstLast = new Map();
+  const addTo = (map, key, p) => {
+    if (!key) return;
+    if (!map.has(key)) map.set(key, []);
+    map.get(key).push(p);
+  };
 
   for (const p of existingProfiles) {
     if (p.employee_id) byEmployeeId.set(p.employee_id.toUpperCase(), p);
@@ -649,13 +696,26 @@ function buildExistingIndexes(existingProfiles) {
     if (p.first_name && p.last_name && p.join_date) {
       byNameDoj.set(`${p.first_name}|${p.last_name}`.toLowerCase() + '|' + p.join_date, p);
     }
+    addTo(byFullName, normalizeManagerName([p.first_name, p.middle_name, p.last_name].filter(Boolean).join(' ')), p);
+    addTo(byFirstLast, normalizeManagerName([p.first_name, p.last_name].filter(Boolean).join(' ')), p);
   }
-  return { byEmployeeId, byEsslCode, byEmail, byPhone, byAadhar, byPan, byNameDoj };
+  return { byEmployeeId, byEsslCode, byEmail, byPhone, byAadhar, byPan, byNameDoj, byFullName, byFirstLast };
 }
 
-function findExistingMatch(row, idx) {
-  if (row.employee_id && idx.byEmployeeId.has(row.employee_id.toUpperCase())) {
-    return { profile: idx.byEmployeeId.get(row.employee_id.toUpperCase()), via: 'employee ID' };
+/**
+ * Returns { profile, via } on an unambiguous match, or { ambiguous: [...] }
+ * when the row's name alone matches more than one existing employee (never
+ * auto-picks one — see runBulkImport, which reports it for manual review
+ * instead of risking an update to the wrong person), or null for no match.
+ */
+function findExistingMatch(row, idx, sharedIds = new Set()) {
+  const eid = row.employee_id?.toUpperCase();
+  if (eid && idx.byEmployeeId.has(eid)) {
+    const profile = idx.byEmployeeId.get(eid);
+    // A code the sheet reuses for several people only counts when the name
+    // agrees too — otherwise fall through to the other identifiers/name.
+    const profileName = normalizeManagerName([profile.first_name, profile.middle_name, profile.last_name].filter(Boolean).join(' '));
+    if (!sharedIds.has(eid) || profileName === rowFullName(row)) return { profile, via: 'employee ID' };
   }
   if (row.essl_employee_code && idx.byEsslCode.has(row.essl_employee_code)) {
     return { profile: idx.byEsslCode.get(row.essl_employee_code), via: 'ESSL code' };
@@ -678,6 +738,16 @@ function findExistingMatch(row, idx) {
     const key = `${row.first_name}|${row.last_name}`.toLowerCase() + '|' + row.join_date;
     if (idx.byNameDoj.has(key)) return { profile: idx.byNameDoj.get(key), via: 'name + joining date' };
   }
+
+  // Last resort: match on name alone (e.g. a sheet with only EMP CODE/NAME —
+  // no email/phone/DOJ to key off, and the code itself doesn't line up with
+  // what's on file). Only ever returns an unambiguous single match.
+  const fullNameKey = normalizeManagerName([row.first_name, row.middle_name, row.last_name].filter(Boolean).join(' '));
+  const firstLastKey = normalizeManagerName([row.first_name, row.last_name].filter(Boolean).join(' '));
+  const nameCandidates = [...new Set([...(idx.byFullName.get(fullNameKey) || []), ...(idx.byFirstLast.get(firstLastKey) || [])])];
+  if (nameCandidates.length === 1) return { profile: nameCandidates[0], via: 'name' };
+  if (nameCandidates.length > 1) return { ambiguous: nameCandidates };
+
   return null;
 }
 
@@ -686,7 +756,7 @@ function findExistingMatch(row, idx) {
 // buildUpdatePayload — since overwriting someone's real name off a fuzzy
 // (phone/aadhaar/name+DOJ) match is riskier than any of these.
 const UPDATABLE_FIELDS = [
-  'department', 'designation', 'ctc', 'bank_acc', 'bank_name', 'ifsc_code',
+  'department', 'designation', 'division', 'ctc', 'bank_acc', 'bank_name', 'ifsc_code',
   'pan', 'aadhar', 'phone', 'country', 'passport_number', 'work_permit_number',
   'work_permit_expiry', 'weekly_holiday', 'leave_allocation', 'employee_id',
   'essl_employee_code',
@@ -776,6 +846,72 @@ async function createEmployeeWithRetry(tenantId, profileData, maxRetries = 3) {
   throw lastErr;
 }
 
+// ============================================================
+// Manager-name resolution
+// ============================================================
+
+// Honorifics that ride along with an Indian workplace's informal manager
+// references ("ABHISHEK SIR") but aren't part of anyone's actual name —
+// stripped so "Abhishek Sir" and a profile named "Abhishek" can still match.
+const HONORIFIC_RE = /\b(sir|mam|ma'?am|madam|ji)\b\.?/gi;
+
+const normalizeManagerName = (raw) =>
+  cleanText(raw).toLowerCase().replace(HONORIFIC_RE, '').replace(/\s+/g, ' ').trim();
+
+/**
+ * Resolves every row's free-text "Manager" name to a manager_id and assigns
+ * it via the set_direct_manager RPC (the org-hierarchy source of truth — see
+ * orgHierarchyService.setDirectManager), so the named manager's Team section
+ * picks up the employee immediately.
+ *
+ * Matches against every active employee/admin/manager in the tenant (not
+ * just rows from this import) — the sheet's "ABHISHEK SIR" is often an
+ * existing admin/owner account, not a row in the file itself. Tries a full
+ * first+middle+last match before falling back to first+last (a manager
+ * column commonly drops someone's middle name, e.g. "GANESH SHARMA" for
+ * "Ganesh Chand Sharma"). A name matching more than one employee is left
+ * unassigned and flagged for manual review rather than guessing.
+ */
+async function resolveManagerAssignments(tenantId, assignments, manualReview) {
+  if (!assignments.length) return { managerAssigned: 0 };
+
+  const { data: allProfiles } = await supabase
+    .from('profiles')
+    .select('id, first_name, middle_name, last_name')
+    .eq('tenant_id', tenantId);
+
+  const byFullName = new Map();
+  const byFirstLast = new Map();
+  const addTo = (map, key, id) => {
+    if (!key) return;
+    if (!map.has(key)) map.set(key, []);
+    map.get(key).push(id);
+  };
+  for (const p of allProfiles || []) {
+    addTo(byFullName, normalizeManagerName([p.first_name, p.middle_name, p.last_name].filter(Boolean).join(' ')), p.id);
+    addTo(byFirstLast, normalizeManagerName([p.first_name, p.last_name].filter(Boolean).join(' ')), p.id);
+  }
+
+  let managerAssigned = 0;
+  for (const { employeeId, label, managerName } of assignments) {
+    const key = normalizeManagerName(managerName);
+    const candidates = [...new Set((byFullName.get(key) || byFirstLast.get(key) || []))]
+      .filter((id) => id !== employeeId);
+
+    if (candidates.length === 0) {
+      manualReview.push(`${label}: manager "${managerName}" not found — assign manually`);
+    } else if (candidates.length > 1) {
+      manualReview.push(`${label}: manager "${managerName}" matches ${candidates.length} employees — assign manually`);
+    } else {
+      const { error } = await setDirectManager(employeeId, candidates[0]);
+      if (error) manualReview.push(`${label}: failed to assign manager "${managerName}" — ${error.message}`);
+      else managerAssigned++;
+    }
+  }
+
+  return { managerAssigned };
+}
+
 /**
  * Runs a bulk employee import for one tenant. Cleans/normalizes every row,
  * canonicalizes departments so capitalization/whitespace/known-typo variants
@@ -786,10 +922,10 @@ async function createEmployeeWithRetry(tenantId, profileData, maxRetries = 3) {
  * only genuinely new employees. Calls onProgress(current, total) as it goes.
  *
  * Returns { successCount, updateCount, skipCount, failCount, failErrors,
- *   departmentsCreated, departmentsMerged, duplicatesInFile, manualReview,
- *   fieldsUpdated }.
+ *   managerAssigned, departmentsCreated, departmentsMerged, duplicatesInFile,
+ *   manualReview, fieldsUpdated }.
  */
-export async function runBulkImport({ tenantId, rows, onProgress, allowPlaceholderLogins = false }) {
+export async function runBulkImport({ tenantId, rows, onProgress, allowPlaceholderLogins = false, allowMissingCtc = false }) {
   const mappedRows = rows.map((data) => mapRowToProfileData(data));
 
   const manualReview = [];
@@ -839,10 +975,11 @@ export async function runBulkImport({ tenantId, rows, onProgress, allowPlacehold
   }
 
   const { rows: dedupedRows, duplicateCount: duplicatesInFile } = dedupeWithinFile(mappedRows);
+  const sharedIds = findSharedEmployeeIds(mappedRows);
 
   const { data: existingProfiles } = await supabase
     .from('profiles')
-    .select('id, employee_id, essl_employee_code, email, phone, first_name, middle_name, last_name, department, designation, ctc, bank_acc, bank_name, ifsc_code, pan, aadhar, country, passport_number, work_permit_number, work_permit_expiry, weekly_holiday, leave_allocation, join_date, outlet_location, outlet_id')
+    .select('id, employee_id, essl_employee_code, email, phone, first_name, middle_name, last_name, department, designation, division, ctc, bank_acc, bank_name, ifsc_code, pan, aadhar, country, passport_number, work_permit_number, work_permit_expiry, weekly_holiday, leave_allocation, join_date, outlet_location, outlet_id')
     .eq('tenant_id', tenantId);
   const idx = buildExistingIndexes(existingProfiles || []);
   // Also index by login email (real email, or phone placeholder) so a row
@@ -860,15 +997,60 @@ export async function runBulkImport({ tenantId, rows, onProgress, allowPlacehold
   let failCount = 0;
   const failErrors = [];
   const fieldsUpdated = [];
+  // Employee/manager-name pairs to resolve once every row has been created or
+  // updated — a row's named manager may be another employee later in this
+  // same sheet, so this can't be done inline per-row.
+  const pendingManagerAssignments = [];
 
   for (const [rowIndex, profileData] of dedupedRows.entries()) {
     onProgress?.(rowIndex + 1, dedupedRows.length);
     delete profileData._flags;
+    const managerName = profileData.manager_name;
+    delete profileData.manager_name;
 
-    // At least one of email/phone is required as a login identifier — when
-    // email is present, phone is allowed to stay blank for now (see
-    // resolveLoginEmail / phoneToPlaceholderEmail).
     const label = profileData.email || profileData.phone || profileData.employee_id || '(row ' + (rowIndex + 1) + ')';
+
+    // Existing-employee match is attempted first and needs neither a login
+    // identifier nor a CTC value — a re-import that's only correcting
+    // department/division/manager for an already-live employee shouldn't be
+    // blocked by columns the sheet never carried in the first place. Those
+    // requirements apply below, only to rows that turn out to be brand new.
+    const loginGuess = resolveLoginEmail(profileData).toLowerCase();
+    const match = findExistingMatch(profileData, idx, sharedIds) || (loginGuess && byLoginEmail.has(loginGuess)
+      ? { profile: byLoginEmail.get(loginGuess), via: 'login email' }
+      : null);
+
+    if (match?.ambiguous) {
+      failCount++;
+      failErrors.push(`${label}: name matches ${match.ambiguous.length} existing employees and no Employee ID/ESSL code/email/phone confirms which one — row skipped, assign manually`);
+      continue;
+    }
+
+    if (match) {
+      const { profile: existing } = match;
+      const { payload, changedFields } = buildUpdatePayload(existing, profileData);
+      if (!changedFields.length) {
+        skipCount++;
+      } else {
+        try {
+          const { error: updErr } = await updateEmployeeAdmin(existing.id, payload);
+          if (updErr) throw updErr;
+          updateCount++;
+          fieldsUpdated.push(`${label}: ${changedFields.join(', ')}`);
+          // Keep the in-memory record in sync in case a later row in this same
+          // file also resolves to this employee.
+          Object.assign(existing, payload);
+        } catch (err) {
+          failCount++;
+          failErrors.push(`${label}: ${err.message || 'Update failed'}`);
+        }
+      }
+      if (managerName) pendingManagerAssignments.push({ employeeId: existing.id, label, managerName });
+      continue;
+    }
+
+    // No existing match — creating a brand-new employee still needs a login
+    // identifier and a real CTC, same as manual "Add Employee".
     if (!profileData.phone && !profileData.email) {
       if (!allowPlaceholderLogins) {
         failCount++;
@@ -885,39 +1067,17 @@ export async function runBulkImport({ tenantId, rows, onProgress, allowPlacehold
       profileData.login_email = resolveLoginEmail(profileData);
     }
 
-    // Manual "Add Employee" hard-blocks CTC <= 0 — the import path must match
-    // the same bar, or it silently creates live ₹0-salary employee records.
     if (!profileData.ctc || profileData.ctc <= 0) {
-      failCount++;
-      failErrors.push(`${label}: missing or invalid CTC — row skipped`);
-      continue;
-    }
-
-    const match = findExistingMatch(profileData, idx) || (() => {
-      const p = byLoginEmail.get(profileData.login_email.toLowerCase());
-      return p ? { profile: p, via: 'login email' } : null;
-    })();
-
-    if (match) {
-      const { profile: existing } = match;
-      const { payload, changedFields } = buildUpdatePayload(existing, profileData);
-      if (!changedFields.length) {
-        skipCount++;
+      if (!allowMissingCtc) {
+        failCount++;
+        failErrors.push(`${label}: missing or invalid CTC — row skipped`);
         continue;
       }
-      try {
-        const { error: updErr } = await updateEmployeeAdmin(existing.id, payload);
-        if (updErr) throw updErr;
-        updateCount++;
-        fieldsUpdated.push(`${label}: ${changedFields.join(', ')}`);
-        // Keep the in-memory record in sync in case a later row in this same
-        // file also resolves to this employee.
-        Object.assign(existing, payload);
-      } catch (err) {
-        failCount++;
-        failErrors.push(`${label}: ${err.message || 'Update failed'}`);
-      }
-      continue;
+      // Explicitly opted in — create the record now with CTC = 0 rather than
+      // blocking on a figure the sheet never had; manual review flags it so
+      // it isn't forgotten before the next payroll run.
+      profileData.ctc = 0;
+      manualReview.push(`${label}: created with CTC = 0 — set their real Monthly CTC before running payroll`);
     }
 
     try {
@@ -928,6 +1088,7 @@ export async function runBulkImport({ tenantId, rows, onProgress, allowPlacehold
       if (profileData.email) idx.byEmail.set(profileData.email.toLowerCase(), newRecord);
       byLoginEmail.set(profileData.login_email.toLowerCase(), newRecord);
       successCount++;
+      if (managerName) pendingManagerAssignments.push({ employeeId: created.userId, label, managerName });
     } catch (err) {
       const msg = err.message || '';
       if (/already registered|already in use|already exists|user already/i.test(msg)) {
@@ -943,8 +1104,10 @@ export async function runBulkImport({ tenantId, rows, onProgress, allowPlacehold
     }
   }
 
+  const { managerAssigned } = await resolveManagerAssignments(tenantId, pendingManagerAssignments, manualReview);
+
   return {
-    successCount, updateCount, skipCount, failCount, failErrors,
+    successCount, updateCount, skipCount, failCount, failErrors, managerAssigned,
     departmentsCreated, departmentsMerged, outletsCreated, outletsMerged,
     duplicatesInFile, manualReview, fieldsUpdated,
   };
@@ -952,10 +1115,10 @@ export async function runBulkImport({ tenantId, rows, onProgress, allowPlacehold
 
 export function downloadSampleCSV() {
   const csvContent =
-    'employee_id,essl_employee_code,first_name,middle_name,last_name,email,phone,department,designation,join_date,ctc,bank_acc,outlet_location,country,pan,aadhar,passport_number,work_permit_number,work_permit_expiry,role,weekly_holiday,leave_allocation\n' +
-    'MCMU1001,,Jane,,Doe,jane.doe@example.com,9999999999,HR,Recruiter,2026-05-01,45000,123456789012,Mumbai,India,ABCDE1234F,999988887777,,,,employee,Sunday,12\n' +
-    'MCDL2001,,John,Michael,Smith,john.smith@example.com,+442012345678,Engineering,Developer,2026-05-01,80000,GB12345678,Delhi,United Kingdom,,,,P12345678,WP-UK-9999,2027-12-31,employee,Saturday,15\n' +
-    'MCMU1002,113,Ravi,,Kumar,,9123456780,Kitchen,Cook,1-Feb-2026,18000,987654321098,Mumbai,India,,,,,,employee,Sunday,12\n';
+    'employee_id,essl_employee_code,first_name,middle_name,last_name,email,phone,department,designation,division,manager,join_date,ctc,bank_acc,outlet_location,country,pan,aadhar,passport_number,work_permit_number,work_permit_expiry,role,weekly_holiday,leave_allocation\n' +
+    'MCMU1001,,Jane,,Doe,jane.doe@example.com,9999999999,HR,Recruiter,Support,John Smith,2026-05-01,45000,123456789012,Mumbai,India,ABCDE1234F,999988887777,,,,employee,Sunday,12\n' +
+    'MCDL2001,,John,Michael,Smith,john.smith@example.com,+442012345678,Engineering,Developer,Support,,2026-05-01,80000,GB12345678,Delhi,United Kingdom,,,,P12345678,WP-UK-9999,2027-12-31,employee,Saturday,15\n' +
+    'MCMU1002,113,Ravi,,Kumar,,9123456780,Kitchen,Cook,Factory,John Smith,1-Feb-2026,18000,987654321098,Mumbai,India,,,,,,employee,Sunday,12\n';
   const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
   const link = document.createElement('a');
   link.href = URL.createObjectURL(blob);

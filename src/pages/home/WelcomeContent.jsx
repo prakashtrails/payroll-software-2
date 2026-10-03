@@ -5,7 +5,7 @@ import { useAuth } from '@/context/AuthContext';
 import {
   getMyProfileDetails, upsertProfileDetails, getProfileName, EMPTY_PROFILE_DETAILS,
 } from '@/services/profileDetailsService';
-import { getInitials, fullName, getAvatarColor, fmt } from '@/lib/helpers';
+import { getInitials, fullName, getAvatarColor, fmt, probationInfo } from '@/lib/helpers';
 
 const GENDERS = ['Male', 'Female', 'Other'];
 const MARITAL_STATUSES = ['Single', 'Married', 'Other'];
@@ -201,6 +201,15 @@ export default function WelcomeContent() {
         <div className="card" style={{ marginTop: 16, padding: '14px 20px', display: 'flex', gap: 32, flexWrap: 'wrap' }}>
           <DetailRow label="Employee ID" value={profile.employee_id} />
           <DetailRow label="Date of Joining" value={fmt.date(profile.join_date)} />
+          {(() => {
+            const prob = probationInfo(profile.join_date, profile.probation_months);
+            if (!prob) return null;
+            return (
+              <DetailRow label="Probation Period" value={prob.completed
+                ? <span style={{ color: 'var(--success)', fontWeight: 600 }}><i className="fas fa-check-circle" /> Completed</span>
+                : <span style={{ color: 'var(--warning)', fontWeight: 600 }}>Completes on {fmt.date(prob.endsOn)}</span>} />
+            );
+          })()}
           <DetailRow label="Reporting Manager" value={managerName} />
         </div>
 

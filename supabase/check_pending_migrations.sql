@@ -1,446 +1,191 @@
--- =========================================================================
--- Pending-migration checker
---
--- Run this in the Supabase Dashboard -> SQL Editor (or `psql -f`). It
--- doesn't change anything — it just checks whether each migration file in
--- the repo has actually been applied to THIS database, and prints
--- APPLIED / MISSING for every one of them. Anything marked MISSING should
--- be run — find it by filename in supabase/migrations/ (or the repo root
--- for the handful of pre-migrations-folder *_migration.sql files).
---
--- Covers every file under supabase/migrations/ as of 2026-09-01, plus the
--- legacy root-level *_migration.sql files applied before that folder
--- existed. If you add a new migration, add one more UNION ALL block here
--- with a check for something that migration uniquely creates/changes.
--- =========================================================================
-
-WITH checks AS (
-  -- ── Legacy root-level migrations (pre supabase/migrations/) ──────────
-  SELECT 'supabase_migration.sql (base schema)' AS migration,
-         to_regclass('public.tenants') IS NOT NULL
-         AND to_regclass('public.profiles') IS NOT NULL AS applied
-  UNION ALL
-  SELECT 'special_requests_migration.sql',
-         to_regclass('public.special_requests') IS NOT NULL
-  UNION ALL
-  SELECT 'comp_off_migration.sql',
-         EXISTS (SELECT 1 FROM information_schema.columns
-                 WHERE table_name = 'profiles' AND column_name = 'comp_off_balance')
-  UNION ALL
-  SELECT 'country_payroll_migration.sql',
-         EXISTS (SELECT 1 FROM information_schema.columns
-                 WHERE table_name = 'payrolls' AND column_name = 'country_group')
-  UNION ALL
-  SELECT 'announcements_policies_migration.sql + fix',
-         to_regclass('public.announcements') IS NOT NULL
-         AND to_regclass('public.policies') IS NOT NULL
-         AND EXISTS (SELECT 1 FROM information_schema.columns
-                     WHERE table_name = 'announcements' AND column_name = 'tenant_id')
-
-  -- ── supabase/migrations/20260605_*..20260615_* ───────────────────────
-  UNION ALL
-  SELECT '20260605_add_compliance_pf_esic.sql',
-         EXISTS (SELECT 1 FROM information_schema.columns
-                 WHERE table_name = 'profiles' AND column_name = 'pf_number')
-  UNION ALL
-  SELECT '20260605_regularize_requests.sql',
-         to_regclass('public.regularize_requests') IS NOT NULL
-  UNION ALL
-  SELECT '20260605_regularize_reviewed_at.sql',
-         EXISTS (SELECT 1 FROM information_schema.columns
-                 WHERE table_name = 'regularize_requests' AND column_name = 'reviewed_at')
-  UNION ALL
-  SELECT '20260607_payroll_compliance_group.sql',
-         EXISTS (SELECT 1 FROM pg_constraint
-                 WHERE conname = 'payrolls_country_group_check'
-                   AND pg_get_constraintdef(oid) LIKE '%Compliance%')
-  UNION ALL
-  SELECT '20260607_salary_overtime.sql',
-         EXISTS (SELECT 1 FROM information_schema.columns
-                 WHERE table_name = 'special_requests' AND column_name = 'overtime_pay')
-  UNION ALL
-  SELECT '20260607_weekly_off_comp_off.sql',
-         to_regclass('public.weekly_off_settlements') IS NOT NULL
-  UNION ALL
-  SELECT '20260610_fix_payroll_country_group.sql',
-         EXISTS (SELECT 1 FROM pg_constraint
-                 WHERE conname = 'payrolls_country_group_check')
-  UNION ALL
-  SELECT '20260610_tenant_groups.sql',
-         EXISTS (SELECT 1 FROM information_schema.columns
-                 WHERE table_name = 'tenants' AND column_name = 'group_code')
-         AND EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'fetch_group_dashboard')
-  UNION ALL
-  SELECT '20260611_employee_id_transfers.sql',
-         to_regclass('public.employee_transfers') IS NOT NULL
-         AND EXISTS (SELECT 1 FROM information_schema.columns
-                     WHERE table_name = 'profiles' AND column_name = 'employee_id')
-  UNION ALL
-  SELECT '20260614_request_routing.sql',
-         EXISTS (SELECT 1 FROM information_schema.columns
-                 WHERE table_name = 'leave_requests' AND column_name = 'required_approver_role')
-  UNION ALL
-  SELECT '20260615_probation_promotions.sql',
-         to_regclass('public.employee_promotions') IS NOT NULL
-         AND EXISTS (SELECT 1 FROM information_schema.columns
-                     WHERE table_name = 'profiles' AND column_name = 'probation_months')
-
-  -- ── 20260714_* (security-hardening batch) ─────────────────────────────
-  UNION ALL
-  SELECT '20260714_audit_fixes_batch1.sql',
-         EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'adjust_comp_off_balance')
-         AND EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'attendance_profile_date_unique')
-         AND EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_special_requests_tenant')
-  UNION ALL
-  SELECT '20260714_otp_attempt_limit.sql',
-         EXISTS (SELECT 1 FROM information_schema.columns
-                 WHERE table_name = 'otp_table' AND column_name = 'attempts')
-  UNION ALL
-  SELECT '20260714_payroll_rpc_authz.sql',
-         EXISTS (SELECT 1 FROM pg_proc
-                 WHERE proname = 'process_payroll_by_country'
-                   AND pg_get_functiondef(oid) LIKE '%unauthorized%')
-  UNION ALL
-  SELECT '20260714_rls_privilege_escalation_fixes.sql',
-         EXISTS (SELECT 1 FROM pg_policies
-                 WHERE tablename = 'profiles' AND policyname = 'profiles: admin/manager can update tenant'
-                   AND with_check LIKE '%superadmin%')
-         AND EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'increment_request_quota')
-  UNION ALL
-  SELECT '20260714_signup_rpc_hijack_fix.sql',
-         EXISTS (SELECT 1 FROM pg_proc
-                 WHERE proname = 'create_workspace'
-                   AND pg_get_functiondef(oid) LIKE '%must match the authenticated caller%')
-  UNION ALL
-  SELECT '20260714_transfer_employee_tenant_check.sql',
-         EXISTS (SELECT 1 FROM pg_proc
-                 WHERE proname = 'transfer_employee'
-                   AND pg_get_functiondef(oid) LIKE '%does not belong to the source tenant%')
-
-  -- ── 20260725 - 20260805 ────────────────────────────────────────────────
-  UNION ALL
-  SELECT '20260725_super_admin_platform.sql',
-         to_regclass('public.outlets') IS NOT NULL
-         AND EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'tenants' AND policyname = 'tenants: superadmin_platform_all')
-  UNION ALL
-  SELECT '20260726_tenant_delete_fk_fix.sql',
-         EXISTS (SELECT 1 FROM pg_constraint
-                 WHERE conname = 'employee_transfers_to_tenant_id_fkey' AND confdeltype = 'n')
-  UNION ALL
-  SELECT '20260726_actor_fk_set_null.sql',
-         EXISTS (SELECT 1 FROM pg_constraint
-                 WHERE conname = 'leave_requests_approved_by_fkey' AND confdeltype = 'n')
-         AND EXISTS (SELECT 1 FROM pg_constraint
-                 WHERE conname = 'regularize_requests_reviewed_by_fkey' AND confdeltype = 'n')
-         AND EXISTS (SELECT 1 FROM pg_constraint
-                 WHERE conname = 'special_requests_approved_by_fkey' AND confdeltype = 'n')
-         AND EXISTS (SELECT 1 FROM pg_constraint
-                 WHERE conname = 'employee_transfers_transferred_by_fkey' AND confdeltype = 'n')
-         AND EXISTS (SELECT 1 FROM pg_constraint
-                 WHERE conname = 'employee_promotions_created_by_fkey' AND confdeltype = 'n')
-         AND EXISTS (SELECT 1 FROM pg_constraint
-                 WHERE conname = 'announcements_created_by_fkey' AND confdeltype = 'n')
-         AND EXISTS (SELECT 1 FROM pg_constraint
-                 WHERE conname = 'policies_created_by_fkey' AND confdeltype = 'n')
-  UNION ALL
-  SELECT '20260726_departments_superadmin_bypass.sql',
-         EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'departments' AND policyname = 'departments: superadmin_platform_all')
-  UNION ALL
-  SELECT '20260726_employee_middle_name.sql',
-         EXISTS (SELECT 1 FROM information_schema.columns
-                 WHERE table_name = 'profiles' AND column_name = 'middle_name')
-  UNION ALL
-  SELECT '20260803_bank_name_ifsc.sql',
-         EXISTS (SELECT 1 FROM information_schema.columns
-                 WHERE table_name = 'profiles' AND column_name = 'bank_name')
-         AND EXISTS (SELECT 1 FROM information_schema.columns
-                 WHERE table_name = 'profiles' AND column_name = 'ifsc_code')
-  UNION ALL
-  SELECT '20260805_employee_outlet_transfers.sql',
-         to_regclass('public.outlet_transfers') IS NOT NULL
-  UNION ALL
-  SELECT '20260805_performance_management.sql',
-         EXISTS (SELECT 1 FROM information_schema.columns
-                 WHERE table_name = 'profiles' AND column_name = 'manager_id')
-         AND to_regclass('public.kras') IS NOT NULL
-         AND to_regclass('public.one_on_ones') IS NOT NULL
-         AND to_regclass('public.feedback') IS NOT NULL
-         AND to_regclass('public.pips') IS NOT NULL
-         AND to_regclass('public.review_cycles') IS NOT NULL
-  UNION ALL
-  SELECT '20260805_outlet_attendance_settings.sql',
-         EXISTS (SELECT 1 FROM information_schema.columns
-                 WHERE table_name = 'outlets' AND column_name = 'geofence_lat')
-         AND EXISTS (SELECT 1 FROM information_schema.columns
-                 WHERE table_name = 'outlets' AND column_name = 'min_half_day_hours')
-
-  -- ── 20260806 ────────────────────────────────────────────────────────
-  UNION ALL
-  SELECT '20260806_announcements_drop_legacy_message.sql',
-         EXISTS (SELECT 1 FROM information_schema.columns
-                 WHERE table_name = 'announcements' AND column_name = 'message' AND is_nullable = 'YES')
-  UNION ALL
-  SELECT '20260806_audit_log_self_insert.sql',
-         EXISTS (SELECT 1 FROM pg_policies
-                 WHERE tablename = 'attendance_audit_log' AND policyname = 'audit_log: employee can insert own self-regularize entry')
-  UNION ALL
-  SELECT '20260806_wfh_requests.sql',
-         to_regclass('public.wfh_requests') IS NOT NULL
-
-  -- ── 20260810 ────────────────────────────────────────────────────────
-  UNION ALL
-  SELECT '20260810_bulk_comp_off_adjust.sql',
-         EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'bulk_adjust_comp_off_balance')
-  UNION ALL
-  SELECT '20260810_employee_current_password.sql',
-         to_regclass('public.employee_current_passwords') IS NOT NULL
-         AND EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'set_current_password')
-  UNION ALL
-  SELECT '20260810_punches_flood_guard.sql',
-         EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'punches_guard')
-  UNION ALL
-  SELECT '20260810_rls_wrap_functions.sql',
-         EXISTS (SELECT 1 FROM pg_policies
-                 WHERE tablename = 'advances' AND policyname = 'advances: admin/manager can write'
-                   AND qual ILIKE '%SELECT my_tenant_id()%')
-
-  -- ── 20260812 ────────────────────────────────────────────────────────
-  UNION ALL
-  SELECT '20260812_employee_profile_details.sql',
-         to_regclass('public.profile_details') IS NOT NULL
-  UNION ALL
-  SELECT '20260812_hiring_referrals.sql',
-         to_regclass('public.job_postings') IS NOT NULL
-         AND to_regclass('public.referrals') IS NOT NULL
-  UNION ALL
-  SELECT '20260812_kra_goals_upgrade.sql',
-         to_regclass('public.kra_checkins') IS NOT NULL
-  UNION ALL
-  SELECT '20260812_location_tracking.sql',
-         to_regclass('public.location_pings') IS NOT NULL
-  UNION ALL
-  SELECT '20260812_payroll_formula_tax_gl.sql',
-         to_regclass('public.tax_slabs') IS NOT NULL
-         AND to_regclass('public.tax_declarations') IS NOT NULL
-         AND EXISTS (SELECT 1 FROM information_schema.columns
-                     WHERE table_name = 'salary_components' AND column_name = 'formula')
-  UNION ALL
-  SELECT '20260812_platform_analytics_summary.sql',
-         EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'platform_analytics_summary')
-  UNION ALL
-  SELECT '20260812_referral_resume_upload.sql',
-         EXISTS (SELECT 1 FROM information_schema.columns
-                 WHERE table_name = 'referrals' AND column_name = 'resume_file_path')
-  UNION ALL
-  SELECT '20260812_support_tickets.sql',
-         to_regclass('public.support_tickets') IS NOT NULL
-         AND to_regclass('public.support_ticket_messages') IS NOT NULL
-
-  -- ── 20260813_1..11 ──────────────────────────────────────────────────
-  UNION ALL
-  SELECT '20260813_1_leave_ledger.sql',
-         to_regclass('public.leave_types') IS NOT NULL
-         AND to_regclass('public.leave_ledger') IS NOT NULL
-         AND EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'run_monthly_leave_accrual')
-  UNION ALL
-  SELECT '20260813_2_attendance_automation.sql',
-         to_regclass('public.shift_assignments') IS NOT NULL
-         AND EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'mark_attendance_from_punches')
-  UNION ALL
-  SELECT '20260813_3_grievances.sql',
-         to_regclass('public.grievances') IS NOT NULL
-  UNION ALL
-  SELECT '20260813_4_recruitment_pipeline.sql',
-         to_regclass('public.headcount_requests') IS NOT NULL
-         AND to_regclass('public.interviews') IS NOT NULL
-         AND to_regclass('public.offer_letters') IS NOT NULL
-  UNION ALL
-  SELECT '20260813_5_training_skills.sql',
-         to_regclass('public.skills') IS NOT NULL
-         AND to_regclass('public.training_programs') IS NOT NULL
-         AND to_regclass('public.training_enrollments') IS NOT NULL
-  UNION ALL
-  SELECT '20260813_6_expense_travel.sql',
-         to_regclass('public.expense_claims') IS NOT NULL
-         AND to_regclass('public.travel_requests') IS NOT NULL
-  UNION ALL
-  SELECT '20260813_7_approval_chains_and_audit.sql',
-         to_regclass('public.approval_chains') IS NOT NULL
-  UNION ALL
-  SELECT '20260813_8_keka_leave_categories.sql',
-         EXISTS (SELECT 1 FROM leave_types WHERE name IN ('Planned Leave', 'Emergency Leave', 'Unplanned Leave'))
-  UNION ALL
-  SELECT '20260813_9_feature_toggles.sql',
-         to_regclass('public.features') IS NOT NULL
-         AND to_regclass('public.company_feature_toggles') IS NOT NULL
-  UNION ALL
-  SELECT '20260813_10_notification_center.sql',
-         to_regclass('public.app_notifications') IS NOT NULL
-         AND to_regclass('public.announcement_acknowledgements') IS NOT NULL
-  UNION ALL
-  SELECT '20260813_11_announcements_rls_lockdown.sql',
-         EXISTS (SELECT 1 FROM pg_policies
-                 WHERE tablename = 'announcements' AND policyname = 'announcements: tenant member or superadmin can read')
-
-  -- ── 20260814 - 20260816 ─────────────────────────────────────────────
-  UNION ALL
-  SELECT '20260814_1_multi_outlet_access.sql',
-         to_regclass('public.profile_outlet_access') IS NOT NULL
-  UNION ALL
-  SELECT '20260814_2_multi_outlet_any_clockin.sql',
-         EXISTS (SELECT 1 FROM information_schema.columns
-                 WHERE table_name = 'tenants' AND column_name = 'allow_any_outlet_clockin')
-  UNION ALL
-  SELECT '20260815_1_onboarding.sql',
-         to_regclass('public.onboarding_processes') IS NOT NULL
-         AND to_regclass('public.onboarding_checklist_items') IS NOT NULL
-  UNION ALL
-  SELECT '20260815_2_offboarding.sql',
-         to_regclass('public.offboarding_processes') IS NOT NULL
-         AND to_regclass('public.offboarding_checklist_items') IS NOT NULL
-  UNION ALL
-  SELECT '20260815_3_onboarding_offboarding_features.sql',
-         EXISTS (SELECT 1 FROM features WHERE key IN ('onboarding', 'offboarding'))
-  UNION ALL
-  SELECT '20260815_4_assets.sql',
-         to_regclass('public.assets') IS NOT NULL
-         AND to_regclass('public.asset_assignments') IS NOT NULL
-  UNION ALL
-  SELECT '20260815_5_projects.sql',
-         to_regclass('public.projects') IS NOT NULL
-         AND to_regclass('public.project_tasks') IS NOT NULL
-  UNION ALL
-  SELECT '20260815_6_assets_projects_features.sql',
-         EXISTS (SELECT 1 FROM features WHERE key IN ('assets', 'projects'))
-  UNION ALL
-  SELECT '20260816_1_leave_auto_approval.sql',
-         EXISTS (SELECT 1 FROM information_schema.columns
-                 WHERE table_name = 'tenants' AND column_name = 'leave_auto_approval_enabled')
-  UNION ALL
-  SELECT '20260816_2_unlimited_leave_and_balance_detail.sql',
-         EXISTS (SELECT 1 FROM information_schema.columns
-                 WHERE table_name = 'leave_types' AND column_name = 'is_unlimited')
-         AND to_regclass('public.leave_balances_detail') IS NOT NULL
-  UNION ALL
-  SELECT '20260816_3_regularize_auto_approval.sql',
-         EXISTS (SELECT 1 FROM information_schema.columns
-                 WHERE table_name = 'tenants' AND column_name = 'regularize_auto_approval_enabled')
-
-  -- ── 20260818 - 20260820 ─────────────────────────────────────────────
-  -- Note: the two essl_web_poll_cron checks below query cron.job directly.
-  -- If pg_cron has never been enabled on this project at all (Database ->
-  -- Extensions), Postgres fails the whole script at parse time with
-  -- "schema cron does not exist" rather than reporting MISSING for just
-  -- those two rows — that error itself means pg_cron needs enabling first.
-  UNION ALL
-  SELECT '20260818_essl_integration.sql',
-         to_regclass('public.essl_devices') IS NOT NULL
-         AND EXISTS (SELECT 1 FROM information_schema.columns
-                     WHERE table_name = 'profiles' AND column_name = 'essl_employee_code')
-  UNION ALL
-  SELECT '20260819_1_essl_web_poll_state.sql',
-         to_regclass('public.essl_web_poll_state') IS NOT NULL
-  UNION ALL
-  SELECT '20260819_2_essl_web_poll_cron.sql',
-         EXISTS (SELECT 1 FROM cron.job WHERE jobname = 'essl-raniwala-live-sync')
-  UNION ALL
-  SELECT '20260819_3_essl_web_poll_cleanup.sql',
-         EXISTS (SELECT 1 FROM cron.job WHERE jobname = 'essl-web-poll-response-cleanup')
-  UNION ALL
-  SELECT '20260820_2_leave_balances_security_invoker.sql',
-         EXISTS (SELECT 1 FROM pg_views WHERE viewname = 'leave_balances')
-         AND (SELECT relrowsecurity FROM pg_class
-              WHERE relname = 'leave_balances' AND relnamespace = 'public'::regnamespace) IS NOT NULL
-  UNION ALL
-  SELECT '20260820_3_otp_table_lockdown.sql',
-         NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'otp_table' AND policyname = 'service_role_all')
-  UNION ALL
-  SELECT '20260820_4_punches_select_role_check.sql',
-         EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'punches' AND policyname = 'punches: admin/manager can read tenant')
-  UNION ALL
-  SELECT '20260820_5_recruitment_stage_and_verification.sql',
-         EXISTS (SELECT 1 FROM information_schema.columns
-                 WHERE table_name = 'referrals' AND column_name = 'bgv_status')
-  UNION ALL
-  SELECT '20260820_6_headcount_rr_number_and_recruiter.sql',
-         EXISTS (SELECT 1 FROM information_schema.columns
-                 WHERE table_name = 'headcount_requests' AND column_name = 'rr_number')
-         AND EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'generate_rr_number')
-  UNION ALL
-  SELECT '20260820_7_interview_piq_and_rejection.sql',
-         EXISTS (SELECT 1 FROM information_schema.columns
-                 WHERE table_name = 'interviews' AND column_name = 'piq_form_path')
-  UNION ALL
-  SELECT '20260820_8_offer_letters_loi_and_onboarding_extras.sql',
-         EXISTS (SELECT 1 FROM information_schema.columns
-                 WHERE table_name = 'offer_letters' AND column_name = 'letter_type')
-  UNION ALL
-  SELECT '20260820_9_recruitment_checklist_seed.sql',
-         EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'onboarding_checklist_items_tenant_title_key')
-  UNION ALL
-  SELECT '20260820_profiles_select_role_check.sql',
-         EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'profiles' AND policyname = 'profiles: admin/manager sees tenant')
-
-  -- ── 20260821 - 20260827 ─────────────────────────────────────────────
-  UNION ALL
-  SELECT '20260821_1_critical_security_fixes.sql',
-         EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'attendance_employee_update_guard')
-         AND EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'punches' AND policyname = 'punches: employee can insert own')
-  UNION ALL
-  SELECT '20260823_1_hierarchy_org_structure.sql',
-         to_regclass('public.hierarchy_levels') IS NOT NULL
-         AND to_regclass('public.locations') IS NOT NULL
-         AND to_regclass('public.designations') IS NOT NULL
-  UNION ALL
-  SELECT '20260823_2_rbac_schema.sql',
-         to_regclass('public.roles') IS NOT NULL
-         AND to_regclass('public.reporting_relationships') IS NOT NULL
-         AND to_regclass('public.audit_logs') IS NOT NULL
-  UNION ALL
-  SELECT '20260823_3_hierarchy_rbac_functions.sql',
-         EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'has_permission')
-         AND EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'resolve_scope_profile_ids')
-  UNION ALL
-  SELECT '20260823_4_hierarchy_rbac_backfill.sql',
-         EXISTS (SELECT 1 FROM hierarchy_levels WHERE name = 'HR / Company Admin')
-  UNION ALL
-  SELECT '20260826_1_org_hierarchy_rpc.sql',
-         EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'set_direct_manager')
-  UNION ALL
-  SELECT '20260826_2_org_hierarchy_feature.sql',
-         EXISTS (SELECT 1 FROM features WHERE key = 'org_hierarchy')
-  UNION ALL
-  SELECT '20260827_1_server_side_geofence_enforcement.sql',
-         EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'enforce_geofence_on_attendance_insert')
-
-  -- ── 20260901 ────────────────────────────────────────────────────────
-  UNION ALL
-  SELECT '20260901_1_hr_current_password_read.sql',
-         EXISTS (SELECT 1 FROM pg_policies
-                 WHERE tablename = 'employee_current_passwords'
-                   AND policyname = 'employee_current_passwords: admin tenant read')
-  UNION ALL
-  SELECT '20260918_4_profiles_date_of_birth.sql',
-         EXISTS (SELECT 1 FROM information_schema.columns
-                 WHERE table_name = 'profiles' AND column_name = 'date_of_birth')
-  UNION ALL
-  SELECT '20260918_5_raniwala_b2b_sales_rename.sql',
-         EXISTS (SELECT 1 FROM outlets o JOIN tenants t ON t.id = o.tenant_id
-                 WHERE t.company_name ILIKE '%Raniwala%' AND o.name = 'B2B SALES')
-  UNION ALL
-  SELECT '20260918_6_raniwala_retire_worklocation_outlet.sql',
-         NOT EXISTS (SELECT 1 FROM outlets o JOIN tenants t ON t.id = o.tenant_id
-                     WHERE t.company_name ILIKE '%Raniwala%' AND o.name = 'Worklocation')
-  UNION ALL
-  SELECT '20260918_7_birthday_notifications.sql',
-         EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'send_birthday_notifications')
-         AND EXISTS (SELECT 1 FROM cron.job WHERE jobname = 'birthday-notifications')
-  UNION ALL
-  SELECT '20260918_8_outlet_manager_feature_toggle_rls.sql',
-         EXISTS (SELECT 1 FROM pg_policies
-                 WHERE tablename = 'company_feature_toggles'
-                   AND policyname = 'company_feature_toggles: outlet manager can manage curated features')
+-- Pending-migration check (read-only). Paste into Supabase SQL editor.
+-- Lists repo files in supabase/migrations whose name is NOT in
+-- supabase_migrations.schema_migrations. Regenerate the VALUES list when files change.
+WITH local_files(name) AS (
+  VALUES
+    ('20260605_add_compliance_pf_esic'),
+    ('20260605_regularize_requests'),
+    ('20260605_regularize_reviewed_at'),
+    ('20260607_payroll_compliance_group'),
+    ('20260607_salary_overtime'),
+    ('20260607_weekly_off_comp_off'),
+    ('20260610_fix_payroll_country_group'),
+    ('20260610_tenant_groups'),
+    ('20260611_employee_id_transfers'),
+    ('20260614_request_routing'),
+    ('20260615_probation_promotions'),
+    ('20260714_audit_fixes_batch1'),
+    ('20260714_otp_attempt_limit'),
+    ('20260714_payroll_rpc_authz'),
+    ('20260714_rls_privilege_escalation_fixes'),
+    ('20260714_signup_rpc_hijack_fix'),
+    ('20260714_transfer_employee_tenant_check'),
+    ('20260725_super_admin_platform'),
+    ('20260726_actor_fk_set_null'),
+    ('20260726_departments_superadmin_bypass'),
+    ('20260726_employee_middle_name'),
+    ('20260726_tenant_delete_fk_fix'),
+    ('20260803_bank_name_ifsc'),
+    ('20260805_employee_outlet_transfers'),
+    ('20260805_outlet_attendance_settings'),
+    ('20260805_performance_management'),
+    ('20260806_announcements_drop_legacy_message'),
+    ('20260806_audit_log_self_insert'),
+    ('20260806_wfh_requests'),
+    ('20260810_bulk_comp_off_adjust'),
+    ('20260810_employee_current_password'),
+    ('20260810_punches_flood_guard'),
+    ('20260810_rls_wrap_functions'),
+    ('20260812_employee_profile_details'),
+    ('20260812_hiring_referrals'),
+    ('20260812_kra_goals_upgrade'),
+    ('20260812_location_tracking'),
+    ('20260812_payroll_formula_tax_gl'),
+    ('20260812_platform_analytics_summary'),
+    ('20260812_referral_resume_upload'),
+    ('20260812_support_tickets'),
+    ('20260813_1_leave_ledger'),
+    ('20260813_10_notification_center'),
+    ('20260813_11_announcements_rls_lockdown'),
+    ('20260813_2_attendance_automation'),
+    ('20260813_3_grievances'),
+    ('20260813_4_recruitment_pipeline'),
+    ('20260813_5_training_skills'),
+    ('20260813_6_expense_travel'),
+    ('20260813_7_approval_chains_and_audit'),
+    ('20260813_8_keka_leave_categories'),
+    ('20260813_9_feature_toggles'),
+    ('20260814_1_multi_outlet_access'),
+    ('20260814_2_multi_outlet_any_clockin'),
+    ('20260815_1_onboarding'),
+    ('20260815_2_offboarding'),
+    ('20260815_3_onboarding_offboarding_features'),
+    ('20260815_4_assets'),
+    ('20260815_5_projects'),
+    ('20260815_6_assets_projects_features'),
+    ('20260816_1_leave_auto_approval'),
+    ('20260816_2_unlimited_leave_and_balance_detail'),
+    ('20260816_3_regularize_auto_approval'),
+    ('20260818_essl_integration'),
+    ('20260819_1_essl_web_poll_state'),
+    ('20260819_2_essl_web_poll_cron'),
+    ('20260819_3_essl_web_poll_cleanup'),
+    ('20260820_2_leave_balances_security_invoker'),
+    ('20260820_3_otp_table_lockdown'),
+    ('20260820_4_punches_select_role_check'),
+    ('20260820_5_recruitment_stage_and_verification'),
+    ('20260820_6_headcount_rr_number_and_recruiter'),
+    ('20260820_7_interview_piq_and_rejection'),
+    ('20260820_8_offer_letters_loi_and_onboarding_extras'),
+    ('20260820_9_recruitment_checklist_seed'),
+    ('20260820_profiles_select_role_check'),
+    ('20260821_1_critical_security_fixes'),
+    ('20260823_1_hierarchy_org_structure'),
+    ('20260823_2_rbac_schema'),
+    ('20260823_3_hierarchy_rbac_functions'),
+    ('20260823_4_hierarchy_rbac_backfill'),
+    ('20260826_1_org_hierarchy_rpc'),
+    ('20260826_2_org_hierarchy_feature'),
+    ('20260827_1_server_side_geofence_enforcement'),
+    ('20260901_1_hr_current_password_read'),
+    ('20260903_1_geofence_auto_clockout_toggle'),
+    ('20260903_2_special_request_auto_approval'),
+    ('20260903_3_server_side_leave_approval_enforcement'),
+    ('20260903_3_tenant_pf_settings'),
+    ('20260903_4_auto_approval_default_off'),
+    ('20260903_5_server_side_regularize_special_approval_enforcement'),
+    ('20260914_1_leave_approval_marks_attendance'),
+    ('20260914_2_fix_recompute_trigger_ignores_leave'),
+    ('20260914_3_leave_overrides_attendance_status'),
+    ('20260914_5_outlet_shift_timing'),
+    ('20260914_6_outlet_monthly_late_grace'),
+    ('20260914_6_profiles_division'),
+    ('20260914_7_backfill_late_status_from_shift_settings'),
+    ('20260914_tenant_weekly_off_days'),
+    ('20260915_1_recompute_trigger_preserves_late_and_outlet_hours'),
+    ('20260915_2_backfill_late_status_recent'),
+    ('20260916_1_attendance_policy_engine'),
+    ('20260917_1_realtime_comp_off_grant'),
+    ('20260917_10_live_tracking'),
+    ('20260917_2_raniwala_timing_attendance_policy'),
+    ('20260917_3_raniwala_realtime_comp_off'),
+    ('20260917_4_outlet_scoped_holidays'),
+    ('20260917_5_raniwala_jewellers_holidays'),
+    ('20260917_6_raniwala_employee_master_caps'),
+    ('20260917_7_raniwala_department_division_case_cleanup'),
+    ('20260917_8_raniwala_outlet_division_backfill'),
+    ('20260917_9_raniwala_office_division_backfill'),
+    ('20260918_1_outlet_geofencing_toggle'),
+    ('20260918_2_raniwala_fixed_late_rule'),
+    ('20260918_3_first_last_punch_hours'),
+    ('20260918_4_profiles_date_of_birth'),
+    ('20260918_5_raniwala_b2b_sales_rename'),
+    ('20260918_6_raniwala_retire_worklocation_outlet'),
+    ('20260918_7_birthday_notifications'),
+    ('20260918_8_outlet_manager_feature_toggle_rls'),
+    ('20260921_1_raniwala_tenant_weekly_off_sunday'),
+    ('20260921_2_raniwala_leave_manager_hod_approval'),
+    ('20260921_3_raniwala_hide_refer_interviews'),
+    ('20260922_1_raniwala_enable_live_tracking'),
+    ('20260922_2_policy_acknowledgements'),
+    ('20260922_3_asset_outlets_presets_and_dedupe_guard'),
+    ('20260922_4_profile_verification_requests'),
+    ('20260923_1_early_late_monthly_counter'),
+    ('20260923_2_upcoming_celebrations_rpc'),
+    ('20260923_3_profile_directory_view'),
+    ('20260923_4_profiles_select_lockdown'),
+    ('20260923_5_profile_verification_review'),
+    ('20260924_1_raniwala_leave_types_policy'),
+    ('20260924_2_raniwala_leave_balance_dob_import'),
+    ('20260924_3_raniwala_dedupe_misfortune_leave_type'),
+    ('20260925_1_raniwala_himanshi_leave_balance_fix'),
+    ('20260925_2_leave_balances_detail_security_invoker'),
+    ('20260925_2_raniwala_hr_feedback_batch'),
+    ('20260925_3_regularize_request_window'),
+    ('20260925_4_raniwala_mispunch_backfill_sept'),
+    ('20260925_5_attendance_status_check_widen'),
+    ('20260925_6_regularize_apply_in_db_and_3day_window'),
+    ('20260926_1_raniwala_hod_management_roles_and_leave_flow'),
+    ('20260926_10_raniwala_leave_route_direct_manager_hod'),
+    ('20260926_11_raniwala_leave_single_approver_when_manager_hod_hr'),
+    ('20260926_12_raniwala_management_uses_hod_portal'),
+    ('20260926_13_fix_new_user_trigger_search_path'),
+    ('20260926_13_raniwala_link_management_owners'),
+    ('20260926_2_raniwala_leave_mgmt_stage_visibility_fix'),
+    ('20260926_3_raniwala_hod_upcoming_birthdays'),
+    ('20260926_4_raniwala_manager_portal_scope'),
+    ('20260926_5_raniwala_team_only_request_notifications'),
+    ('20260926_6_raniwala_verification_requests_hr_only'),
+    ('20260926_7_raniwala_org_structure_from_hod_sheet'),
+    ('20260926_8_raniwala_hod_roles_from_sheet'),
+    ('20260926_8_raniwala_merge_duplicate_departments'),
+    ('20260926_9_raniwala_leave_approver_by_person_and_reroute'),
+    ('20260926_9_raniwala_manager_hod_display_names'),
+    ('20260927_1_app_releases'),
+    ('20260928_1_pms_schema'),
+    ('20260928_10_app_punch_manager_approval'),
+    ('20260928_11_punch_approval_hr_copy_and_essl_approved_only'),
+    ('20260928_2_pms_rpc'),
+    ('20260928_3_legacy_pms_field_guards'),
+    ('20260928_4_comp_off_by_hours_worked'),
+    ('20260928_5_essl_full_mirror_and_code_sync'),
+    ('20260928_6_essl_nightly_reconcile_cron'),
+    ('20260928_7_essl_code_defaults_to_emp_code'),
+    ('20260928_8_essl_apply_after_join_date_and_catch_up'),
+    ('20260928_9_essl_hr_only'),
+    ('20260929_1_pms_approver_must_be_manager_or_hr'),
+    ('20260929_1_punch_approval_open_day_status'),
+    ('20260929_2_pms_cycle_review_order'),
+    ('20260929_2_regularize_extended_window'),
+    ('20260929_3_pms_cycle_review_auth_first'),
+    ('20260929_3_raniwala_celebrations_team_today'),
+    ('20260929_4_pms_edit_goal_kpi'),
+    ('20260929_4_raniwala_regularize_own_manager_plus_hr')
 )
-SELECT migration, CASE WHEN applied THEN 'APPLIED' ELSE 'MISSING — run this one' END AS status
-FROM checks
-ORDER BY applied, migration;
+SELECT lf.name AS pending_migration,
+       CASE WHEN lf.name < '20260925' THEN 'before history tracking — verify objects manually'
+            ELSE 'NOT APPLIED (or applied via SQL editor)' END AS note
+FROM local_files lf
+LEFT JOIN supabase_migrations.schema_migrations sm ON sm.name = lf.name
+WHERE sm.name IS NULL
+ORDER BY lf.name;

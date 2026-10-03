@@ -9,12 +9,16 @@ import CircularProgress from './CircularProgress';
  * self → manager → admin quota tiers (requestQuotaService).
  */
 export default function QuotaRings({ quota, autoApprovalEnabled, title = 'Approval Quota', actionLabel = 'request' }) {
+  // Nothing to show once the company has turned this off entirely — every
+  // request just goes through the normal review chain, so a "self/manager
+  // quota" card (including the manager ring) would be misleading noise
+  // rather than useful information.
+  if (!autoApprovalEnabled) return null;
+
   const { selfUsed, selfLimit, managerUsed, managerLimit } = quota;
   const selfLeft = Math.max(selfLimit - selfUsed, 0);
 
-  const statusMsg = !autoApprovalEnabled
-    ? 'Auto-approval is turned off for your company — every request goes to your manager for review.'
-    : selfLeft > 0
+  const statusMsg = selfLeft > 0
     ? `${selfLeft} self-approval${selfLeft !== 1 ? 's' : ''} left this month — your next ${actionLabel} auto-approves instantly.`
     : `Self-approvals used up for this month. Requests now route to your manager.`;
 
@@ -24,7 +28,7 @@ export default function QuotaRings({ quota, autoApprovalEnabled, title = 'Approv
       <div style={{ padding: 16, display: 'flex', gap: 28, alignItems: 'center', flexWrap: 'wrap' }}>
         <CircularProgress
           used={selfUsed}
-          total={autoApprovalEnabled ? selfLimit : 0}
+          total={selfLimit}
           label="Auto-Approvals"
           sublabel="this month"
         />
@@ -37,7 +41,7 @@ export default function QuotaRings({ quota, autoApprovalEnabled, title = 'Approv
           sublabel="this month"
         />
         <div style={{ flex: 1, minWidth: 200, fontSize: 13, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 8 }}>
-          <i className={`fas ${autoApprovalEnabled && selfLeft > 0 ? 'fa-shield-alt' : 'fa-info-circle'}`} style={{ color: autoApprovalEnabled && selfLeft > 0 ? 'var(--success)' : 'var(--text-muted)' }} />
+          <i className={`fas ${selfLeft > 0 ? 'fa-shield-alt' : 'fa-info-circle'}`} style={{ color: selfLeft > 0 ? 'var(--success)' : 'var(--text-muted)' }} />
           {statusMsg}
         </div>
       </div>

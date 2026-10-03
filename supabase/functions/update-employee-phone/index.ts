@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { findUserByEmail } from "../_shared/findUserByEmail.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -81,10 +82,34 @@ serve(async (req) => {
     // placeholder or their login stops matching what they type.
     const hasRealEmail = EMAIL_RE.test(targetProfile.email || "");
     if (!hasRealEmail) {
-      const { error: authError } = await adminClient.auth.admin.updateUserById(id, {
-        email: phoneToPlaceholderEmail(newDigits),
-        email_confirm: true,
-      });
+      const loginId = phoneToPlaceholderEmail(newDigits);
+      const setLogin = () => adminClient.auth.admin.updateUserById(id, { email: loginId, email_confirm: true });
+      let { error: authError } = await setLogin();
+
+      // Another auth account already signs in with this number (GoTrue only
+      // reports a bare "Error updating user" for the unique-key clash) —
+      // same handling as update-employee-email.
+      if (authError && /error updating user|duplicate key|already|users_email/i.test(authError.message || "")) {
+        const existing = await findUserByEmail(adminClient, loginId);
+        if (existing && existing.id !== id) {
+          const { data: owner } = await adminClient
+            .from("profiles")
+            .select("first_name, last_name, essl_employee_code, tenant_id")
+            .eq("id", existing.id)
+            .maybeSingle();
+          if (owner) {
+            const who = owner.tenant_id === targetProfile.tenant_id
+              ? `${[owner.first_name, owner.last_name].filter(Boolean).join(" ")}${owner.essl_employee_code ? ` (Emp ${owner.essl_employee_code})` : ""}`
+              : "an account in another company";
+            return json({ error: `This phone number is already the login of ${who}. Use a different number.` }, 409);
+          }
+          // Leftover auth account with no profile — nobody can use it and it
+          // owns no data, so free the number and retry.
+          const { error: delErr } = await adminClient.auth.admin.deleteUser(existing.id);
+          if (delErr) return json({ error: `This phone number is held by an unused leftover login and could not be freed: ${delErr.message}` }, 400);
+          ({ error: authError } = await setLogin());
+        }
+      }
       if (authError) return json({ error: authError.message }, 400);
     }
 

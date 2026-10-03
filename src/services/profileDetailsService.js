@@ -44,36 +44,60 @@ export async function upsertProfileDetails(tenantId, profileId, payload) {
 export async function getProfileName(profileId) {
   if (!profileId) return { data: null, error: null };
   const { data, error } = await supabase
-    .from('profiles')
+    .from('profile_directory')
     .select('id, first_name, middle_name, last_name')
     .eq('id', profileId)
     .maybeSingle();
   return { data, error };
 }
 
-/** Employees with a birthday in the next `days` days (default 30), for the Home dashboard. */
-export async function listUpcomingBirthdays(tenantId, days = 30) {
-  const { data, error } = await supabase
-    .from('profile_details')
-    .select('date_of_birth, profile:profiles!profile_details_profile_id_fkey(id, first_name, middle_name, last_name)')
-    .eq('tenant_id', tenantId)
-    .not('date_of_birth', 'is', null);
+// Upcoming birthdays + work anniversaries come from the list_upcoming_celebrations()
+// RPC (20260923_2_upcoming_celebrations_rpc.sql): RLS only lets an employee read their
+// own profile row, so the RPC returns just the display fields, scoped to the caller's
+// outlet for employees and the whole tenant for admin/manager.
+const mapCelebration = (r) => ({
+  profile: {
+    id: r.profile_id, first_name: r.first_name, middle_name: r.middle_name, last_name: r.last_name,
+    division: r.division, outlet_location: r.outlet_location,
+  },
+  date: r.event_date,
+  diffDays: r.days_away,
+  years: r.years,
+});
+
+async function listUpcomingCelebrations(kind, days) {
+  const { data, error } = await supabase.rpc('list_upcoming_celebrations', { p_days: days });
   if (error) return { data: [], error };
+  return { data: (data || []).filter((r) => r.kind === kind).map(mapCelebration), error: null };
+}
 
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const msPerDay = 24 * 60 * 60 * 1000;
+/**
+ * Birthdays and work anniversaries in the next `days` days (0 = today) from a
+ * single RPC call, for Raniwala's combined "Birthdays & Anniversaries" Home
+ * card. The RPC decides who sees what (Raniwala: HR everyone, managers/HODs
+ * their team today only, everyone else nothing).
+ */
+export async function listCelebrations(days = 0) {
+  const { data, error } = await supabase.rpc('list_upcoming_celebrations', { p_days: days });
+  if (error) return { data: { birthdays: [], anniversaries: [] }, error };
+  const rows = data || [];
+  return {
+    data: {
+      birthdays: rows.filter((r) => r.kind === 'birthday').map(mapCelebration),
+      anniversaries: rows.filter((r) => r.kind === 'anniversary').map(mapCelebration),
+    },
+    error: null,
+  };
+}
 
-  const upcoming = (data || [])
-    .map((row) => {
-      const dob = new Date(row.date_of_birth + 'T00:00:00');
-      let next = new Date(today.getFullYear(), dob.getMonth(), dob.getDate());
-      if (next < today) next = new Date(today.getFullYear() + 1, dob.getMonth(), dob.getDate());
-      const diffDays = Math.round((next - today) / msPerDay);
-      return { ...row, nextOccurrence: next, diffDays };
-    })
-    .filter((row) => row.diffDays <= days)
-    .sort((a, b) => a.nextOccurrence - b.nextOccurrence);
+/** Employees with a birthday in the next `days` days (default 30), for the Home dashboard. */
+export async function listUpcomingBirthdays(days = 30) {
+  const { data, error } = await listUpcomingCelebrations('birthday', days);
+  return { data: data.map(({ years, ...r }) => ({ ...r, date_of_birth: r.date })), error };
+}
 
-  return { data: upcoming, error: null };
+/** Employees with a work anniversary (based on profiles.join_date) in the next `days` days (default 30), for the Home dashboard. */
+export async function listUpcomingAnniversaries(days = 30) {
+  const { data, error } = await listUpcomingCelebrations('anniversary', days);
+  return { data: data.map((r) => ({ ...r, join_date: r.date })), error };
 }

@@ -3,6 +3,7 @@ import Header from '@/components/Header';
 import { showToast } from '@/components/Toast';
 import { useAuth } from '@/context/AuthContext';
 import { listMyTasks, updateTaskStatus } from '@/services/projectService';
+import { TASK_STATUSES } from '@/services/taskService';
 import { fmt } from '@/lib/helpers';
 
 export function MyProjectsContent() {
@@ -51,9 +52,7 @@ export function MyProjectsContent() {
                       <td style={{ fontSize: 12 }}>{fmt.date(t.due_date)}</td>
                       <td>
                         <select className="form-select" style={{ fontSize: 12, padding: '4px 8px' }} value={t.status} onChange={(e) => handleStatus(t.id, e.target.value)}>
-                          <option>To Do</option>
-                          <option>In Progress</option>
-                          <option>Done</option>
+                          {TASK_STATUSES.filter((s) => s !== 'Cancelled' || t.status === 'Cancelled').map((s) => <option key={s}>{s}</option>)}
                         </select>
                       </td>
                     </tr>

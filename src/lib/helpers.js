@@ -17,6 +17,38 @@ export const escapeHtml = (value) =>
 export const normalizePhone = (phone) => String(phone || '').replace(/\D/g, '').slice(-10);
 
 /**
+ * The browser's raw fetch() failure ("Failed to fetch", "NetworkError when
+ * attempting to fetch resource", "Load failed" on Safari) means the request
+ * never reached Supabase at all — DNS, an ad-blocker/antivirus, a proxy, or
+ * the user's own connection. Showing that string as-is looks like a broken
+ * app, so surfaces that display auth/API errors should run them through this
+ * first and show something the user can actually act on.
+ */
+export const friendlyErrorMessage = (err, fallback) => {
+  const msg = err?.message || '';
+  if (err instanceof TypeError && /Failed to fetch|NetworkError|Load failed/i.test(msg)) {
+    return "Can't reach the server. Please check your internet connection (or try disabling any VPN/ad-blocker) and try again.";
+  }
+  // Our own request-timeout abort (see fetchWithTimeout in lib/supabase.js) surfaces as a
+  // DOMException named "AbortError" or "TimeoutError" whose message varies by browser (e.g.
+  // Chromium's raw "signal is aborted without reason") — never show that literal text to the user.
+  if (err?.name === 'AbortError' || err?.name === 'TimeoutError') {
+    return "The server took too long to respond. Please check your connection and try again.";
+  }
+  // @supabase/auth-js catches the fetcher's thrown error (our timeout abort, a DNS
+  // failure, a firewall/proxy that hangs or resets the connection) inside its own
+  // _handleRequest and rewraps it as AuthRetryableFetchError with status 0 — this
+  // discards the original name ('AbortError'/'TimeoutError') but keeps the raw
+  // message verbatim, so unhandled it leaks browser internals straight to the user
+  // (e.g. Chromium's literal "signal is aborted without reason") on every auth call
+  // (login, signup, OTP, password reset) that can't reach the server in time.
+  if (err?.name === 'AuthRetryableFetchError' && err?.status === 0) {
+    return "Can't reach the server. Please check your internet connection (or firewall/VPN) and try again.";
+  }
+  return msg || fallback;
+};
+
+/**
  * "Today" as YYYY-MM-DD in the browser's LOCAL calendar day — not
  * `toISOString().slice(0,10)`, which reads the UTC date. For IST (UTC+5:30)
  * that UTC read lags the real local day by up to 5.5 hours right after local
@@ -57,7 +89,10 @@ export const fmt = (n, currency = '₹') =>
 
 fmt.date = (d) => {
   if (!d) return '—';
-  return new Date(d).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+  // Plain YYYY-MM-DD (join_date, DOB) is a calendar date, not an instant —
+  // parse it as local midnight so no timezone can shift it a day.
+  const date = typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d) ? new Date(d + 'T00:00:00') : new Date(d);
+  return date.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
 };
 
 /** "5m ago" / "3h ago" / "2d ago" — falls back to a short date beyond a week. */
@@ -158,6 +193,54 @@ export const todayStr = () => {
 export const dateStr = (d) =>
   `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 
+/**
+ * Earliest date an employee may still raise a regularize request for —
+ * tenants.regularize_window_days counts today, so the default 3 means today
+ * and the 2 days before it. The DB trigger enforce_regularize_request_window
+ * (20260925_3_regularize_request_window.sql) is the real gate; this just lets
+ * the UI hide/explain what the server would reject.
+ */
+export const regularizeWindowDays = (tenant) => Math.max(1, Number(tenant?.regularize_window_days) || 3);
+
+/**
+ * A temporary extended window (tenants.regularize_extended_from/_until, see
+ * 20260929_2_regularize_extended_window.sql): while today <= until, any date
+ * since `from` may be regularized. Returns null once it has lapsed, so the
+ * normal N-day window comes back on its own. Mirrored in CrewCore's helpers.ts.
+ */
+export const regularizeExtension = (tenant) => {
+  const from = tenant?.regularize_extended_from;
+  const until = tenant?.regularize_extended_until;
+  if (!from || !until || todayStr() > until) return null;
+  return { from, until };
+};
+
+const fmtDayMonth = (s) => new Date(s + 'T00:00:00').toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+
+export const regularizeMinDate = (tenant) => {
+  const d = new Date();
+  d.setDate(d.getDate() - (regularizeWindowDays(tenant) - 1));
+  const normal = dateStr(d);
+  const ext = regularizeExtension(tenant);
+  return ext && ext.from < normal ? ext.from : normal;
+};
+
+export const regularizeWindowLabel = (tenant) => {
+  const ext = regularizeExtension(tenant);
+  if (ext) return `any day from ${fmtDayMonth(ext.from)} to today`;
+  const n = regularizeWindowDays(tenant);
+  return n === 1 ? 'today' : n === 2 ? 'today or yesterday' : `today and the previous ${n - 1} days`;
+};
+
+/** Banner text for the regularize pages while an extended window is open, else null. */
+export const regularizeExtensionNotice = (tenant) => {
+  const ext = regularizeExtension(tenant);
+  if (!ext) return null;
+  const month = new Date(ext.from + 'T00:00:00').toLocaleDateString('en-IN', { month: 'long' });
+  const n = regularizeWindowDays(tenant);
+  return `Until ${fmtDayMonth(ext.until)}, you can regularize any day from ${fmtDayMonth(ext.from)} — please submit all your ${month} mispunch / attendance corrections for approval now. After ${fmtDayMonth(ext.until)}, only the last ${n} days can be regularized; older days can no longer be regularized.`;
+};
+
 export const timeStr = (d) =>
   `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 
@@ -178,6 +261,25 @@ export const diffHours = (t1, t2) => {
   if (mins < 0) mins += 24 * 60;
   return mins / 60;
 };
+
+const EARLY_LATE_THRESHOLD_MINUTES = 90;
+
+/**
+ * Early Left / Late Arrival breach check — a punch-in more than 90 minutes
+ * after shift start, OR a punch-out more than 90 minutes before shift end.
+ * Deliberately independent of the late_threshold/early_departure_after/
+ * late_arrival_allowance_until settings used elsewhere (those drive
+ * different, existing mechanisms) — this is a fixed, always-90-minutes rule.
+ * Single source of truth shared by web, mobile, and essl-punch so the three
+ * can't quietly drift apart on what counts as a breach.
+ */
+export function computeEarlyLateBreach(firstPunch, lastPunch, shiftStart, shiftEnd) {
+  if (!firstPunch || !lastPunch || !shiftStart || !shiftEnd) return false;
+  const toMin = (t) => { const [h, m] = t.split(':').map(Number); return h * 60 + m; };
+  const isLateArrival = toMin(firstPunch) > toMin(shiftStart) + EARLY_LATE_THRESHOLD_MINUTES;
+  const isEarlyDeparture = toMin(lastPunch) < toMin(shiftEnd) - EARLY_LATE_THRESHOLD_MINUTES;
+  return isLateArrival || isEarlyDeparture;
+}
 
 // Elapsed seconds worked today, ticking every second even for the still-open
 // punch — diffHours() alone only has minute precision (timeStr drops seconds),
@@ -202,9 +304,10 @@ export const elapsedSecondsToday = (punches) => {
 };
 
 export const fmtDuration = (hrs) => {
-  const h = Math.floor(hrs);
-  const m = Math.round((hrs - h) * 60);
-  return `${h}h ${m}m`;
+  let h = Math.floor(hrs);
+  let m = Math.round((hrs - h) * 60);
+  if (m === 60) { h += 1; m = 0; }
+  return `${h} hr ${m} min`;
 };
 
 // ── Safe formula evaluator for 'formula' salary components ────────────────
@@ -334,6 +437,22 @@ function resolveFormulaComponents(components, baseVars) {
   return resolved;
 }
 
+/**
+ * Extra day(s) to deduct for a month's late-arrival COUNT, on top of whatever
+ * Half Day/Absent already subtracted. Opt-in per tenant (`late_deduction_enabled`)
+ * so this never changes payroll for a tenant that hasn't configured it.
+ * Tiers are flat, not cumulative: tier2 (default 4-6 lates -> 0.5 day) then
+ * tier3 (default 7+ lates -> 1 day flat, however far beyond tier3_min).
+ */
+export function computeLateDeductionDays(lateCount, tenant) {
+  if (!tenant?.late_deduction_enabled || !lateCount) return 0;
+  const tier3Min = tenant.late_deduction_tier3_min ?? 7;
+  const tier2Min = tenant.late_deduction_tier2_min ?? 4;
+  if (lateCount >= tier3Min) return tenant.late_deduction_tier3_days ?? 1;
+  if (lateCount >= tier2Min) return tenant.late_deduction_tier2_days ?? 0.5;
+  return 0;
+}
+
 // Calculate salary breakdown from CTC, components, and working days
 export function calcSalary(ctc, components, totalWorkDays, actualDays) {
   const ratio = actualDays / (totalWorkDays || 30);
@@ -458,15 +577,109 @@ export function calcOtPay(ctc, shiftHours, payableHours) {
   return Math.round((ctc * 0.5) / 30 / (shiftHours || 8) * payableHours);
 }
 
+// ── Raniwala per-day overtime slabs ─────────────────────────────────────────
+// A day is 8h 30m (8h paid work + 30m break). Only time punched beyond that
+// counts, and it's paid in fixed slabs, per day, never summed across days:
+//   < 2h extra      -> 0   (e.g. 1h after 8h30m counts for nothing)
+//   2h – 2h59m      -> 2h
+//   3h – 4h59m      -> 3h  (4h is still paid as 3h)
+//   5h or more      -> 8h  (a whole extra shift)
+export const RANIWALA_DAY_HOURS = 8.5;
+
+export function raniwalaExtraHours(totalHours) {
+  const h = Number(totalHours) || 0;
+  return Math.max(0, h - RANIWALA_DAY_HOURS);
+}
+
+export function raniwalaPayableOtHours(totalHours) {
+  const extra = raniwalaExtraHours(totalHours);
+  if (extra >= 5) return 8;
+  if (extra >= 3) return 3;
+  if (extra >= 2) return 2;
+  return 0;
+}
+
+/**
+ * One OT hour = one hour of the employee's normal pay, where a day's pay is
+ * CTC / days in the month and a day is 8 paid hours — so the 8h slab pays
+ * exactly one extra day.
+ */
+export function calcRaniwalaOtPay(ctc, daysInMonth, payableHours) {
+  if (!ctc || !payableHours || !daysInMonth) return 0;
+  return Math.round((ctc / daysInMonth / 8) * payableHours);
+}
+
 // ── Weekly Off Comp Off helpers ───────────────────────────────────────────────
 
 export const HIGH_SALARY_THRESHOLD = 30000;
 
-/** Returns all calendar dates in a month that fall on the given weekday (0=Sun…6=Sat). */
+// A worked day below this (8h 30m, in decimal hours) is highlighted as short
+// across attendance views (Attendance Log, Employee Calendar, Late Comers Report).
+export const SHORT_HOURS_THRESHOLD = 8.5;
+export const isShortDay = (totalHours) => totalHours != null && totalHours > 0 && totalHours < SHORT_HOURS_THRESHOLD;
+
+// More than this many "Late" days in a single calendar month gets an employee
+// highlighted as a repeat offender, everywhere attendance is reported.
+export const MONTHLY_LATE_HIGHLIGHT_LIMIT = 3;
+
+// Attendance statuses that count as a full paid day for payroll/reporting
+// purposes, alongside 'Present'/'Late': 'Travel' and 'Show Visit' are worked
+// days away from the usual clock-in location, and 'Comp Off' is a day off
+// already earned by working a prior weekly-off (see comp_off_balance) —
+// none of these should reduce pay the way an unmarked Absent day does.
+export const FULL_PAID_DAY_STATUSES = ['Present', 'Late', 'Travel', 'Show Visit', 'Comp Off'];
+export const isFullPaidDayStatus = (status) => FULL_PAID_DAY_STATUSES.includes(status);
+
+// Every role that is a real, salaried staff member (everyone except the
+// platform superadmin). `hod`/`management` were added later for Raniwala's
+// approval chain — any roster query filtering on role must include them, or
+// those people silently vanish from payroll, leave balances, late reports etc.
+export const STAFF_ROLES = ['employee', 'admin', 'manager', 'hod', 'management'];
+
+// Raniwala Jewellers' attendance/master-sheet exports use a specific layout
+// (EMP CODE/EMPLOYEE NAME/DESIGNATION/DEPARTMENT/DIVISION/MANAGER/LOCATION,
+// all-caps text) matching their existing "Employee Master for attendance.xlsx"
+// — opt-in per tenant by name so other tenants' exports are never affected.
+export const isRaniwalaTenant = (tenant) => /raniwala/i.test(tenant?.company_name || '');
+
+// Polishes free-text fields (name, designation, department, division, manager,
+// location) for exported sheets — data entered in all-caps or all-lowercase
+// otherwise looks unprofessional next to properly-cased columns.
+export const toTitleCase = (s) =>
+  (s || '').toLowerCase().replace(/(^|[\s'-])\p{L}/gu, (c) => c.toUpperCase());
+
+/**
+ * Returns the effective weekly off weekdays as an array (0=Sun…6=Sat).
+ * An outlet's own `weekly_off_days` (when set) overrides the tenant-wide
+ * setting entirely — e.g. Raniwala's Delhi outlet is off Monday while Office
+ * and Factory are off Sunday. Falls back to the tenant's `weekly_off_days`,
+ * then the legacy single `weekly_off_day` column, then Sunday-only.
+ */
+export function getTenantWeeklyOffDays(tenant, outlet = null) {
+  if (Array.isArray(outlet?.weekly_off_days) && outlet.weekly_off_days.length > 0) {
+    return outlet.weekly_off_days;
+  }
+  if (Array.isArray(tenant?.weekly_off_days) && tenant.weekly_off_days.length > 0) {
+    return tenant.weekly_off_days;
+  }
+  if (tenant?.weekly_off_day !== undefined && tenant?.weekly_off_day !== null) {
+    return [tenant.weekly_off_day];
+  }
+  return [0];
+}
+
+/** True if `date` falls on one of the effective (outlet ?? tenant) weekly off days. */
+export function isTenantWeeklyOff(date, tenant, outlet = null) {
+  const offDays = getTenantWeeklyOffDays(tenant, outlet);
+  return offDays.includes(date.getDay());
+}
+
+/** Returns all calendar dates in a month that fall on the given weekday(s) (0=Sun…6=Sat). */
 export function getWeeklyOffDaysInMonth(year, month, weeklyOffDay) {
+  const offDays = Array.isArray(weeklyOffDay) ? weeklyOffDay : [weeklyOffDay];
   const days = [];
   for (let d = new Date(year, month, 1); d.getMonth() === month; d.setDate(d.getDate() + 1)) {
-    if (d.getDay() === weeklyOffDay) days.push(dateStr(d));
+    if (offDays.includes(d.getDay())) days.push(dateStr(d));
   }
   return days;
 }
@@ -548,14 +761,22 @@ export function geofenceIsConfigured(outlets, tenant) {
   return !!(outlets || []).some((o) => o?.geofence_lat != null && o?.geofence_lng != null);
 }
 
-// PF deduction: 12% of CTC if CTC ≤ ₹15,000, else ₹1,800 (both pro-rated by work days)
+// PF deduction: pf_employee_rate% of CTC, capped at pf_wage_ceiling once CTC
+// exceeds it (both pro-rated by work days). `pfSettings` is the tenant's
+// configured { wageCeiling, rate } (see 20260903_3_tenant_pf_settings.sql,
+// SalaryPage.jsx's Statutory Settings card) — defaults match the prior
+// hardcoded behavior (Rs.15,000 ceiling, 12%) for tenants that haven't set
+// their own.
 // ESIC: uses the per-employee esic_amount (pro-rated)
-export function calcPfEsic(emp, ctc, actualDays, totalWorkDays) {
+export function calcPfEsic(emp, ctc, actualDays, totalWorkDays, pfSettings = {}) {
   const ratio = actualDays / (totalWorkDays || 1);
   const deductions = [];
+  const wageCeiling = pfSettings.wageCeiling ?? 15000;
+  const rate = pfSettings.rate ?? 12;
 
   if (emp?.pf_enabled) {
-    const pfBase = ctc <= 15000 ? ctc * 0.12 : 1800;
+    const pfWage = Math.min(ctc, wageCeiling);
+    const pfBase = pfWage * (rate / 100);
     deductions.push({ name: 'PF', amount: Math.round(pfBase * ratio) });
   }
 
@@ -564,4 +785,40 @@ export function calcPfEsic(emp, ctc, actualDays, totalWorkDays) {
   }
 
   return deductions;
+}
+
+/**
+ * Info-only PF statutory block for the payslip — the employer's matching
+ * contribution is never deducted from the employee, just shown for
+ * transparency (statutory payslips conventionally disclose it). Returns null
+ * for a non-PF employee so payslip templates can render a plain layout.
+ */
+export function buildPfStatutoryInfo(emp, ctc, actualDays, totalWorkDays, pfSettings = {}) {
+  if (!emp?.pf_enabled) return null;
+  const ratio = actualDays / (totalWorkDays || 1);
+  const wageCeiling = pfSettings.wageCeiling ?? 15000;
+  const rate = pfSettings.rate ?? 12;
+  const pfWage = Math.min(ctc, wageCeiling);
+  const contribution = Math.round(pfWage * (rate / 100) * ratio);
+  return {
+    pfNumber: emp.pf_number || '',
+    wageCeiling,
+    rate,
+    employeeContribution: contribution,
+    employerContribution: contribution, // mirrors the employee rate — info only
+  };
+}
+
+/**
+ * Probation status from the date of joining. Uses the employee's own
+ * probation_months when set, else the standard 6 months. Returns
+ * { completed, endsOn } where endsOn is the 'YYYY-MM-DD' completion date,
+ * or null when there's no join date to work from.
+ */
+export function probationInfo(joinDate, probationMonths) {
+  if (!joinDate) return null;
+  const months = Number(probationMonths) > 0 ? Number(probationMonths) : 6;
+  const [y, m, d] = joinDate.split('-').map(Number);
+  const end = new Date(y, m - 1 + months, d);
+  return { completed: end <= new Date(), endsOn: dateStr(end) };
 }

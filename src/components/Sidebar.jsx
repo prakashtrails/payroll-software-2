@@ -3,7 +3,7 @@ import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '@/context/AuthContext';
 import { useOutletView } from '@/context/OutletViewContext';
 import { useFeatures } from '@/context/FeatureContext';
-import { getInitials, fullName } from '@/lib/helpers';
+import { getInitials, fullName, isRaniwalaTenant } from '@/lib/helpers';
 
 const HOME_NAV_ITEM = {
   label: 'Home', icon: 'fa-house', href: '/home',
@@ -34,6 +34,8 @@ const ME_NAV_ITEM = {
   ],
 };
 
+const TASKS_NAV_ITEM = { label: 'Tasks', icon: 'fa-list-check', href: '/tasks', featureKey: 'tasks' };
+
 // Personal finance-related self-service items — Payslips, Tax Declaration, and
 // Grievances all moved out of the Me flyout/tabs into their own section so
 // they read as a distinct "My Finances" area rather than being buried among
@@ -57,12 +59,16 @@ const COMPANY_FLYOUT = [
   { label: 'Policies', href: '/policies', featureKey: 'policies' },
 ];
 
+// Performance workspace sections are addressed with ?section=; the server
+// still decides what each role may see and do inside them.
 const PERFORMANCE_FLYOUT_BASE = [
-  { label: 'KRAs', href: '/performance/kras', featureKey: 'performance_kras' },
+  { label: 'Overview', href: '/performance', featureKey: 'performance_kras' },
+  { label: 'Goals & Scorecards', href: '/performance/kras', featureKey: 'performance_kras' },
+  { label: 'Monthly Updates', href: '/performance?section=Monthly+updates', featureKey: 'performance_kras' },
+  { label: 'Reviews', href: '/performance/reviews', featureKey: 'performance_reviews' },
   { label: '1:1 Meetings', href: '/performance/one-on-ones', featureKey: 'performance_one_on_ones' },
   { label: 'Feedback', href: '/performance/feedback', featureKey: 'performance_feedback' },
   { label: 'PIP', href: '/performance/pip', featureKey: 'performance_pip' },
-  { label: 'Reviews', href: '/performance/reviews', featureKey: 'performance_reviews' },
 ];
 
 const NAV_CONFIG = {
@@ -82,7 +88,7 @@ const NAV_CONFIG = {
   admin: [
     {
       title: 'Overview',
-      items: [HOME_NAV_ITEM, ME_NAV_ITEM],
+      items: [HOME_NAV_ITEM, ME_NAV_ITEM, TASKS_NAV_ITEM],
     },
     MY_FINANCES_SECTION,
     {
@@ -94,6 +100,7 @@ const NAV_CONFIG = {
           label: 'People', icon: 'fa-users', href: '/employees',
           flyout: [
             { label: 'Employees', href: '/employees', featureKey: 'employees' },
+            { label: 'Leave Balances', href: '/leave-balances', featureKey: 'leave_setup' },
             { label: 'Org Structure', href: '/org-structure', featureKey: 'org_hierarchy' },
             { label: 'Assets', href: '/assets', featureKey: 'assets' },
             { label: 'Onboarding', href: '/onboarding', featureKey: 'onboarding' },
@@ -105,16 +112,20 @@ const NAV_CONFIG = {
           label: 'Attendance', icon: 'fa-fingerprint', href: '/attendance',
           flyout: [
             { label: 'Attendance Log', href: '/attendance', featureKey: 'attendance' },
+            { label: 'ESSL Records', href: '/essl-records', featureKey: 'attendance', raniwalaOnly: true },
             { label: 'Shift Roster', href: '/shift-roster', featureKey: 'shift_roster' },
             { label: 'Employee Calendar', href: '/employee-calendar', featureKey: 'employee_calendar' },
           ],
         },
+        { label: 'Live Tracking', icon: 'fa-location-crosshairs', href: '/live-tracking', featureKey: 'live_tracking' },
         {
           label: 'Requests', icon: 'fa-inbox', href: '/leaves',
           flyout: [
             { label: 'Leave Requests', href: '/leaves', featureKey: 'leave_requests' },
+            { label: 'Punch Approvals', href: '/punch-approvals', featureKey: 'attendance', raniwalaOnly: true },
             { label: 'Regularize Attendance', href: '/regularize', featureKey: 'regularize_attendance' },
             { label: 'WFH Requests', href: '/wfh-requests', featureKey: 'wfh_requests' },
+            { label: 'Verification Requests', href: '/verification-requests', featureKey: 'profile_verification' },
             { label: 'Special Requests', href: '/special-requests', featureKey: 'special_requests' },
             { label: 'Expense Claims', href: '/expense-claims', featureKey: 'expense_claims' },
             { label: 'Travel Requests', href: '/travel-requests', featureKey: 'travel_requests' },
@@ -137,7 +148,7 @@ const NAV_CONFIG = {
       title: 'Growth',
       items: [
         {
-          label: 'Performance', icon: 'fa-trophy', href: '/performance/kras',
+          label: 'Performance', icon: 'fa-trophy', href: '/performance',
           flyout: [...PERFORMANCE_FLYOUT_BASE, { label: 'Training & Skills', href: '/training', featureKey: 'training' }],
         },
         { label: 'Projects', icon: 'fa-diagram-project', href: '/projects', featureKey: 'projects' },
@@ -174,8 +185,8 @@ const NAV_CONFIG = {
           label: 'Settings', icon: 'fa-gears', href: '/settings',
           flyout: [
             { label: 'Leave Types', href: '/leave-types', featureKey: 'leave_setup' },
-            { label: 'Leave Balances', href: '/leave-balances', featureKey: 'leave_setup' },
             { label: 'Approval Chains', href: '/approval-chains', featureKey: 'approval_chains' },
+            { label: 'HR Settings', href: '/feature-settings' },
             { label: 'General Settings', href: '/settings' },
           ],
         },
@@ -185,13 +196,13 @@ const NAV_CONFIG = {
   manager: [
     {
       title: 'Overview',
-      items: [HOME_NAV_ITEM, ME_NAV_ITEM],
+      items: [HOME_NAV_ITEM, ME_NAV_ITEM, TASKS_NAV_ITEM],
     },
     MY_FINANCES_SECTION,
     {
       title: 'Workforce',
       items: [
-        { label: 'Employees', icon: 'fa-users', href: '/manager-employees', featureKey: 'employees' },
+        { label: 'My Team', icon: 'fa-users', href: '/manager-employees', featureKey: 'employees' },
         {
           label: 'Attendance', icon: 'fa-fingerprint', href: '/manager-attendance',
           flyout: [
@@ -203,8 +214,10 @@ const NAV_CONFIG = {
           label: 'Requests', icon: 'fa-inbox', href: '/manager-leaves',
           flyout: [
             { label: 'Leave Requests', href: '/manager-leaves', featureKey: 'leave_requests' },
+            { label: 'Punch Approvals', href: '/manager-punch-approvals', featureKey: 'attendance', raniwalaOnly: true },
             { label: 'Regularize Attendance', href: '/manager-regularize', featureKey: 'regularize_attendance' },
             { label: 'WFH Requests', href: '/manager-wfh-requests', featureKey: 'wfh_requests' },
+            { label: 'Verification Requests', href: '/manager-verification-requests', featureKey: 'profile_verification' },
             { label: 'Special Requests', href: '/manager-special-requests', featureKey: 'special_requests' },
             { label: 'Expense Claims', href: '/expense-claims', featureKey: 'expense_claims' },
             { label: 'Travel Requests', href: '/travel-requests', featureKey: 'travel_requests' },
@@ -226,7 +239,7 @@ const NAV_CONFIG = {
     {
       title: 'Growth',
       items: [
-        { label: 'Performance', icon: 'fa-trophy', href: '/performance/kras', flyout: PERFORMANCE_FLYOUT_BASE },
+        { label: 'Performance', icon: 'fa-trophy', href: '/performance', flyout: PERFORMANCE_FLYOUT_BASE },
         { label: 'Projects', icon: 'fa-diagram-project', href: '/projects', featureKey: 'projects' },
       ],
     },
@@ -252,10 +265,45 @@ const NAV_CONFIG = {
       ],
     },
   ],
+  raniwalaManager: [
+    {
+      title: 'Overview',
+      items: [HOME_NAV_ITEM, ME_NAV_ITEM, TASKS_NAV_ITEM],
+    },
+    MY_FINANCES_SECTION,
+    {
+      title: 'Workforce',
+      items: [
+        { label: 'My Team', icon: 'fa-users', href: '/manager-employees', featureKey: 'employees' },
+        {
+          label: 'Requests', icon: 'fa-inbox', href: '/manager-leaves',
+          flyout: [
+            { label: 'Leave Requests', href: '/manager-leaves', featureKey: 'leave_requests' },
+            { label: 'Punch Approvals', href: '/manager-punch-approvals', featureKey: 'attendance', raniwalaOnly: true },
+            { label: 'Regularize Attendance', href: '/manager-regularize', featureKey: 'regularize_attendance' },
+            { label: 'WFH Requests', href: '/manager-wfh-requests', featureKey: 'wfh_requests' },
+            { label: 'Special Requests', href: '/manager-special-requests', featureKey: 'special_requests' },
+          ],
+        },
+      ],
+    },
+    {
+      title: 'Growth',
+      items: [
+        { label: 'Performance', icon: 'fa-trophy', href: '/performance', flyout: PERFORMANCE_FLYOUT_BASE },
+      ],
+    },
+    {
+      title: 'Company',
+      items: [
+        { label: 'Company', icon: 'fa-building', href: '/announcements', flyout: COMPANY_FLYOUT },
+      ],
+    },
+  ],
   employee: [
     {
       title: 'Overview',
-      items: [HOME_NAV_ITEM, ME_NAV_ITEM],
+      items: [HOME_NAV_ITEM, ME_NAV_ITEM, TASKS_NAV_ITEM],
     },
     MY_FINANCES_SECTION,
     {
@@ -282,7 +330,7 @@ const NAV_CONFIG = {
     {
       title: 'Growth',
       items: [
-        { label: 'Performance', icon: 'fa-trophy', href: '/performance/kras', flyout: PERFORMANCE_FLYOUT_BASE },
+        { label: 'Performance', icon: 'fa-trophy', href: '/performance', flyout: PERFORMANCE_FLYOUT_BASE },
       ],
     },
     {
@@ -299,21 +347,27 @@ const NAV_CONFIG = {
 // (Requests/Leave Setup/Hiring never carry their own featureKey) — once every
 // child is filtered out, the parent itself is dropped rather than left as a
 // dead-end link.
-function filterNavByFeatures(sections, isEnabled) {
+function filterNavByFeatures(sections, isEnabled, tenant) {
   const keepItem = (item) => {
+    // Raniwala-only entries: its ESSL web feed, and app-punch approvals.
+    if (item.raniwalaOnly && !isRaniwalaTenant(tenant)) return null;
     if (item.flyout && item.flyout.length > 0) {
       const flyout = item.flyout.map(keepItem).filter(Boolean);
       if (flyout.length === 0) return null;
-      return { ...item, flyout };
+      // If the parent's own target was filtered out (e.g. Special Requests
+      // for Raniwala), point it at the first child that's still visible.
+      const href = flyout.some((f) => f.href === item.href) ? item.href : flyout[0].href;
+      return { ...item, href, flyout };
     }
     if (item.featureKey && !isEnabled(item.featureKey)) return null;
     return item;
   };
 
-  return sections.map((section) => ({
-    ...section,
-    items: section.items.map(keepItem).filter(Boolean),
-  }));
+  // A section whose every item was filtered out is dropped too, so its
+  // title doesn't render as an empty heading.
+  return sections
+    .map((section) => ({ ...section, items: section.items.map(keepItem).filter(Boolean) }))
+    .filter((section) => section.items.length > 0);
 }
 
 // The "Outlets" item's children depend on live data (how many outlets exist,
@@ -596,15 +650,19 @@ export default function Sidebar({ open = false, onClose = () => {} }) {
   if (!profile) return null;
 
   const role = profile.role || 'employee';
-  const rawSections = NAV_CONFIG[role] || NAV_CONFIG.employee;
+  // Management (Raniwala owners) use the HOD portal, scoped to their own org below them.
+  const navKey = (role === 'manager' && isRaniwalaTenant(tenant)) || role === 'hod' || role === 'management' ? 'raniwalaManager' : role;
+  const rawSections = NAV_CONFIG[navKey] || NAV_CONFIG.employee;
 
   // Fill in the Outlets flyout from live data, then strip anything the
   // superadmin has turned off for this company/outlet.
-  const sections = filterNavByFeatures(injectOutletsFlyout(rawSections, { outlets, tenant }), isEnabled);
+  const sections = filterNavByFeatures(injectOutletsFlyout(rawSections, { outlets, tenant }), isEnabled, tenant);
 
   const initials = getInitials(profile.first_name, profile.last_name);
   const displayName = fullName(profile) || 'User';
-  const roleLabel = role === 'superadmin' ? 'Super Admin' : role === 'admin' ? 'HR' : role === 'manager' ? 'Manager' : 'Employee';
+  const roleLabel = {
+    superadmin: 'Super Admin', admin: 'HR', manager: 'Manager', hod: 'HOD', management: 'Management',
+  }[role] || 'Employee';
 
   return (
     <>

@@ -13,12 +13,16 @@ import {
 } from '@/services/attendanceService';
 import { fetchRecentUpdates } from '@/services/activityFeedService';
 import { submitWfhRequest } from '@/services/wfhService';
-import { monthLabel, todayStr, timeStr, fmtTime12, diffHours, fmtDuration, elapsedSecondsToday } from '@/lib/helpers';
+import { monthLabel, todayStr, timeStr, fmtTime12, diffHours, fmtDuration, elapsedSecondsToday, isRaniwalaTenant } from '@/lib/helpers';
 import { useGeofenceClock, AUTO_CLOCKOUT_GRACE_MS } from '@/hooks/useGeofenceClock';
+import { useLiveTrackingCapture } from '@/hooks/useLiveTrackingCapture';
 
-export function DashboardContent() {
+export function DashboardContent({ embedded = false }) {
   const { profile, tenant } = useAuth();
   const navigate = useNavigate();
+  // Raniwala's Home shows announcements in their own section at the top, so
+  // policies stay on the Policies page — this feed carries KRAs / PIPs there.
+  const announcementsOnHome = embedded && isRaniwalaTenant(tenant);
 
   const [liveClock,      setLiveClock]      = useState('');
   const [liveDate,       setLiveDate]       = useState('');
@@ -61,10 +65,10 @@ export function DashboardContent() {
   useEffect(() => {
     if (!tenant || !profile) return;
     setUpdatesLoading(true);
-    fetchRecentUpdates(tenant.id, { profileId: profile.id })
+    fetchRecentUpdates(tenant.id, { profileId: profile.id, excludeAnnouncements: announcementsOnHome, excludePolicies: announcementsOnHome })
       .then(({ data }) => setUpdates(data || []))
       .finally(() => setUpdatesLoading(false));
-  }, [tenant, profile]);
+  }, [tenant, profile, announcementsOnHome]);
 
   // ── Live clock ───────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -109,8 +113,9 @@ export function DashboardContent() {
     }
   }, [profile, fetchMyAttendance]);
 
-  const { geofenceEnabled, insideFence, locationStatus, resolveClockLocation, isWfhToday } =
-    useGeofenceClock({ profile, tenant, isClockedIn, onAutoClockOut: doAutoClockOut });
+  const { trackingOn } = useLiveTrackingCapture({ profile, tenant, isClockedIn });
+  const { geofenceEnabled, insideFence, locationStatus, resolveClockLocation, isWfhToday, autoClockoutEnabled } =
+    useGeofenceClock({ profile, tenant, isClockedIn, onAutoClockOut: doAutoClockOut, bypassGeofence: trackingOn });
 
   // ── Clock In ─────────────────────────────────────────────────────────────────
   const clockIn = async () => {
@@ -203,7 +208,7 @@ export function DashboardContent() {
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8, fontSize: 11, color: fenceColor }}>
                 <i className="fas fa-location-dot" />
                 <span>{locationStatus}</span>
-                {insideFence === false && isClockedIn && (
+                {insideFence === false && isClockedIn && autoClockoutEnabled && (
                   <span style={{ background: 'rgba(248,113,113,.2)', border: '1px solid #f87171', borderRadius: 8, padding: '1px 6px', fontSize: 10 }}>
                     Auto clock-out in ~{AUTO_CLOCKOUT_GRACE_MS / 1000}s
                   </span>
@@ -250,7 +255,11 @@ export function DashboardContent() {
         </div>
 
         <div className="grid-2">
-          <RecentUpdatesCard items={updates} loading={updatesLoading} />
+          <RecentUpdatesCard
+            items={updates}
+            loading={updatesLoading}
+            {...(announcementsOnHome && { title: 'Updates', emptyText: 'KRAs, PIPs and other updates will appear here.' })}
+          />
 
           <div className="card">
             <div className="card-header"><h3>Self Service</h3></div>

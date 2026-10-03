@@ -120,7 +120,12 @@ export function AuthProvider({ children }) {
   }, []);
 
   const signOut = useCallback(async () => {
-    await supabase.auth.signOut();
+    // 'local' ends only THIS browser's session. The default ('global')
+    // revokes every session of the account — so logging out of a shared
+    // admin login on one device silently broke every other open window of
+    // it: pages kept loading on the cached JWT, but edge functions (which
+    // check the session with the auth server) failed "Not authenticated".
+    await supabase.auth.signOut({ scope: 'local' });
     setUser(null);
     setProfile(null);
     setTenant(null);

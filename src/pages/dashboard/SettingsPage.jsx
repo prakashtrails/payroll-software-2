@@ -22,8 +22,9 @@ import {
   initializeMajorHolidays,
   updateOutlet,
   resolveAttendanceSettings,
+  recomputeAttendanceLateStatus,
 } from '@/services/tenantService';
-import { monthLabel } from '@/lib/helpers';
+import { monthLabel, dateStr } from '@/lib/helpers';
 import { createGroup, linkToGroup, leaveGroup } from '@/services/groupService';
 
 export default function SettingsPage() {
@@ -33,11 +34,15 @@ export default function SettingsPage() {
   const [form, setForm] = useState({
     company_name: '', pay_day: 1, currency: '₹',
     shift_start: '09:00', shift_end: '18:00', late_threshold: 15,
-    weekly_off_day: 0, location_code: '',
+    weekly_off_days: [0], location_code: '',
+    late_deduction_enabled: false, late_deduction_tier2_min: 4, late_deduction_tier2_days: 0.5,
+    late_deduction_tier3_min: 7, late_deduction_tier3_days: 1, sandwich_rule_enabled: false,
+    auto_comp_off_on_weekly_off_worked: false,
   });
   const [attForm, setAttForm] = useState({
     min_half_day_hours: '', min_full_day_hours: '',
     geofence_lat: '', geofence_lng: '', geofence_radius: '',
+    shift_start: '', shift_end: '', late_threshold: '', weekly_off_days: [],
   });
   const [savingAtt, setSavingAtt] = useState(false);
   const [allowAnyOutletClockin, setAllowAnyOutletClockin] = useState(false);
@@ -81,7 +86,7 @@ export default function SettingsPage() {
 
   const fetchHolidays = useCallback(async () => {
     if (!tenant) return;
-    const { data, error } = await listHolidays(tenant.id);
+    const { data, error } = await listHolidays(tenant.id, selectedOutletId);
     if (error) return showToast('Could not load holidays: ' + error.message, 'error');
 
     const currentYear = String(new Date().getFullYear());
@@ -90,12 +95,12 @@ export default function SettingsPage() {
     if (!hasCurrentYear) {
       const { error: initError } = await initializeMajorHolidays(tenant.id);
       if (initError) return showToast('Could not initialize holidays: ' + initError.message, 'error');
-      const { data: newData } = await listHolidays(tenant.id);
+      const { data: newData } = await listHolidays(tenant.id, selectedOutletId);
       setHolidays(newData || []);
     } else {
       setHolidays(data);
     }
-  }, [tenant]);
+  }, [tenant, selectedOutletId]);
 
   useEffect(() => {
     if (!tenant) return;
@@ -125,6 +130,7 @@ export default function SettingsPage() {
     if (!tenant || !profile) return showToast('Unable to save holiday', 'error');
     setHolidayLoading(true);
     const { error } = await addHoliday(tenant.id, {
+      outlet_id: selectedOutletId || null,
       name: newHolidayName.trim(),
       holiday_date: newHolidayDate,
       description: newHolidayDesc.trim(),
@@ -171,8 +177,17 @@ export default function SettingsPage() {
       shift_start:    tenant.shift_start    || '09:00',
       shift_end:      tenant.shift_end      || '18:00',
       late_threshold: tenant.late_threshold || 15,
-      weekly_off_day: tenant.weekly_off_day ?? 0,
+      weekly_off_days: Array.isArray(tenant.weekly_off_days) && tenant.weekly_off_days.length > 0
+        ? tenant.weekly_off_days
+        : [tenant.weekly_off_day ?? 0],
       location_code: tenant.location_code || '',
+      late_deduction_enabled: !!tenant.late_deduction_enabled,
+      late_deduction_tier2_min: tenant.late_deduction_tier2_min ?? 4,
+      late_deduction_tier2_days: tenant.late_deduction_tier2_days ?? 0.5,
+      late_deduction_tier3_min: tenant.late_deduction_tier3_min ?? 7,
+      late_deduction_tier3_days: tenant.late_deduction_tier3_days ?? 1,
+      sandwich_rule_enabled: !!tenant.sandwich_rule_enabled,
+      auto_comp_off_on_weekly_off_worked: !!tenant.auto_comp_off_on_weekly_off_worked,
     });
     setAllowAnyOutletClockin(!!tenant.allow_any_outlet_clockin);
     fetchData();
@@ -190,10 +205,39 @@ export default function SettingsPage() {
       geofence_lat: outlet?.geofence_lat ?? '',
       geofence_lng: outlet?.geofence_lng ?? '',
       geofence_radius: outlet?.geofence_radius ?? '',
+      shift_start: outlet?.shift_start ?? '',
+      shift_end: outlet?.shift_end ?? '',
+      late_threshold: outlet?.late_threshold ?? '',
+      weekly_off_days: outlet?.weekly_off_days ?? [],
     });
   }, [tenant, outlets, selectedOutletId]);
 
+  // Trailing window recalculated right after a Report Time / Late Allowed
+  // change is saved — matches the Late Comers Report's longest built-in
+  // preset (Last 3 Months), so a settings tweak immediately corrects every
+  // already-written row an admin could actually be looking at, without
+  // silently rewriting years of older history on every small edit.
+  const recentRecomputeWindow = () => {
+    const to = new Date();
+    const from = new Date();
+    from.setMonth(from.getMonth() - 3);
+    return { from: dateStr(from), to: dateStr(to) };
+  };
+
+  const recomputeAndNotify = async (outletId) => {
+    const { from, to } = recentRecomputeWindow();
+    const { count, error } = await recomputeAttendanceLateStatus(tenant.id, outletId, from, to);
+    if (error) return showToast('Saved, but recalculating existing attendance failed: ' + error.message, 'error');
+    if (count > 0) showToast(`Recalculated ${count} existing attendance record(s) to match the new timing.`, 'success');
+  };
+
   const saveSettings = async () => {
+    // Report Time / Late Allowed minutes feed every outlet that has no
+    // override of its own — only worth a tenant-wide recompute if either
+    // actually changed, not on every unrelated field in this card (currency,
+    // pay day, late-deduction ladder, ...).
+    const timingChanged = (form.shift_start || '09:00') !== (tenant.shift_start || '09:00')
+      || (parseInt(form.late_threshold) || 15) !== (tenant.late_threshold ?? 15);
     setSaving(true);
     const { error } = await updateTenant(tenant.id, {
       company_name:   form.company_name   || 'My Company',
@@ -202,13 +246,22 @@ export default function SettingsPage() {
       shift_start:    form.shift_start    || '09:00',
       shift_end:      form.shift_end      || '18:00',
       late_threshold: parseInt(form.late_threshold) || 15,
-      weekly_off_day: parseInt(form.weekly_off_day) || 0,
+      weekly_off_days: form.weekly_off_days.length > 0 ? [...form.weekly_off_days].sort() : [0],
+      weekly_off_day: form.weekly_off_days.length > 0 ? Math.min(...form.weekly_off_days) : 0,
       location_code: (form.location_code || '').toUpperCase().slice(0, 2) || null,
+      late_deduction_enabled: form.late_deduction_enabled,
+      late_deduction_tier2_min: parseInt(form.late_deduction_tier2_min) || 4,
+      late_deduction_tier2_days: parseFloat(form.late_deduction_tier2_days) || 0.5,
+      late_deduction_tier3_min: parseInt(form.late_deduction_tier3_min) || 7,
+      late_deduction_tier3_days: parseFloat(form.late_deduction_tier3_days) || 1,
+      sandwich_rule_enabled: form.sandwich_rule_enabled,
+      auto_comp_off_on_weekly_off_worked: form.auto_comp_off_on_weekly_off_worked,
     });
     setSaving(false);
     if (error) return showToast('Save failed: ' + error.message, 'error');
     showToast('Settings saved', 'success');
     refreshProfile();
+    if (timingChanged) recomputeAndNotify(null);
   };
 
   // Tenant-level fallback shown as placeholders when an outlet hasn't set its own value.
@@ -216,12 +269,25 @@ export default function SettingsPage() {
 
   const saveAttendanceSettings = async () => {
     setSavingAtt(true);
+    // Only worth a recompute if Report Time / Late Allowed minutes actually
+    // changed, not on every geofence-only or weekly-off-only edit.
+    const currentOutlet = selectedOutletId ? outlets.find((o) => o.id === selectedOutletId) : null;
+    const timingChanged = !!selectedOutletId && (
+      (attForm.shift_start || null) !== (currentOutlet?.shift_start ?? null)
+      || (attForm.late_threshold === '' ? null : parseInt(attForm.late_threshold, 10)) !== (currentOutlet?.late_threshold ?? null)
+    );
     const payload = {
       min_half_day_hours: attForm.min_half_day_hours === '' ? null : parseFloat(attForm.min_half_day_hours),
       min_full_day_hours: attForm.min_full_day_hours === '' ? null : parseFloat(attForm.min_full_day_hours),
       geofence_lat: attForm.geofence_lat === '' ? null : parseFloat(attForm.geofence_lat),
       geofence_lng: attForm.geofence_lng === '' ? null : parseFloat(attForm.geofence_lng),
       geofence_radius: attForm.geofence_radius === '' ? null : parseInt(attForm.geofence_radius, 10),
+      ...(selectedOutletId ? {
+        shift_start: attForm.shift_start === '' ? null : attForm.shift_start,
+        shift_end: attForm.shift_end === '' ? null : attForm.shift_end,
+        late_threshold: attForm.late_threshold === '' ? null : parseInt(attForm.late_threshold, 10),
+        weekly_off_days: attForm.weekly_off_days.length > 0 ? [...attForm.weekly_off_days].sort() : null,
+      } : {}),
     };
     const { error } = selectedOutletId
       ? await updateOutlet(selectedOutletId, payload)
@@ -236,7 +302,10 @@ export default function SettingsPage() {
     setSavingAtt(false);
     if (error) return showToast('Save failed: ' + error.message, 'error');
     showToast(selectedOutletId ? `Attendance rules saved for ${selectedOutletName}` : 'Company-wide attendance rules saved', 'success');
-    if (selectedOutletId) await refreshOutlets();
+    if (selectedOutletId) {
+      await refreshOutlets();
+      if (timingChanged) recomputeAndNotify(selectedOutletId);
+    }
     refreshProfile();
   };
 
@@ -349,7 +418,7 @@ export default function SettingsPage() {
   };
 
   const [thresholdShift, setThresholdShift] = useState(null);
-  const [thresholdForm, setThresholdForm] = useState({ grace_minutes: 10, early_exit_threshold_minutes: 10, auto_absent_after_hours: 20 });
+  const [thresholdForm, setThresholdForm] = useState({ grace_minutes: 10, early_exit_threshold_minutes: 10, auto_absent_after_hours: 20, early_departure_after: '', late_arrival_allowance_until: '' });
 
   const openThresholds = (s) => {
     setThresholdShift(s);
@@ -357,6 +426,8 @@ export default function SettingsPage() {
       grace_minutes: s.grace_minutes ?? 10,
       early_exit_threshold_minutes: s.early_exit_threshold_minutes ?? 10,
       auto_absent_after_hours: s.auto_absent_after_hours ?? 20,
+      early_departure_after: s.early_departure_after ?? '',
+      late_arrival_allowance_until: s.late_arrival_allowance_until ?? '',
     });
   };
 
@@ -493,6 +564,19 @@ export default function SettingsPage() {
             onChange={(e) => setThresholdForm({ ...thresholdForm, auto_absent_after_hours: e.target.value })} />
           <div className="form-hint">Used by the nightly sweep that marks employees with zero punches as Absent.</div>
         </div>
+        <div className="form-row">
+          <div className="form-group">
+            <label className="form-label">Early departure after</label>
+            <input className="form-input" type="time" value={thresholdForm.early_departure_after}
+              onChange={(e) => setThresholdForm({ ...thresholdForm, early_departure_after: e.target.value })} />
+          </div>
+          <div className="form-group">
+            <label className="form-label">Late-arrival allowance until</label>
+            <input className="form-input" type="time" value={thresholdForm.late_arrival_allowance_until}
+              onChange={(e) => setThresholdForm({ ...thresholdForm, late_arrival_allowance_until: e.target.value })} />
+          </div>
+        </div>
+        <div className="form-hint">One clock-out before "early departure after" OR one clock-in after "late-arrival allowance until" is forgiven per calendar month; any further instance that month is marked Half Day. Leave either blank to turn that check off for this shift.</div>
       </Modal>
 
       <div className="page-content settings-page">
@@ -556,13 +640,32 @@ export default function SettingsPage() {
                   <input className="form-input" type="number" min="1" max="28" value={form.pay_day} onChange={(e) => setForm({ ...form, pay_day: e.target.value })} />
                 </div>
                 <div className="form-group">
-                  <label className="form-label">Weekly Off Day</label>
-                  <select className="form-select" value={form.weekly_off_day} onChange={(e) => setForm({ ...form, weekly_off_day: e.target.value })}>
-                    {['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'].map((d, i) => (
-                      <option key={i} value={i}>{d}</option>
-                    ))}
-                  </select>
-                  <div className="form-hint">Used for comp off settlement (employees with CTC ≥ ₹30,000)</div>
+                  <label className="form-label">Working Days</label>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px 14px' }}>
+                    {['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'].map((d, i) => {
+                      const isOff = form.weekly_off_days.includes(i);
+                      return (
+                        <label key={i} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer' }}>
+                          <input
+                            type="checkbox"
+                            checked={!isOff}
+                            onChange={(e) => {
+                              const checked = e.target.checked;
+                              setForm((f) => {
+                                let days = checked
+                                  ? f.weekly_off_days.filter((x) => x !== i)
+                                  : [...f.weekly_off_days, i];
+                                if (days.length === 7) days = f.weekly_off_days; // keep at least one off day
+                                return { ...f, weekly_off_days: days };
+                              });
+                            }}
+                          />
+                          {d}
+                        </label>
+                      );
+                    })}
+                  </div>
+                  <div className="form-hint">Uncheck a day to mark it as a weekly off for this company (e.g. uncheck only Sunday for a 6-day work week). Drives attendance, calendars and comp off settlement (CTC ≥ ₹30,000).</div>
                 </div>
               </div>
               <div className="form-group">
@@ -584,6 +687,112 @@ export default function SettingsPage() {
                 <input className="form-input" type="number" min="0" value={form.late_threshold} onChange={(e) => setForm({ ...form, late_threshold: e.target.value })} />
                 <div className="form-hint">Minutes after shift start before marking as Late</div>
               </div>
+
+              <div className="form-group">
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontWeight: 600, fontSize: 13 }}>
+                  <input type="checkbox" checked={form.late_deduction_enabled}
+                    onChange={(e) => setForm({ ...form, late_deduction_enabled: e.target.checked })} />
+                  Late Deduction Policy
+                </label>
+                <div className="form-hint">
+                  Deduct extra day(s) of pay based on how many times an employee is marked Late in a calendar
+                  month, on top of any Half Day/Absent already deducted.
+                </div>
+                {form.late_deduction_enabled && (
+                  <div className="form-row" style={{ marginTop: 8 }}>
+                    <div className="form-group">
+                      <label className="form-label">Lates for 0.5-day deduction</label>
+                      <input className="form-input" type="number" min="1" value={form.late_deduction_tier2_min}
+                        onChange={(e) => setForm({ ...form, late_deduction_tier2_min: e.target.value })} />
+                    </div>
+                    <div className="form-group">
+                      <label className="form-label">Deduction (days)</label>
+                      <input className="form-input" type="number" step="0.5" min="0" value={form.late_deduction_tier2_days}
+                        onChange={(e) => setForm({ ...form, late_deduction_tier2_days: e.target.value })} />
+                    </div>
+                  </div>
+                )}
+                {form.late_deduction_enabled && (
+                  <div className="form-row">
+                    <div className="form-group">
+                      <label className="form-label">Lates for 1-day deduction</label>
+                      <input className="form-input" type="number" min="1" value={form.late_deduction_tier3_min}
+                        onChange={(e) => setForm({ ...form, late_deduction_tier3_min: e.target.value })} />
+                    </div>
+                    <div className="form-group">
+                      <label className="form-label">Deduction (days)</label>
+                      <input className="form-input" type="number" step="0.5" min="0" value={form.late_deduction_tier3_days}
+                        onChange={(e) => setForm({ ...form, late_deduction_tier3_days: e.target.value })} />
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="form-group">
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontWeight: 600, fontSize: 13 }}>
+                  <input type="checkbox" checked={form.sandwich_rule_enabled}
+                    onChange={(e) => setForm({ ...form, sandwich_rule_enabled: e.target.checked })} />
+                  Sandwich Rule
+                </label>
+                <div className="form-hint">
+                  If an employee takes approved leave on both sides of a weekly off or public holiday, that
+                  off day in between also counts as leave (e.g. leave Sat + Sunday off + leave Mon = 3 leave days).
+                </div>
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">Comp-Off Gain Type</label>
+                <div className="form-hint" style={{ marginTop: -2, marginBottom: 8 }}>
+                  How employees earn a Comp Off for working on a weekly off day.
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <label
+                    style={{
+                      display: 'flex', alignItems: 'flex-start', gap: 10, padding: '10px 12px',
+                      border: `1px solid ${!form.auto_comp_off_on_weekly_off_worked ? 'var(--primary)' : 'var(--border-light)'}`,
+                      borderRadius: 8, cursor: 'pointer',
+                      background: !form.auto_comp_off_on_weekly_off_worked ? 'var(--primary-light)' : 'transparent',
+                    }}
+                  >
+                    <input
+                      type="radio"
+                      name="comp_off_gain_type"
+                      checked={!form.auto_comp_off_on_weekly_off_worked}
+                      onChange={() => setForm({ ...form, auto_comp_off_on_weekly_off_worked: false })}
+                      style={{ marginTop: 3 }}
+                    />
+                    <div>
+                      <div style={{ fontWeight: 600, fontSize: 13 }}>Month-end settlement</div>
+                      <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                        Comp Offs are credited when payroll runs the monthly weekly-off settlement — the standard, batch-reviewed flow.
+                      </div>
+                    </div>
+                  </label>
+                  <label
+                    style={{
+                      display: 'flex', alignItems: 'flex-start', gap: 10, padding: '10px 12px',
+                      border: `1px solid ${form.auto_comp_off_on_weekly_off_worked ? 'var(--primary)' : 'var(--border-light)'}`,
+                      borderRadius: 8, cursor: 'pointer',
+                      background: form.auto_comp_off_on_weekly_off_worked ? 'var(--primary-light)' : 'transparent',
+                    }}
+                  >
+                    <input
+                      type="radio"
+                      name="comp_off_gain_type"
+                      checked={form.auto_comp_off_on_weekly_off_worked}
+                      onChange={() => setForm({ ...form, auto_comp_off_on_weekly_off_worked: true })}
+                      style={{ marginTop: 3 }}
+                    />
+                    <div>
+                      <div style={{ fontWeight: 600, fontSize: 13 }}>Real-time grant</div>
+                      <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                        A Comp Off is credited the instant an employee punches in on their weekly off — no need to wait for month-end.
+                      </div>
+                    </div>
+                  </label>
+                </div>
+              </div>
+
               <button className="btn btn-primary" onClick={saveSettings} disabled={saving}>
                 {saving ? 'Saving…' : <><i className="fas fa-save" /> Save Settings</>}
               </button>
@@ -608,6 +817,68 @@ export default function SettingsPage() {
                     {selectedOutletId
                       ? `Editing rules just for ${selectedOutletName}. Leave a field blank to inherit the company default.`
                       : 'Editing the company-wide default. Any outlet without its own override uses these values.'}
+                  </div>
+                </div>
+              )}
+
+              {selectedOutletId && (
+                <div className="settings-geofence" style={{ marginBottom: 18 }}>
+                  <h4><i className="fas fa-clock" /> Reporting Time for {selectedOutletName}</h4>
+                  <p>Fixed rule — Report Time + Late Allowed minutes is the whole rule, every day of the month. Leave blank to use the company default.</p>
+                  <div className="form-row">
+                    <div className="form-group">
+                      <label className="form-label">Report Time (Shift Start)</label>
+                      <input className="form-input" type="time"
+                        placeholder={tenantDefaults.shift_start}
+                        value={attForm.shift_start}
+                        onChange={(e) => setAttForm({ ...attForm, shift_start: e.target.value })} />
+                    </div>
+                    <div className="form-group">
+                      <label className="form-label">Shift End</label>
+                      <input className="form-input" type="time"
+                        placeholder={tenantDefaults.shift_end}
+                        value={attForm.shift_end}
+                        onChange={(e) => setAttForm({ ...attForm, shift_end: e.target.value })} />
+                    </div>
+                  </div>
+                  <div className="form-group" style={{ marginBottom: 14 }}>
+                    <label className="form-label">Late Allowed (minutes after Report Time)</label>
+                    <input className="form-input" type="number" min="0"
+                      placeholder={String(tenantDefaults.late_threshold)}
+                      value={attForm.late_threshold}
+                      onChange={(e) => setAttForm({ ...attForm, late_threshold: e.target.value })} />
+                    <div className="form-hint">
+                      e.g. Report Time 11:00 with 5 minutes allowed marks anyone clocking in at 11:06 or later as
+                      Late — every day of the month, no separate monthly grace. Saving recalculates recent
+                      attendance to match immediately.
+                    </div>
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">Weekly Off Days for {selectedOutletName}</label>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px 14px' }}>
+                      {['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'].map((d, i) => {
+                        const isOff = attForm.weekly_off_days.includes(i);
+                        return (
+                          <label key={i} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer' }}>
+                            <input
+                              type="checkbox"
+                              checked={isOff}
+                              onChange={(e) => {
+                                const checked = e.target.checked;
+                                setAttForm((f) => ({
+                                  ...f,
+                                  weekly_off_days: checked
+                                    ? [...f.weekly_off_days, i]
+                                    : f.weekly_off_days.filter((x) => x !== i),
+                                }));
+                              }}
+                            />
+                            {d}
+                          </label>
+                        );
+                      })}
+                    </div>
+                    <div className="form-hint">Overrides the company-wide working days just for this outlet. Leave every box unchecked to inherit the company default.</div>
                   </div>
                 </div>
               )}
@@ -697,6 +968,24 @@ export default function SettingsPage() {
               </div>
             </div>
             <div className="card-body">
+              {outlets.length > 1 && (
+                <div className="form-group">
+                  <label className="form-label">Applies to</label>
+                  <select
+                    className="form-select"
+                    value={selectedOutletId || ''}
+                    onChange={(e) => selectOutlet(e.target.value || null)}
+                  >
+                    <option value="">All outlets (Company default)</option>
+                    {outlets.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
+                  </select>
+                  <div className="form-hint">
+                    {selectedOutletId
+                      ? `Showing company-wide holidays plus holidays specific to ${selectedOutletName}. New holidays added here apply only to ${selectedOutletName}.`
+                      : 'Showing every company-wide holiday. New holidays added here apply to all outlets — pick a specific outlet above to add one just for that outlet.'}
+                  </div>
+                </div>
+              )}
               <div className="settings-holiday-meta">
                 <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>Approved holidays automatically apply to employee attendance calendars.</span>
                 <div className="settings-holiday-nav">
@@ -724,7 +1013,7 @@ export default function SettingsPage() {
                     const ds = `${holidayYear}-${String(holidayMonth + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
                     const holiday = holidayMap.get(ds);
                     const isToday = d === today.getDate() && holidayMonth === today.getMonth() && holidayYear === today.getFullYear();
-                    const cls = holiday ? 'holiday' : (date.getDay() === 0 || date.getDay() === 6 ? 'weekend' : '');
+                    const cls = holiday ? 'holiday' : (form.weekly_off_days.includes(date.getDay()) ? 'weekend' : '');
                     cells.push(
                       <div className={`att-cal-day ${cls}${isToday ? ' today' : ''}`} key={ds}>
                         <div className="day-num">{d}</div>
@@ -742,7 +1031,16 @@ export default function SettingsPage() {
                   {holidays.map((holiday) => (
                     <div key={holiday.id} className="settings-holiday-row">
                       <div>
-                        <div className="name">{holiday.name}</div>
+                        <div className="name">
+                          {holiday.name}
+                          {outlets.length > 1 && (
+                            <span className="badge" style={{ marginLeft: 8, fontSize: 11, fontWeight: 500 }}>
+                              {holiday.outlet_id
+                                ? outlets.find((o) => o.id === holiday.outlet_id)?.name || 'Outlet-specific'
+                                : 'All outlets'}
+                            </span>
+                          )}
+                        </div>
                         <div className="meta">{getHolidayDate(holiday)} • {holiday.description || 'No description'}</div>
                         <div className="status"><strong>Status:</strong> {holiday.status}</div>
                       </div>

@@ -14,14 +14,18 @@ const truncate = (s, n) => (s && s.length > n ? s.slice(0, n).trimEnd() + '…' 
  * PIPs plus company-wide ones for employees, everything for admin/manager),
  * so no extra visibility filtering is needed here.
  *
+ * `excludeAnnouncements` / `excludePolicies` drop those sources — Raniwala's
+ * Home shows announcements in their own section at the top and policies only
+ * on the Policies page (see home/HomePage.jsx; the CrewCore app matches).
+ *
  * To add another source later: fetch it, map its rows to the same
  * { id, type, icon, color, title, subtitle, date, link } shape, and push
  * into `items` before the sort below.
  */
-export async function fetchRecentUpdates(tenantId, { profileId, limit = 8 } = {}) {
+export async function fetchRecentUpdates(tenantId, { profileId, limit = 8, excludeAnnouncements = false, excludePolicies = false } = {}) {
   const [annRes, polRes, kraRes, pipRes] = await Promise.allSettled([
-    listAnnouncements(tenantId),
-    listPolicies(tenantId),
+    excludeAnnouncements ? Promise.resolve({ data: [] }) : listAnnouncements(tenantId, { limit }),
+    excludePolicies ? Promise.resolve({ data: [] }) : listPolicies(tenantId),
     listKras(tenantId, { profileId }),
     listPips(tenantId),
   ]);

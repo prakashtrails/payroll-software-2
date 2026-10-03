@@ -83,6 +83,99 @@ function AutoApprovalCard({ tenant, onSaved, title, description, enabledField, l
   );
 }
 
+// Simple on/off tenant setting — no per-employee limit, just enabled/disabled.
+// When an employee clocked in inside a geofence later leaves it, this
+// automatically clocks them out after a grace period. Off by default: leave
+// it off for companies whose staff legitimately work outside the office
+// during a shift (field sales, delivery, site visits) — it's meant for
+// companies that want on-site staff confined to the premises. Manual
+// clock-in/out is blocked from outside the geofence either way — this only
+// controls the automatic force-clock-out while already clocked in.
+function AutoClockoutCard({ tenant, onSaved }) {
+  const [saving, setSaving] = useState(false);
+  if (!tenant) return null;
+  const enabled = !!tenant.auto_clockout_enabled;
+
+  const toggle = async () => {
+    setSaving(true);
+    const { error } = await updateTenant(tenant.id, { auto_clockout_enabled: !enabled });
+    setSaving(false);
+    if (error) return showToast('Failed to update: ' + error.message, 'error');
+    showToast(`Auto clock-out ${!enabled ? 'enabled' : 'disabled'}`, 'success');
+    onSaved();
+  };
+
+  return (
+    <div className="card" style={{ marginBottom: 16 }}>
+      <div className="card-header"><h3>Auto Clock-Out on Geofence Exit</h3></div>
+      <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+          When an employee clocked in inside a geofence later leaves it for longer than the grace
+          period, this automatically clocks them out. Leave this off for companies whose staff
+          legitimately work outside the office during a shift (field sales, delivery, site visits) —
+          it's meant for companies that want on-site staff confined to the premises. Manual
+          clock-in/out is still blocked from outside the geofence either way.
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <button
+            className="btn btn-outline btn-icon btn-sm"
+            disabled={saving}
+            onClick={toggle}
+            title={enabled ? 'Disable auto clock-out' : 'Enable auto clock-out'}
+          >
+            <i className={`fas ${enabled ? 'fa-toggle-on' : 'fa-toggle-off'}`} style={{ color: enabled ? 'var(--success)' : 'var(--text-muted)' }} />
+          </button>
+          <span className={`badge ${enabled ? 'badge-success' : 'badge-secondary'}`}>{enabled ? 'Enabled' : 'Disabled'}</span>
+          {saving && <div className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} />}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Comp-off "gain type" — how an employee earns a Comp Off for working a
+// weekly off day. Off (default) = month-end settlement, reviewed in batch
+// during payroll (compOffService.js / PayrollPage). On = real-time grant the
+// instant they punch in on that weekly off (attendanceService.js), per
+// 20260917_1_realtime_comp_off_grant.sql. Mirrors the same control exposed
+// to HR/admin directly on the Settings page — this is the superadmin's view
+// of the same tenant column.
+function CompOffGainTypeCard({ tenant, onSaved }) {
+  const [saving, setSaving] = useState(false);
+  if (!tenant) return null;
+  const realtime = !!tenant.auto_comp_off_on_weekly_off_worked;
+
+  const setMode = async (value) => {
+    if (value === realtime) return;
+    setSaving(true);
+    const { error } = await updateTenant(tenant.id, { auto_comp_off_on_weekly_off_worked: value });
+    setSaving(false);
+    if (error) return showToast('Failed to update: ' + error.message, 'error');
+    showToast(`Comp-off gain type set to ${value ? 'Real-time grant' : 'Month-end settlement'}`, 'success');
+    onSaved();
+  };
+
+  return (
+    <div className="card" style={{ marginBottom: 16 }}>
+      <div className="card-header"><h3>Comp-Off Gain Type</h3></div>
+      <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+          How employees earn a Comp Off for working on a weekly off day.
+        </div>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+          <button className={`btn btn-sm ${!realtime ? 'btn-primary' : 'btn-outline'}`} disabled={saving} onClick={() => setMode(false)}>
+            Month-end settlement
+          </button>
+          <button className={`btn btn-sm ${realtime ? 'btn-primary' : 'btn-outline'}`} disabled={saving} onClick={() => setMode(true)}>
+            Real-time grant
+          </button>
+          {saving && <div className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} />}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function ToggleServicesPage() {
   const { profile } = useAuth();
   const [tenants, setTenants] = useState([]);
@@ -142,7 +235,7 @@ export default function ToggleServicesPage() {
   }, [features]);
 
   const handleToggle = async (f) => {
-    const effective = resolveFeatureState(toggles, f.key, currentOutletId);
+    const effective = resolveFeatureState(toggles, f.key, currentOutletId, !f.is_premium);
     setSavingKey(f.key);
     const { error } = await setFeatureToggle(tenantId, currentOutletId, f.key, !effective, profile?.id);
     setSavingKey(null);
@@ -204,6 +297,16 @@ export default function ToggleServicesPage() {
                 enabledField="regularize_auto_approval_enabled"
                 limitField="regularize_auto_approval_limit"
               />
+              <AutoApprovalCard
+                tenant={currentTenant}
+                onSaved={refreshTenants}
+                title="Special Requests Auto-Approval"
+                description={'Employees can self-approve their own special requests (overtime, salary overtime, late arrival) instantly, up to a monthly limit, before requests start routing to their manager and then HR. Independent of the leave/regularization settings above.'}
+                enabledField="special_auto_approval_enabled"
+                limitField="special_auto_approval_limit"
+              />
+              <AutoClockoutCard tenant={currentTenant} onSaved={refreshTenants} />
+              <CompOffGainTypeCard tenant={currentTenant} onSaved={refreshTenants} />
             </>
           )}
           {grouped.map(([category, items]) => (
@@ -215,11 +318,16 @@ export default function ToggleServicesPage() {
                   <tbody>
                     {items.map((f) => {
                       const explicitRow = toggles.find((t) => t.feature_key === f.key && (t.outlet_id || null) === currentOutletId);
-                      const effective = resolveFeatureState(toggles, f.key, currentOutletId);
+                      const effective = resolveFeatureState(toggles, f.key, currentOutletId, !f.is_premium);
                       return (
                         <tr key={f.key}>
                           <td>
                             <strong>{f.name}</strong>
+                            {f.is_premium && (
+                              <span className="premium-badge" style={{ marginLeft: 8 }}>
+                                <i className="fas fa-crown" /> Premium
+                              </span>
+                            )}
                             {f.description && <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{f.description}</div>}
                           </td>
                           <td>

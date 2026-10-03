@@ -7,7 +7,7 @@ import {
   listReceivedFeedback, listGivenFeedback, listPendingRequests,
   giveFeedback, requestFeedback, respondToFeedbackRequest,
 } from '@/services/feedbackService';
-import { listActiveEmployees } from '@/services/employeeService';
+import { listColleagues } from '@/services/employeeService';
 import { fullName } from '@/lib/helpers';
 
 const TYPE_BADGE = {
@@ -44,7 +44,7 @@ export function FeedbackContent() {
         listReceivedFeedback(tenant.id, profile.id),
         listGivenFeedback(tenant.id, profile.id),
         listPendingRequests(tenant.id, profile.id),
-        listActiveEmployees(tenant.id),
+        listColleagues(tenant.id),
       ]);
       setReceived(rRes.data || []);
       setGiven(gRes.data || []);

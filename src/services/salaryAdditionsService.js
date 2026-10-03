@@ -4,7 +4,7 @@ import { supabase } from '@/lib/supabase';
 export async function listSalaryAdditions(tenantId) {
   const { data, error } = await supabase
     .from('salary_additions')
-    .select('*, profile:profiles!salary_additions_profile_id_fkey(first_name, middle_name, last_name, department)')
+    .select('*, profile:profile_directory!salary_additions_profile_id_fkey(first_name, middle_name, last_name, department)')
     .eq('tenant_id', tenantId)
     .order('created_at', { ascending: false });
   return { data: data || [], error };

@@ -5,10 +5,75 @@ import Modal from '@/components/Modal';
 import { showToast } from '@/components/Toast';
 import { useAuth } from '@/context/AuthContext';
 import { listComponents, saveComponent, deleteComponent } from '@/services/salaryService';
+import { updateTenant } from '@/services/tenantService';
 import { fmt, calcSalary } from '@/lib/helpers';
 
+// PF is a per-employee toggle (Employees page) but the *formula* — wage
+// ceiling and contribution rate — is a tenant-wide policy. Defaults match
+// the statutory Rs.15,000 ceiling / 12% used before this became configurable
+// (see 20260903_3_tenant_pf_settings.sql) so an untouched tenant sees no change.
+function PfSettingsCard({ tenant, onSaved }) {
+  const [wageCeiling, setWageCeiling] = useState(15000);
+  const [rate, setRate]               = useState(12);
+  const [saving, setSaving]           = useState(false);
+
+  useEffect(() => {
+    if (!tenant) return;
+    setWageCeiling(tenant.pf_wage_ceiling ?? 15000);
+    setRate(tenant.pf_employee_rate ?? 12);
+  }, [tenant?.id, tenant?.pf_wage_ceiling, tenant?.pf_employee_rate]);
+
+  if (!tenant) return null;
+
+  const dirty = Number(wageCeiling) !== (tenant.pf_wage_ceiling ?? 15000)
+    || Number(rate) !== (tenant.pf_employee_rate ?? 12);
+
+  const handleSave = async () => {
+    const ceilingNum = parseFloat(wageCeiling);
+    const rateNum    = parseFloat(rate);
+    if (!(ceilingNum > 0)) return showToast('Wage ceiling must be greater than 0', 'error');
+    if (!(rateNum > 0 && rateNum <= 100)) return showToast('Rate must be between 0 and 100', 'error');
+
+    setSaving(true);
+    const { error } = await updateTenant(tenant.id, { pf_wage_ceiling: ceilingNum, pf_employee_rate: rateNum });
+    setSaving(false);
+    if (error) return showToast('Failed to update: ' + error.message, 'error');
+    showToast('PF settings saved', 'success');
+    onSaved();
+  };
+
+  return (
+    <div className="card" style={{ marginBottom: 16 }}>
+      <div className="card-header"><h3>Statutory (PF) Settings</h3></div>
+      <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+          Applies only to employees with PF enabled (Employees page). PF is deducted at{' '}
+          <strong>{rate || 0}%</strong> of CTC, capped at the wage ceiling once CTC exceeds it — so
+          every employee above the ceiling pays the same flat amount. The payslip also shows an
+          info-only employer contribution at the same rate — it isn't deducted from the employee.
+        </div>
+        <div className="form-row">
+          <div className="form-group">
+            <label className="form-label">PF Wage Ceiling (₹)</label>
+            <input className="form-input" type="number" min="1" value={wageCeiling} onChange={(e) => setWageCeiling(e.target.value)} />
+          </div>
+          <div className="form-group">
+            <label className="form-label">Employee PF Rate (%)</label>
+            <input className="form-input" type="number" min="0.01" max="100" step="0.01" value={rate} onChange={(e) => setRate(e.target.value)} />
+          </div>
+        </div>
+        <div>
+          <button className="btn btn-primary btn-sm" disabled={saving || !dirty} onClick={handleSave}>
+            {saving ? <><div className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} /> Saving…</> : 'Save'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function SalaryStructurePage() {
-  const { tenant } = useAuth();
+  const { tenant, refreshProfile } = useAuth();
   const [components, setComponents] = useState([]);
   const [loading, setLoading]       = useState(true);
   const [showModal, setShowModal]   = useState(false);
@@ -116,6 +181,7 @@ export default function SalaryStructurePage() {
           <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)' }}><div className="spinner" style={{ margin: '0 auto 16px' }} />Loading components…</div>
         ) : (
           <>
+            <PfSettingsCard tenant={tenant} onSaved={refreshProfile} />
             {components.length > 0 && (
               <div style={{
                 background: earningCoverage === 100 ? 'var(--success-light, #d1fae5)' : earningCoverage > 100 ? 'var(--danger-light, #fee2e2)' : 'var(--warning-light, #fffbeb)',

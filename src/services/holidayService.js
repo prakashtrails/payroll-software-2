@@ -1,12 +1,16 @@
 import { supabase } from '@/lib/supabase';
 import { getLocalDateString } from '@/lib/helpers';
 
-export async function fetchHolidays(tenantId, year, month) {
+export async function fetchHolidays(tenantId, year, month, outletId) {
   let query = supabase
     .from('holidays')
     .select('*')
     .eq('tenant_id', tenantId)
     .order('date', { ascending: true });
+
+  if (outletId) {
+    query = query.or(`outlet_id.is.null,outlet_id.eq.${outletId}`);
+  }
 
   if (year) {
     const start = `${year}-01-01`;
@@ -22,17 +26,21 @@ export async function fetchHolidays(tenantId, year, month) {
   return { data, error: null };
 }
 
-/** Today's holiday for a tenant, if any — used to trigger the post-login celebration overlay. */
-export async function fetchTodayHoliday(tenantId) {
+/** Today's holiday for a tenant (and outlet, if given), if any — used to trigger the post-login celebration overlay. */
+export async function fetchTodayHoliday(tenantId, outletId) {
   if (!tenantId) return { data: null, error: null };
   const today = getLocalDateString();
-  const { data, error } = await supabase
+  let query = supabase
     .from('holidays')
     .select('*')
     .eq('tenant_id', tenantId)
-    .eq('date', today)
-    .limit(1)
-    .maybeSingle();
+    .eq('date', today);
+
+  if (outletId) {
+    query = query.or(`outlet_id.is.null,outlet_id.eq.${outletId}`);
+  }
+
+  const { data, error } = await query.limit(1).maybeSingle();
   if (error) {
     console.error('fetchTodayHoliday err:', error);
     return { data: null, error };
@@ -40,10 +48,10 @@ export async function fetchTodayHoliday(tenantId) {
   return { data, error: null };
 }
 
-export async function addHoliday(tenantId, name, date, type = 'Public Holiday') {
+export async function addHoliday(tenantId, name, date, type = 'Public Holiday', outletId = null) {
   const { data, error } = await supabase
     .from('holidays')
-    .insert([{ tenant_id: tenantId, name, date, type }])
+    .insert([{ tenant_id: tenantId, outlet_id: outletId, name, date, type }])
     .select()
     .single();
   return { data, error };

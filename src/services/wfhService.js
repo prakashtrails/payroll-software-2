@@ -3,8 +3,8 @@ import { notifyProfiles, notifyRoles, withHrRole, getRequesterLabel } from './no
 
 const SELECT = `
   *,
-  profile:profiles!wfh_requests_profile_id_fkey(first_name, middle_name, last_name, department, designation),
-  reviewer:profiles!wfh_requests_reviewed_by_fkey(first_name, middle_name, last_name, role)
+  profile:profile_directory!wfh_requests_profile_id_fkey(first_name, middle_name, last_name, department, designation),
+  reviewer:profile_directory!wfh_requests_reviewed_by_fkey(first_name, middle_name, last_name, role)
 `;
 
 /** Admin/Manager: all WFH requests for a tenant, newest first. */

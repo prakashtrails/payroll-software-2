@@ -22,7 +22,7 @@ export default function NotificationsPage() {
 
   const handleClick = (n) => {
     if (!n.is_read) markRead(n.id);
-    const href = resolveNotificationLink(n.link_key, profile.role);
+    const href = resolveNotificationLink(n.link_key, profile.role, n.related_id);
     if (href) navigate(href);
   };
 

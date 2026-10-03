@@ -287,6 +287,7 @@ function BulkUploadTab({ tenantId, outlets, onImported }) {
   const [importProgress, setImportProgress] = useState(null);
   const [summary, setSummary] = useState(null);
   const [allowPlaceholderLogins, setAllowPlaceholderLogins] = useState(false);
+  const [allowMissingCtc, setAllowMissingCtc] = useState(false);
 
   const outletsByName = new Map(outlets.map((o) => [o.name.trim().toLowerCase(), o.id]));
 
@@ -312,6 +313,7 @@ function BulkUploadTab({ tenantId, outlets, onImported }) {
         tenantId, rows,
         onProgress: (current, total) => setImportProgress({ current, total }),
         allowPlaceholderLogins,
+        allowMissingCtc,
       });
       setSummary(result);
       onImported();
@@ -343,6 +345,18 @@ function BulkUploadTab({ tenantId, outlets, onImported }) {
           />
           Allow rows without email/phone
         </label>
+        <label
+          style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-muted)', cursor: 'pointer' }}
+          title="New employees are normally rejected without a Monthly CTC. Check this to create them anyway with CTC = 0 — useful for a roster sheet with no salary column, to be filled in later from HR records."
+        >
+          <input
+            type="checkbox"
+            checked={allowMissingCtc}
+            onChange={(e) => setAllowMissingCtc(e.target.checked)}
+            disabled={!!importProgress}
+          />
+          Allow missing CTC (defaults to 0)
+        </label>
       </div>
 
       {importProgress && (
@@ -365,14 +379,25 @@ function BulkUploadTab({ tenantId, outlets, onImported }) {
               <thead><tr><th>Email</th><th>Name</th><th>CTC</th><th>Branch</th><th>Match</th></tr></thead>
               <tbody>
                 {rows.slice(0, 20).map((r, i) => {
-                  const email = r.email || r.Email || r['Email Address'] || '';
-                  const branch = r.outlet_location || r.location || r['Outlet Location'] || r.outlet || r.OUTLET || r.branch || r.Branch || '';
+                  // Preview only — reads whatever casing the sheet happens to use for
+                  // each header (mapRowToProfileData does the real, casing-insensitive
+                  // normalization at import time; this just needs to *display* the
+                  // same value it'll resolve so the preview isn't misleadingly blank).
+                  const byLowerKey = (...names) => {
+                    const entry = Object.entries(r).find(([k]) => names.includes(k.trim().toLowerCase()));
+                    return entry ? entry[1] : '';
+                  };
+                  const email = byLowerKey('email', 'email_id', 'email address', 'email_address');
+                  const branch = byLowerKey('outlet_location', 'location', 'outlet location', 'outlet', 'branch', 'branch_location');
                   const matched = branch && outletsByName.has(String(branch).trim().toLowerCase());
+                  const name = byLowerKey('name', 'full_name', 'employee_name', 'employee name')
+                    || [byLowerKey('first_name', 'first name'), byLowerKey('middle_name', 'middle name'), byLowerKey('last_name', 'last name')].filter(Boolean).join(' ');
+                  const ctc = byLowerKey('ctc', 'salary', 'annual_ctc', 'gross_salary', 'gross') || '—';
                   return (
                     <tr key={i}>
                       <td>{email || <span style={{ color: 'var(--danger)' }}>missing</span>}</td>
-                      <td>{r.first_name || r['First Name'] || ''} {r.middle_name || r['Middle Name'] || ''} {r.last_name || r['Last Name'] || ''}</td>
-                      <td>{r.ctc || r.CTC || '—'}</td>
+                      <td>{name}</td>
+                      <td>{ctc}</td>
                       <td>{branch || '—'}</td>
                       <td>{branch ? (matched ? <span className="badge badge-success">Matched</span> : <span className="badge badge-secondary">Will create</span>) : '—'}</td>
                     </tr>
@@ -608,7 +633,7 @@ function MembersTab({ tenantId, members, loading, onChanged }) {
   const filteredMembers = search
     ? members.filter((m) => {
         const haystack = [
-          fullName(m), m.email, m.phone, m.role, m.department, m.designation,
+          fullName(m), m.employee_id, m.essl_employee_code, m.email, m.phone, m.role, m.department, m.designation,
         ].filter(Boolean).join(' ').toLowerCase();
         return haystack.includes(search);
       })
@@ -643,7 +668,7 @@ function MembersTab({ tenantId, members, loading, onChanged }) {
           <input
             className="form-input"
             style={{ maxWidth: 320 }}
-            placeholder="Search by name, email, phone, department, designation…"
+            placeholder="Search by name, EMP code, email, phone, department…"
             value={searchInput}
             onChange={(e) => setSearchInput(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && runSearch()}

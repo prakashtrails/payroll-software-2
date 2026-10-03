@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { useSearchParams } from 'react-router-dom';
 import Header from '@/components/Header';
 import { useAuth } from '@/context/AuthContext';
@@ -9,11 +9,10 @@ import { AttendanceContent } from './MyAttendancePage';
 import { RegularizeContent } from './MyRegularizeRequestsPage';
 import { WfhContent } from './MyWfhRequestsPage';
 import { LeaveContent } from './MyLeavesPage';
-import { KRAsContent } from '@/pages/dashboard/KRAsPage';
+import { PerformanceContent } from '@/pages/dashboard/PerformancePage';
 import { OneOnOnesContent } from '@/pages/dashboard/OneOnOnesPage';
 import { FeedbackContent } from '@/pages/dashboard/FeedbackPage';
 import { PIPContent } from '@/pages/dashboard/PIPPage';
-import { ReviewsContent } from '@/pages/dashboard/ReviewsPage';
 import { MyTrainingContent } from './MyTrainingPage';
 import { MyOnboardingContent } from './MyOnboardingPage';
 import { MyOffboardingContent } from './MyOffboardingPage';
@@ -27,11 +26,10 @@ const ATTENDANCE_SUBTABS = [
 ];
 
 const PERFORMANCE_SUBTABS = [
-  { key: 'kras', label: 'KRAs' },
-  { key: 'oneonones', label: '1:1 Meetings' },
-  { key: 'feedback', label: 'Feedback' },
-  { key: 'pip', label: 'PIP' },
-  { key: 'reviews', label: 'Reviews' },
+  { key: 'workspace', label: 'My Performance' },
+  { key: 'oneonones', label: '1:1 Meetings', featureKey: 'performance_one_on_ones' },
+  { key: 'feedback', label: 'Feedback', featureKey: 'performance_feedback' },
+  { key: 'pip', label: 'PIP', featureKey: 'performance_pip' },
 ];
 
 // Every tab beyond the core three (Attendance/Leave/Performance) mirrors a
@@ -82,7 +80,9 @@ export default function MePage() {
   const attSubtab = ATTENDANCE_SUBTABS.some((s) => s.key === requestedSub) ? requestedSub : 'log';
   const setAttSubtab = (s) => setSearchParams(s === 'log' ? {} : { tab: 'attendance', sub: s });
 
-  const [perfSubtab, setPerfSubtab] = useState('kras');
+  const performanceTabs = PERFORMANCE_SUBTABS.filter((item) => (item.featureKey ? isEnabled(item.featureKey) : isEnabled('performance_kras') || isEnabled('performance_reviews')));
+  const perfSubtab = performanceTabs.some((item) => item.key === requestedSub) ? requestedSub : performanceTabs[0]?.key;
+  const setPerfSubtab = (sub) => setSearchParams({ tab: 'performance', sub });
 
   const roleLabel = profile?.role === 'admin' ? 'HR' : profile?.role === 'manager' ? 'Manager' : 'Employee';
 
@@ -126,13 +126,12 @@ export default function MePage() {
       {tab === 'performance' && (
         <>
           <div className="subtab-bar-wrap">
-            <SubTabs items={PERFORMANCE_SUBTABS} active={perfSubtab} onChange={setPerfSubtab} />
+            <SubTabs items={performanceTabs} active={perfSubtab} onChange={setPerfSubtab} />
           </div>
-          {perfSubtab === 'kras' && <KRAsContent />}
+          {perfSubtab === 'workspace' && <PerformanceContent defaultSection="Scorecards" />}
           {perfSubtab === 'oneonones' && <OneOnOnesContent />}
           {perfSubtab === 'feedback' && <FeedbackContent />}
           {perfSubtab === 'pip' && <PIPContent />}
-          {perfSubtab === 'reviews' && <ReviewsContent />}
         </>
       )}
 

@@ -19,7 +19,7 @@ export async function listAllEmployees({ page = 1, search = '', tenantId = '', o
   if (status)   q = q.eq('status', status);
   if (search) {
     q = q.or(
-      `first_name.ilike.%${search}%,middle_name.ilike.%${search}%,last_name.ilike.%${search}%,email.ilike.%${search}%,department.ilike.%${search}%`
+      `first_name.ilike.%${search}%,middle_name.ilike.%${search}%,last_name.ilike.%${search}%,email.ilike.%${search}%,department.ilike.%${search}%,employee_id.ilike.%${search}%,essl_employee_code.ilike.%${search}%`
     );
   }
 

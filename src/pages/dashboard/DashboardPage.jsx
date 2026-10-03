@@ -8,13 +8,17 @@ import { useOutletView } from '@/context/OutletViewContext';
 import { fetchDashboardStats } from '@/services/tenantService';
 import { fetchTodayAttendanceSummary, fetchMyMonthAttendance, clockIn as svcClockIn, clockOut as svcClockOut } from '@/services/attendanceService';
 import { fetchRecentUpdates } from '@/services/activityFeedService';
-import { todayStr, timeStr, fmtTime12, diffHours, monthLabel, elapsedSecondsToday } from '@/lib/helpers';
+import { todayStr, timeStr, fmtTime12, diffHours, monthLabel, elapsedSecondsToday, isRaniwalaTenant } from '@/lib/helpers';
 import { showToast } from '@/components/Toast';
 import { useGeofenceClock } from '@/hooks/useGeofenceClock';
+import { useLiveTrackingCapture } from '@/hooks/useLiveTrackingCapture';
 
 export default function GeneralDashboard({ embedded = false }) {
   const { tenant, profile } = useAuth();
   const { needsSelection, outletProfileIds, selectedOutletName } = useOutletView();
+  // Raniwala's Home shows announcements in their own section at the top, so
+  // policies stay on the Policies page — this feed carries KRAs / PIPs there.
+  const announcementsOnHome = embedded && isRaniwalaTenant(tenant);
   const [stats, setStats]   = useState({ activeEmployees: 0, processedPayrolls: 0 });
   const [attendance, setAttendance] = useState({ present: 0, absent: 0, late: 0, halfDay: 0, leave: 0, total: 0 });
   const [loading, setLoading] = useState(true);
@@ -77,10 +81,10 @@ export default function GeneralDashboard({ embedded = false }) {
   useEffect(() => {
     if (!tenant || !profile) return;
     setUpdatesLoading(true);
-    fetchRecentUpdates(tenant.id, { profileId: profile.id })
+    fetchRecentUpdates(tenant.id, { profileId: profile.id, excludeAnnouncements: announcementsOnHome, excludePolicies: announcementsOnHome })
       .then(({ data }) => setUpdates(data || []))
       .finally(() => setUpdatesLoading(false));
-  }, [tenant, profile]);
+  }, [tenant, profile, announcementsOnHome]);
 
   useEffect(() => {
     const tickTimer = () => {
@@ -115,8 +119,9 @@ export default function GeneralDashboard({ embedded = false }) {
     }
   }, [profile, fetchMyAttendance]);
 
+  const { trackingOn } = useLiveTrackingCapture({ profile, tenant, isClockedIn });
   const { geofenceEnabled, insideFence, locationStatus, resolveClockLocation, isWfhToday } =
-    useGeofenceClock({ profile, tenant, isClockedIn, onAutoClockOut: doAutoClockOut });
+    useGeofenceClock({ profile, tenant, isClockedIn, onAutoClockOut: doAutoClockOut, bypassGeofence: trackingOn });
 
   const handleClockIn = async () => {
     if (isClockedIn || !tenant || !profile) return;
@@ -167,7 +172,7 @@ export default function GeneralDashboard({ embedded = false }) {
           </div>
         ) : (
           <>
-            {profile && (
+            {profile && tenant && (
               <div className="clock-widget">
                 <div>
                   <div className="clock-time">{liveClock}</div>
@@ -247,7 +252,11 @@ export default function GeneralDashboard({ embedded = false }) {
               </div>
             </div>
 
-            <RecentUpdatesCard items={updates} loading={updatesLoading} />
+            <RecentUpdatesCard
+              items={updates}
+              loading={updatesLoading}
+              {...(announcementsOnHome && { title: 'Updates', emptyText: 'KRAs, PIPs and other updates will appear here.' })}
+            />
 
             <div className="card">
               <div className="card-header"><h3>System Setup Guide</h3></div>

@@ -2,9 +2,9 @@ import { supabase } from '@/lib/supabase';
 
 const SELECT = `
   *,
-  from_profile:profiles!feedback_from_profile_id_fkey(first_name, middle_name, last_name),
-  to_profile:profiles!feedback_to_profile_id_fkey(first_name, middle_name, last_name),
-  requested_from_profile:profiles!feedback_requested_from_fkey(first_name, middle_name, last_name)
+  from_profile:profile_directory!feedback_from_profile_id_fkey(first_name, middle_name, last_name),
+  to_profile:profile_directory!feedback_to_profile_id_fkey(first_name, middle_name, last_name),
+  requested_from_profile:profile_directory!feedback_requested_from_fkey(first_name, middle_name, last_name)
 `;
 
 /** Feedback received about me (completed, not pending requests). */

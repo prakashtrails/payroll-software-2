@@ -5,7 +5,7 @@ import { dateStr } from '@/lib/helpers';
 export async function fetchShiftAssignments(tenantId, startDate, endDate) {
   const { data, error } = await supabase
     .from('shift_assignments')
-    .select('*, shift:shifts(name, start_time, end_time), profile:profiles!shift_assignments_profile_id_fkey(first_name, middle_name, last_name)')
+    .select('*, shift:shifts(name, start_time, end_time), profile:profile_directory!shift_assignments_profile_id_fkey(first_name, middle_name, last_name)')
     .eq('tenant_id', tenantId)
     .gte('date', startDate)
     .lte('date', endDate);

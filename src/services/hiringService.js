@@ -112,7 +112,7 @@ export async function listMyReferrals(profileId) {
 export async function listAllReferrals(tenantId, { status = '', jobPostingId = '' } = {}) {
   let q = supabase
     .from('referrals')
-    .select('*, job_postings(title, department), referred_by_profile:profiles!referrals_referred_by_fkey(first_name, middle_name, last_name)')
+    .select('*, job_postings(title, department), referred_by_profile:profile_directory!referrals_referred_by_fkey(first_name, middle_name, last_name)')
     .eq('tenant_id', tenantId)
     .order('created_at', { ascending: false });
   if (status) q = q.eq('status', status);
@@ -235,7 +235,7 @@ export async function assignRecruiter(tenantId, headcountRequestId, recruiterId,
 export async function listHeadcountRequests(tenantId) {
   const { data, error } = await supabase
     .from('headcount_requests')
-    .select('*, outlet:outlets(name), requester:profiles!headcount_requests_requested_by_fkey(first_name, middle_name, last_name), recruiter:profiles!headcount_requests_assigned_recruiter_id_fkey(first_name, middle_name, last_name)')
+    .select('*, outlet:outlets(name), requester:profile_directory!headcount_requests_requested_by_fkey(first_name, middle_name, last_name), recruiter:profile_directory!headcount_requests_assigned_recruiter_id_fkey(first_name, middle_name, last_name)')
     .eq('tenant_id', tenantId)
     .order('created_at', { ascending: false });
   return { data: data || [], error };
@@ -295,7 +295,7 @@ export async function listApprovedOpenHeadcount(tenantId) {
 export async function listInterviewsForReferral(referralId) {
   const { data, error } = await supabase
     .from('interviews')
-    .select('*, interviewer:profiles!interviews_interviewer_id_fkey(first_name, middle_name, last_name), feedback:interview_feedback(*)')
+    .select('*, interviewer:profile_directory!interviews_interviewer_id_fkey(first_name, middle_name, last_name), feedback:interview_feedback(*)')
     .eq('referral_id', referralId)
     .order('scheduled_at');
   return { data: data || [], error };

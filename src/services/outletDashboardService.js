@@ -1,6 +1,6 @@
 import { supabase } from '@/lib/supabase';
 import { listOutlets } from './tenantService';
-import { todayStr } from '@/lib/helpers';
+import { todayStr, STAFF_ROLES } from '@/lib/helpers';
 
 /**
  * Per-outlet stats for the current tenant — the single-tenant equivalent of
@@ -22,7 +22,7 @@ export async function fetchOutletsOverview(tenantId) {
       .from('profiles')
       .select('id, outlet_id')
       .eq('tenant_id', tenantId)
-      .in('role', ['employee', 'admin', 'manager'])
+      .in('role', STAFF_ROLES)
       .eq('status', 'Active'),
     supabase
       .from('attendance')

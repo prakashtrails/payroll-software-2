@@ -1,4 +1,5 @@
 import { supabase } from '@/lib/supabase';
+import { STAFF_ROLES } from '@/lib/helpers';
 import { notifyProfiles } from './notificationService';
 
 // ── Checklist library ───────────────────────────────────────────────────────
@@ -21,7 +22,7 @@ export async function deleteChecklistItem(id) {
 export async function listProcesses(tenantId) {
   const { data, error } = await supabase
     .from('offboarding_processes')
-    .select('*, profile:profiles!offboarding_processes_profile_id_fkey(first_name, middle_name, last_name, department), tasks:offboarding_process_tasks(id, title, category, status)')
+    .select('*, profile:profile_directory!offboarding_processes_profile_id_fkey(first_name, middle_name, last_name, department), tasks:offboarding_process_tasks(id, title, category, status)')
     .eq('tenant_id', tenantId)
     .order('created_at', { ascending: false });
   return { data: data || [], error };
@@ -93,4 +94,56 @@ export async function updateTaskStatus(id, status) {
     status, completed_at: status === 'Done' ? new Date().toISOString() : null,
   }).eq('id', id);
   return { error };
+}
+
+/**
+ * Monthly joiners/leavers for the last `months` calendar months (oldest
+ * first), plus turnover % = leavers / average headcount that month. An exit
+ * is a non-cancelled offboarding process, dated by last_working_day (falling
+ * back to exit_date). Pass `profileIds` (a Set) to scope to an outlet.
+ * Two narrow selects — only ids and dates, no joins.
+ */
+export async function fetchTurnoverTrend(tenantId, months = 6, profileIds = null) {
+  const [profRes, offRes] = await Promise.all([
+    supabase.from('profiles').select('id, join_date, status').eq('tenant_id', tenantId).in('role', STAFF_ROLES),
+    supabase.from('offboarding_processes').select('profile_id, exit_date, last_working_day, status').eq('tenant_id', tenantId).neq('status', 'Cancelled'),
+  ]);
+  const inScope = (id) => !profileIds || profileIds.has(id);
+  const profiles = (profRes.data || []).filter((p) => inScope(p.id));
+  const exitOn = {};
+  (offRes.data || []).forEach((o) => {
+    if (!inScope(o.profile_id)) return;
+    const d = o.last_working_day || o.exit_date;
+    if (d && (!exitOn[o.profile_id] || d > exitOn[o.profile_id])) exitOn[o.profile_id] = d;
+  });
+
+  // Headcount on a date: joined by then and not yet exited. Inactive
+  // profiles with no offboarding record have no known exit date, so they're
+  // left out rather than guessed at.
+  const headcountOn = (day) => profiles.filter((p) => {
+    if (!p.join_date || p.join_date > day) return false;
+    const ex = exitOn[p.id];
+    if (ex) return ex >= day;
+    return p.status === 'Active';
+  }).length;
+
+  const pad = (n) => String(n).padStart(2, '0');
+  const now = new Date();
+  const trend = [];
+  for (let i = months - 1; i >= 0; i--) {
+    const y = new Date(now.getFullYear(), now.getMonth() - i, 1).getFullYear();
+    const m = new Date(now.getFullYear(), now.getMonth() - i, 1).getMonth();
+    const start = `${y}-${pad(m + 1)}-01`;
+    const end = `${y}-${pad(m + 1)}-${pad(new Date(y, m + 1, 0).getDate())}`;
+    const leavers = Object.values(exitOn).filter((d) => d >= start && d <= end).length;
+    const joiners = profiles.filter((p) => p.join_date && p.join_date >= start && p.join_date <= end).length;
+    const avgHead = (headcountOn(start) + headcountOn(end)) / 2;
+    trend.push({
+      label: new Date(y, m, 1).toLocaleDateString('en-IN', { month: 'short' }),
+      leavers,
+      joiners,
+      rate: avgHead > 0 ? Math.round((leavers / avgHead) * 1000) / 10 : 0,
+    });
+  }
+  return { data: trend, error: profRes.error || offRes.error };
 }

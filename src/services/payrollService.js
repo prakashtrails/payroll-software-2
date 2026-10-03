@@ -1,5 +1,5 @@
 import { supabase } from '@/lib/supabase';
-import { calcSalary, calcPfEsic, calcOtPay, calcTds, HIGH_SALARY_THRESHOLD, fullName } from '@/lib/helpers';
+import { calcSalary, calcPfEsic, buildPfStatutoryInfo, calcOtPay, calcTds, HIGH_SALARY_THRESHOLD, fullName } from '@/lib/helpers';
 
 /** Fetch one payroll run (with all its payslips) for a given month/year and country group. */
 export async function fetchPayroll(tenantId, month, year, countryGroup = 'Compliance') {
@@ -22,9 +22,11 @@ export async function fetchPayroll(tenantId, month, year, countryGroup = 'Compli
  *  - taxSlab: this tenant's active tax_slabs row (see taxService.fetchActiveTaxSlab) — omit to skip TDS.
  *  - declarationsByProfile: { [profile_id]: tax_declarations[] } (see taxService.fetchDeclarationsForTenant).
  *  - salaryAdditions: pending salary_additions rows due this month (see salaryAdditionsService.fetchPendingSalaryAdditions).
+ *  - pfSettings: this tenant's { wageCeiling, rate } (tenant.pf_wage_ceiling / pf_employee_rate,
+ *    see SalaryPage.jsx's Statutory Settings card) — omit to use the statutory defaults (Rs.15,000 / 12%).
  * Employees with `is_withheld` are skipped entirely and returned in `withheld` so the caller can surface them.
  */
-export async function processPayroll({ tenantId, month, year, countryGroup, employees, components, advances, workDays, workDayOverrides, overtimeRequests = [], shiftHours = 8, taxSlab = null, declarationsByProfile = {}, salaryAdditions = [] }) {
+export async function processPayroll({ tenantId, month, year, countryGroup, employees, components, advances, workDays, workDayOverrides, overtimeRequests = [], shiftHours = 8, taxSlab = null, declarationsByProfile = {}, salaryAdditions = [], pfSettings = {} }) {
   const payrollMonth = month + 1;
 
   const withheld = employees.filter((e) => e.is_withheld);
@@ -48,12 +50,17 @@ export async function processPayroll({ tenantId, month, year, countryGroup, empl
     const sal        = calcSalary(emp.ctc || 0, components, workDays, actualDays);
 
     // Apply PF and ESIC statutory deductions if enabled for this employee
-    const pfEsicDeds = calcPfEsic(emp, emp.ctc || 0, actualDays, workDays);
+    const pfEsicDeds = calcPfEsic(emp, emp.ctc || 0, actualDays, workDays, pfSettings);
     pfEsicDeds.forEach((d) => {
       sal.deductions.push(d);
       sal.totalDeduction += d.amount;
       sal.net            -= d.amount;
     });
+
+    // Info-only PF statutory block (UAN, employee/employer contribution) for
+    // the payslip template — null for a non-PF employee, so the payslip
+    // renders the plain (non-PF) layout with no code branching needed there.
+    const pfInfo = buildPfStatutoryInfo(emp, emp.ctc || 0, actualDays, workDays, pfSettings);
 
     // Income tax (TDS) — skipped entirely when no active slab config is passed in.
     const tds = calcTds(emp.ctc || 0, declarationsByProfile[emp.id], taxSlab, actualDays, workDays);
@@ -105,7 +112,7 @@ export async function processPayroll({ tenantId, month, year, countryGroup, empl
       total_deductions:    sal.totalDeduction,
       advance_deduction:   totalAdvDed,
       net_pay:             sal.net - totalAdvDed,
-      breakdown:           { earnings: sal.earnings, deductions: sal.deductions },
+      breakdown:           { earnings: sal.earnings, deductions: sal.deductions, pfInfo },
       advances:            empAdvances,
       salary_addition_ids: empAdditions.map((a) => a.id),
     };

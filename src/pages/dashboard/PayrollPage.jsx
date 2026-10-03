@@ -10,7 +10,7 @@ import { listActiveEmployees } from '@/services/employeeService';
 import { listComponents } from '@/services/salaryService';
 import { listActiveAdvances } from '@/services/advanceService';
 import { fetchAllTenantAttendance } from '@/services/attendanceService';
-import { fmt, monthLabel, calcSalary, calcPfEsic, calcOtPay, calcPayableOvertimeHours, getInitials, getAvatarColor, getWeeklyOffDaysInMonth, calcWeeklyOffSettlement, HIGH_SALARY_THRESHOLD, fullName, scopedToOutlet, currentFinancialYear } from '@/lib/helpers';
+import { fmt, monthLabel, calcSalary, calcPfEsic, calcOtPay, calcPayableOvertimeHours, getInitials, getAvatarColor, getWeeklyOffDaysInMonth, getTenantWeeklyOffDays, calcWeeklyOffSettlement, computeLateDeductionDays, isFullPaidDayStatus, HIGH_SALARY_THRESHOLD, fullName, scopedToOutlet, currentFinancialYear, isRaniwalaTenant, raniwalaPayableOtHours, calcRaniwalaOtPay } from '@/lib/helpers';
 import { fetchApprovedCompOffLeavesForMonth } from '@/services/leaveService';
 import { settleWeeklyOffForMonth, fetchMonthlySettlements } from '@/services/compOffService';
 import { fetchActiveTaxSlab, fetchDeclarationsForTenant } from '@/services/taxService';
@@ -23,7 +23,7 @@ function isCompliance(emp) {
 
 export default function RunPayrollPage() {
   const { tenant, profile } = useAuth();
-  const { outletProfileIds } = useOutletView();
+  const { outlets, outletProfileIds } = useOutletView();
   const isManager = profile?.role === 'manager';
   const [payrollMonth, setPayrollMonth]                     = useState(new Date().getMonth());
   const [payrollYear,  setPayrollYear]                      = useState(new Date().getFullYear());
@@ -102,10 +102,15 @@ export default function RunPayrollPage() {
         // fallbacks (below, and in processPayroll) apply the full month.
         if (empAtt.length === 0) return;
         let days = 0;
+        let lateCount = 0;
         empAtt.forEach(a => {
-          if (a.status === 'Present' || a.status === 'Late') days += 1;
+          if (isFullPaidDayStatus(a.status)) days += 1;
           else if (a.status === 'Half Day') days += 0.5;
+          if (a.status === 'Late') lateCount += 1;
         });
+        // Late-arrival-count deduction ladder, on top of the day-level tally
+        // above — opt-in per tenant (see computeLateDeductionDays).
+        days = Math.max(0, days - computeLateDeductionDays(lateCount, tenant));
         overrides[emp.id] = days;
       });
       setWorkDayOverrides(overrides);
@@ -148,9 +153,25 @@ export default function RunPayrollPage() {
       // For each day where total_hours > shift_hours, accumulate the extra minutes
       // then convert to payable rounded hours.
       const autoOtRequests = [];
+      const raniwala = isRaniwalaTenant(tenant);
       emps.forEach(emp => {
-        if ((emp.ctc || 0) >= HIGH_SALARY_THRESHOLD) return;
+        // Opt-in per employee ("Apply overtime" on the employee form).
+        if (!emp.overtime_applicable) return;
         const empAtt = attendanceRaw.filter(a => a.profile_id === emp.id);
+        // Raniwala: HR's tick alone decides eligibility (no salary cutoff), and
+        // each day's extra time is slabbed on its own — see raniwalaPayableOtHours.
+        if (raniwala) {
+          const payableHours = empAtt.reduce((sum, a) => sum + raniwalaPayableOtHours(a.total_hours), 0);
+          if (payableHours > 0) {
+            autoOtRequests.push({
+              profile_id:     emp.id,
+              overtime_hours: payableHours,
+              overtime_pay:   calcRaniwalaOtPay(emp.ctc || 0, workDays, payableHours),
+            });
+          }
+          return;
+        }
+        if ((emp.ctc || 0) >= HIGH_SALARY_THRESHOLD) return;
         let totalOtMinutes = 0;
         empAtt.forEach(a => {
           if ((a.status === 'Present' || a.status === 'Late') && Number(a.total_hours) > shiftHrs) {
@@ -182,29 +203,46 @@ export default function RunPayrollPage() {
         taxSlab,
         declarationsByProfile,
         salaryAdditions:  pendingAdditions,
+        pfSettings:       { wageCeiling: tenant?.pf_wage_ceiling, rate: tenant?.pf_employee_rate },
       });
       setLastWithheld(withheld || []);
 
-      // Run comp off settlement for high-salary employees in this group
-      const weeklyOffDay = tenant?.weekly_off_day ?? 0;
-      const woDays       = getWeeklyOffDaysInMonth(payrollYear, payrollMonth, weeklyOffDay);
-      const highSalEmps  = emps.filter(e => (e.ctc || 0) >= HIGH_SALARY_THRESHOLD);
-      if (highSalEmps.length > 0 && woDays.length > 0) {
-        const settlementInput = highSalEmps.map(emp => {
-          const empAtt     = attendanceRaw.filter(a => a.profile_id === emp.id);
-          const workedWOs  = woDays.filter(d =>
-            empAtt.some(a => a.date === d && (a.status === 'Present' || a.status === 'Late'))
-          ).length;
-          const compLeavesUsed = compOffLeaves[emp.id] || 0;
-          return {
-            profileId: emp.id,
-            totalWOs:  woDays.length,
-            workedWOs,
-            compLeavesUsed,
-            settlement: calcWeeklyOffSettlement(workedWOs, woDays.length, compLeavesUsed),
-          };
-        });
-        await settleWeeklyOffForMonth(tenant.id, payrollMonth, payrollYear, settlementInput);
+      // Run comp off settlement for high-salary employees in this group.
+      // Skipped entirely when the tenant has the real-time per-instance
+      // comp-off grant on (attendanceService.js clockIn / essl-punch) — that
+      // mechanism already credits every worked weekly-off as it happens, so
+      // running this month-end settlement too would double-credit.
+      if (!tenant?.auto_comp_off_on_weekly_off_worked) {
+        const outletById = Object.fromEntries(outlets.map(o => [o.id, o]));
+        const highSalEmps = emps.filter(e => (e.ctc || 0) >= HIGH_SALARY_THRESHOLD);
+        if (highSalEmps.length > 0) {
+          const settlementInput = highSalEmps.map(emp => {
+            // Each employee's own outlet may override the tenant-wide weekly
+            // off days (e.g. Raniwala's Delhi outlet is off Monday while
+            // Office/Factory are off Sunday) — resolve per employee rather
+            // than once for the whole tenant.
+            const weeklyOffDays = getTenantWeeklyOffDays(tenant, outletById[emp.outlet_id]);
+            const woDays        = getWeeklyOffDaysInMonth(payrollYear, payrollMonth, weeklyOffDays);
+            const empAtt     = attendanceRaw.filter(a => a.profile_id === emp.id);
+            // 'Comp Off' is excluded here on purpose — that status means the
+            // employee is spending an already-earned comp-off, not earning a
+            // new one by working the day.
+            const workedWOs  = woDays.filter(d =>
+              empAtt.some(a => a.date === d && ['Present', 'Late', 'Travel', 'Show Visit'].includes(a.status))
+            ).length;
+            const compLeavesUsed = compOffLeaves[emp.id] || 0;
+            return {
+              profileId: emp.id,
+              totalWOs:  woDays.length,
+              workedWOs,
+              compLeavesUsed,
+              settlement: calcWeeklyOffSettlement(workedWOs, woDays.length, compLeavesUsed),
+            };
+          }).filter(s => s.totalWOs > 0);
+          if (settlementInput.length > 0) {
+            await settleWeeklyOffForMonth(tenant.id, payrollMonth, payrollYear, settlementInput);
+          }
+        }
       }
 
       const withheldNote = withheld?.length ? ` — ${withheld.length} employee${withheld.length > 1 ? 's' : ''} skipped (withheld)` : '';
@@ -319,6 +357,7 @@ export default function RunPayrollPage() {
               components={components}
               advances={advances}
               isManager={isManager}
+              pfSettings={{ wageCeiling: tenant?.pf_wage_ceiling, rate: tenant?.pf_employee_rate }}
               onProcess={() => handleProcess('Compliance')}
               onRevert={() => handleRevert('Compliance')}
               onExport={() => exportCSV('Compliance')}
@@ -341,6 +380,7 @@ export default function RunPayrollPage() {
               components={components}
               advances={advances}
               isManager={isManager}
+              pfSettings={{ wageCeiling: tenant?.pf_wage_ceiling, rate: tenant?.pf_employee_rate }}
               onProcess={() => handleProcess('Non-Compliance')}
               onRevert={() => handleRevert('Non-Compliance')}
               onExport={() => exportCSV('Non-Compliance')}
@@ -371,7 +411,7 @@ export default function RunPayrollPage() {
 function PayrollSection({
   title, subtitle, group, emps, processed, processing,
   workDays, workDayOverrides, setWorkDayOverrides,
-  components, advances, isManager,
+  components, advances, isManager, pfSettings,
   onProcess, onRevert, onExport, onExportGL, onExportBank, onViewSlip,
 }) {
   const { outletProfileIds } = useOutletView();
@@ -477,7 +517,7 @@ function PayrollSection({
                 emps.map((e) => {
                   const actualDays  = workDayOverrides[e.id] ?? workDays;
                   const sal         = calcSalary(e.ctc || 0, components, workDays, actualDays);
-                  const pfEsicDeds  = calcPfEsic(e, e.ctc || 0, actualDays, workDays);
+                  const pfEsicDeds  = calcPfEsic(e, e.ctc || 0, actualDays, workDays, pfSettings);
                   const pfEsicTotal = pfEsicDeds.reduce((s, d) => s + d.amount, 0);
                   const advDed      = advances.filter((a) => a.profile_id === e.id).reduce((s, a) => s + Math.min(a.emi, a.balance), 0);
                   return (

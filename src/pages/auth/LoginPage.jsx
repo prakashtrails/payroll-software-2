@@ -4,7 +4,7 @@ import { useNavigate, Link } from 'react-router-dom';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/context/AuthContext';
 import { detectIdentifierType } from '@/services/otpService';
-import { phoneToPlaceholderEmail } from '@/lib/helpers';
+import { phoneToPlaceholderEmail, friendlyErrorMessage } from '@/lib/helpers';
 import { fetchTodayHoliday } from '@/services/holidayService';
 import HolidayCelebration from '@/components/HolidayCelebration';
 import {
@@ -59,7 +59,7 @@ function PasswordLoginForm({ onSuccess, onForgotPassword }) {
       await signIn(loginId, password);
       onSuccess();
     } catch (err) {
-      setError(err.message || 'Invalid email/phone or password.');
+      setError(friendlyErrorMessage(err, 'Invalid email/phone or password.'));
     } finally {
       setSubmitting(false);
     }
@@ -151,7 +151,7 @@ function ForgotPasswordModal({ show, onClose }) {
       setSuccess('If this email exists, password reset instructions have been sent.');
       setIdentifier('');
     } catch (err) {
-      setError(err.message || 'Failed to send reset instructions.');
+      setError(friendlyErrorMessage(err, 'Failed to send reset instructions.'));
     } finally {
       setLoading(false);
     }
@@ -250,7 +250,7 @@ function OtpLoginForm({ onSuccess }) {
       else if (err.message?.includes('rate'))
         setError('Too many attempts. Please wait and try again.');
       else
-        setError(err.message||'Failed to send OTP. Please try again.');
+        setError(friendlyErrorMessage(err, 'Failed to send OTP. Please try again.'));
     } finally { setSending(false); }
   }, [identifier, idType, sendOtp]);
 
@@ -268,7 +268,7 @@ function OtpLoginForm({ onSuccess }) {
       else if (err.message?.includes('invalid'))
         setError('Incorrect OTP. Please try again.');
       else
-        setError(err.message||'Verification failed. Please try again.');
+        setError(friendlyErrorMessage(err, 'Verification failed. Please try again.'));
     } finally { setVerifying(false); }
   }, [otp, resolvedId, idType, verifyOtp, onSuccess]);
 
@@ -352,7 +352,7 @@ export default function LoginPage() {
       return;
     }
 
-    fetchTodayHoliday(tenant.id).then(({ data }) => {
+    fetchTodayHoliday(tenant.id, profile.outlet_id).then(({ data }) => {
       if (data) setLoginCelebration({ holiday: data, dest });
       else navigate(dest, { replace: true });
     });

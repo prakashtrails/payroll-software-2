@@ -19,8 +19,8 @@ const ALREADY_EXISTS_RE = /already.{0,15}registered|already in use|already exist
 // passing `profileData.role: "superadmin"` in the request body.
 const ASSIGNABLE_ROLES: Record<string, string[]> = {
   manager: ["employee", "manager"],
-  admin: ["employee", "manager", "admin"],
-  superadmin: ["employee", "manager", "admin", "superadmin"],
+  admin: ["employee", "manager", "hod", "management", "admin"],
+  superadmin: ["employee", "manager", "hod", "management", "admin", "superadmin"],
 };
 
 serve(async (req) => {
@@ -157,6 +157,7 @@ serve(async (req) => {
       phone: profileData.phone || "",
       department: profileData.department || "",
       designation: profileData.designation || "",
+      division: profileData.division || "",
       ctc: profileData.ctc || 0,
       join_date: profileData.join_date || null,
       date_of_birth: profileData.date_of_birth || null,

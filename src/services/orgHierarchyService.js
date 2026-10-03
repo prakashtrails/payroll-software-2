@@ -7,8 +7,8 @@ import { supabase } from '@/lib/supabase';
  */
 export async function getOrgTree(tenantId) {
   const { data, error } = await supabase
-    .from('profiles')
-    .select('id, first_name, middle_name, last_name, role, department, designation, manager_id')
+    .from('profile_directory')
+    .select('id, first_name, middle_name, last_name, employee_id, role, department, designation, outlet_location, manager_id')
     .eq('tenant_id', tenantId)
     .eq('status', 'Active')
     .order('first_name');
@@ -27,6 +27,22 @@ export async function setDirectManager(profileId, managerId) {
     p_manager_id: managerId,
   });
   return { error };
+}
+
+/**
+ * Flat list of a tenant's active employees with their outlet/division/
+ * department, for the outlet-wise structure explorer (OutletOrgExplorer) —
+ * a physical-location drill-down (Outlet → Division → Department → Person),
+ * distinct from the manager_id reporting tree above.
+ */
+export async function getOutletOrgEmployees(tenantId) {
+  const { data, error } = await supabase
+    .from('profile_directory')
+    .select('id, first_name, middle_name, last_name, role, department, designation, division, outlet_id')
+    .eq('tenant_id', tenantId)
+    .eq('status', 'Active')
+    .order('first_name');
+  return { data: data || [], error };
 }
 
 /**

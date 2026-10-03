@@ -4,10 +4,15 @@ import Modal from '@/components/Modal';
 import { showToast } from '@/components/Toast';
 import { useAuth } from '@/context/AuthContext';
 import { listMySpecialRequests, submitSpecialRequest } from '@/services/specialRequestService';
-import { fetchMyQuota } from '@/services/requestQuotaService';
+import { fetchMyQuota, SELF_LIMIT } from '@/services/requestQuotaService';
 import { fmt, todayStr, calcPayableOvertimeHours, calcOtPay } from '@/lib/helpers';
 
-function QuotaBanner({ quota }) {
+// Nothing to show once the company has turned auto-approval off entirely —
+// every request just goes through the normal review chain, so a "self/manager
+// quota" banner would be misleading noise rather than useful information.
+function QuotaBanner({ quota, autoApprovalEnabled }) {
+  if (!autoApprovalEnabled) return null;
+
   const { selfUsed, selfLimit, managerUsed, managerLimit } = quota;
   const selfLeft    = selfLimit    - selfUsed;
   const managerLeft = managerLimit - managerUsed;
@@ -75,6 +80,9 @@ export default function MySpecialRequestsPage() {
   const [filter, setFilter] = useState('Pending');
   const [quota, setQuota] = useState(null);
 
+  const autoApprovalEnabled = tenant?.special_auto_approval_enabled !== false;
+  const autoApprovalLimit   = tenant?.special_auto_approval_limit ?? SELF_LIMIT;
+
   const fetchRequests = useCallback(async () => {
     if (!profile) return;
     setLoading(true);
@@ -89,9 +97,9 @@ export default function MySpecialRequestsPage() {
 
   const loadQuota = useCallback(async () => {
     if (!profile || !tenant) return;
-    const q = await fetchMyQuota(tenant.id, profile.id);
+    const q = await fetchMyQuota(tenant.id, profile.id, autoApprovalEnabled ? autoApprovalLimit : 0);
     setQuota(q);
-  }, [profile, tenant]);
+  }, [profile, tenant, autoApprovalEnabled, autoApprovalLimit]);
 
   useEffect(() => { fetchRequests(); loadQuota(); }, [fetchRequests, loadQuota]);
 
@@ -137,7 +145,7 @@ export default function MySpecialRequestsPage() {
         overtime_pay:     storedOtPay,
       };
 
-      const { error, tier } = await submitSpecialRequest(payload);
+      const { error, tier } = await submitSpecialRequest(payload, { autoApprovalEnabled, autoApprovalLimit });
       if (error) {
         showToast(error.message || 'Failed to submit request', 'error');
       } else {
@@ -175,7 +183,7 @@ export default function MySpecialRequestsPage() {
         }
       />
 
-      {quota && <QuotaBanner quota={quota} />}
+      {quota && <QuotaBanner quota={quota} autoApprovalEnabled={autoApprovalEnabled} />}
 
       <div className="card" style={{ marginTop: 8 }}>
         <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>

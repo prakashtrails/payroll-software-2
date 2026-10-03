@@ -47,8 +47,10 @@ export default function RegularizeAttendancePage() {
     if (!tenant) return;
     setLoading(true);
     try {
-      // Manager only sees requests routed to their level; admin sees all
-      const { data, error } = await listRegularizeRequests(tenant.id, isManager ? 'manager' : null);
+      // Everyone sees every regularize request tenant-wide (any status, any
+      // approval tier) so managers stay aware of auto-approved / admin-approved
+      // requests too -- only the ability to act on one is role-gated below.
+      const { data, error } = await listRegularizeRequests(tenant.id);
       if (error) showToast(error.message, 'error');
       else setRequests(scopedToOutlet(data, outletProfileIds));
     } finally {
@@ -264,7 +266,9 @@ export default function RegularizeAttendancePage() {
 
                       {/* Reviewed by — name + role tag */}
                       <td>
-                        {rev ? (
+                        {req.approval_level === 'self' ? (
+                          <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>Auto-approved</span>
+                        ) : rev ? (
                           <div>
                             <div style={{ fontSize: 13, fontWeight: 500 }}>{rev.name}</div>
                             <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{rev.role}</div>
@@ -281,7 +285,7 @@ export default function RegularizeAttendancePage() {
 
                       {/* Actions */}
                       <td>
-                        {req.status === 'Pending' && (
+                        {req.status === 'Pending' && (!isManager || req.required_approver_role === 'manager') && (
                           <div style={{ display: 'flex', gap: 4 }}>
                             <button
                               className="btn btn-sm btn-success"
@@ -302,6 +306,11 @@ export default function RegularizeAttendancePage() {
                               <i className="fas fa-times" />
                             </button>
                           </div>
+                        )}
+                        {req.status === 'Pending' && isManager && req.required_approver_role !== 'manager' && (
+                          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                            Awaiting {req.required_approver_role === 'admin' ? 'HR' : req.required_approver_role}
+                          </span>
                         )}
                       </td>
                     </tr>

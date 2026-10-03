@@ -48,6 +48,7 @@ export default function GlobalSearch() {
 
   const matchedEmployees = (!canSearchEmployees || q.length === 0) ? [] : employees.filter((e) =>
     fullName(e).toLowerCase().includes(q) || (e.department || '').toLowerCase().includes(q) || (e.email || '').toLowerCase().includes(q)
+    || (e.employee_id || '').toLowerCase().includes(q) || (e.essl_employee_code || '').toLowerCase().includes(q)
   ).slice(0, 5);
 
   if (!profile) return null;
@@ -68,7 +69,9 @@ export default function GlobalSearch() {
     // "All Outlets" guarantees the person search just found is actually there.
     if (role === 'admin') selectOutlet(null);
     const target = role === 'manager' ? '/manager-employees' : '/employees';
-    navigate(`${target}?q=${encodeURIComponent(fullName(emp))}`);
+    // The EMP CODE is unique, so searching by it lands on exactly this person
+    // (a name can be shared); fall back to the name when there's no code.
+    navigate(`${target}?q=${encodeURIComponent(emp.employee_id || fullName(emp))}`);
   };
 
   const hasResults = matchedActions.length > 0 || matchedEmployees.length > 0;
@@ -86,7 +89,7 @@ export default function GlobalSearch() {
           onChange={(e) => { setQuery(e.target.value); setOpen(true); }}
           onFocus={() => setOpen(true)}
           onKeyDown={(e) => { if (e.key === 'Escape') { setOpen(false); e.currentTarget.blur(); } }}
-          placeholder={canSearchEmployees ? 'Search actions & employees…' : 'Search actions…'}
+          placeholder={canSearchEmployees ? 'Search actions, employees or EMP code…' : 'Search actions…'}
           className="global-search-input"
           style={{
             width: '100%', padding: '8px 12px 8px 32px', borderRadius: 20, border: '1px solid var(--border)',
@@ -122,7 +125,7 @@ export default function GlobalSearch() {
                       </span>
                       <div style={{ minWidth: 0 }}>
                         <div style={{ fontSize: 13, color: '#fff', fontWeight: 600 }}>{fullName(e)}</div>
-                        <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.5)' }}>{e.department || 'No department'}</div>
+                        <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.5)' }}>{[e.employee_id, e.department || 'No department'].filter(Boolean).join(' · ')}</div>
                       </div>
                     </button>
                   ))}

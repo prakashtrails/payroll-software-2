@@ -15,7 +15,7 @@ export async function listMyGrievances(profileId) {
 export async function listTenantGrievances(tenantId) {
   const { data, error } = await supabase
     .from('grievances')
-    .select('*, profile:profiles!grievances_profile_id_fkey(first_name, middle_name, last_name, department)')
+    .select('*, profile:profile_directory!grievances_profile_id_fkey(first_name, middle_name, last_name, department)')
     .eq('tenant_id', tenantId)
     .order('created_at', { ascending: false });
   return { data: data || [], error };

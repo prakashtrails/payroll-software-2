@@ -11,12 +11,21 @@ const LINKS = {
   travel_requests:         { admin: '/travel-requests',    manager: '/travel-requests',            employee: '/travel-requests' },
   headcount_requests:      { admin: '/headcount-requests', manager: '/headcount-requests',         employee: '/headcount-requests' },
   grievances:              { admin: '/grievances',         manager: '/grievances',                 employee: '/grievances' },
+  punch_approvals:         { admin: '/punch-approvals',    manager: '/manager-punch-approvals' },
   attendance:              { admin: '/attendance',         manager: '/manager-attendance',         employee: '/my-attendance' },
   announcements:           { admin: '/announcements',      manager: '/announcements',              employee: '/announcements' },
+  policies:                { admin: '/policies',           manager: '/policies',                   employee: '/policies' },
+  performance:             { admin: '/performance',        manager: '/performance',                employee: '/performance' },
+  // Employee side (submitting/viewing their own requests) is mobile-app-only —
+  // no web route exists for them, so there's deliberately no `employee` entry here.
+  verification_requests:   { admin: '/verification-requests', manager: '/manager-verification-requests' },
+  // Same page for every role; `param` deep-links to the notification's related_id.
+  tasks:                   { admin: '/tasks', manager: '/tasks', employee: '/tasks', param: 'task' },
 };
 
-export function resolveNotificationLink(linkKey, role) {
+export function resolveNotificationLink(linkKey, role, relatedId = null) {
   const entry = LINKS[linkKey];
   if (!entry) return null;
-  return entry[role] || entry.employee || null;
+  const href = entry[role] || ((role === 'hod' || role === 'management') ? entry.manager : null) || entry.employee || null;
+  return href && entry.param && relatedId ? `${href}?${entry.param}=${relatedId}` : href;
 }

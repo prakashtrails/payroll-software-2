@@ -27,7 +27,12 @@ export async function listFeatures() {
  * show up yet, not that the whole toggle page should break.
  */
 export async function syncFeatureRegistry() {
-  const { error } = await supabase.from('features').upsert(FEATURE_REGISTRY, { onConflict: 'key' });
+  // Every row in one upsert request needs the same shape — default
+  // is_premium: false explicitly so entries that don't set it (everything
+  // except premium features like 'live_tracking') don't send a bare null
+  // into the NOT NULL is_premium column.
+  const rows = FEATURE_REGISTRY.map((f) => ({ is_premium: false, ...f }));
+  const { error } = await supabase.from('features').upsert(rows, { onConflict: 'key' });
   if (error) console.error('syncFeatureRegistry failed:', error.message);
   return { error };
 }
@@ -43,17 +48,22 @@ export async function listCompanyFeatureToggles(tenantId) {
 
 /**
  * Resolves whether a feature is enabled for a given outlet, falling back to
- * the company-wide override, falling back to enabled-by-default — mirrors
+ * the company-wide override, falling back to `defaultEnabled` — mirrors
  * resolveAttendanceSettings()'s outlet-then-tenant fallback in tenantService.js.
+ * `defaultEnabled` is true for every ordinary feature (unchanged behavior —
+ * a tenant with zero rows in company_feature_toggles keeps 100% of today's
+ * functionality) and false for a premium feature (features.is_premium), so a
+ * brand-new premium feature ships off for every existing tenant and has to
+ * be explicitly turned on per tenant from Toggle Services.
  */
-export function resolveFeatureState(toggles, featureKey, outletId) {
+export function resolveFeatureState(toggles, featureKey, outletId, defaultEnabled = true) {
   if (outletId) {
     const outletRow = toggles.find((t) => t.feature_key === featureKey && t.outlet_id === outletId);
     if (outletRow) return outletRow.enabled;
   }
   const companyRow = toggles.find((t) => t.feature_key === featureKey && t.outlet_id === null);
   if (companyRow) return companyRow.enabled;
-  return true;
+  return defaultEnabled;
 }
 
 /**
@@ -92,6 +102,26 @@ export async function setFeatureToggle(tenantId, outletId, featureKey, enabled, 
     updated_by: updatedBy || null,
   }]);
   return { error };
+}
+
+/**
+ * One-off lookup of a single feature's enabled state for one outlet, for
+ * call sites that only care about that one feature and don't already hold
+ * the full toggles list the way Toggle Services / FeatureContext do (e.g.
+ * attendanceService.js's clock-in/out geofence check, useGeofenceClock).
+ * Same outlet-then-company-then-default fallback as resolveFeatureState().
+ * Fails open (returns defaultEnabled) on a query error, same philosophy as
+ * "not configured" elsewhere in the geofence code.
+ */
+export async function isFeatureEnabledForOutlet(tenantId, outletId, featureKey, defaultEnabled = true) {
+  if (!tenantId) return defaultEnabled;
+  const { data, error } = await supabase
+    .from('company_feature_toggles')
+    .select('outlet_id, enabled, feature_key')
+    .eq('tenant_id', tenantId)
+    .eq('feature_key', featureKey);
+  if (error) return defaultEnabled;
+  return resolveFeatureState(data || [], featureKey, outletId, defaultEnabled);
 }
 
 /** Removes an override, resetting that scope back to "inherit". */

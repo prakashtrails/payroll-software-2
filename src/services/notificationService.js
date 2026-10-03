@@ -67,7 +67,8 @@ export async function notifyProfiles(tenantId, profileIds, { type, title, body =
 export async function notifyRoles(tenantId, roles, opts, excludeProfileId = null) {
   if (!tenantId || !roles?.length) return;
 
-  let query = supabase.from('profiles').select('id').eq('tenant_id', tenantId).in('role', roles);
+  // profile_directory, not profiles: employees can only read their own profiles row.
+  let query = supabase.from('profile_directory').select('id').eq('tenant_id', tenantId).in('role', roles);
   if (excludeProfileId) query = query.neq('id', excludeProfileId);
 
   const { data, error } = await query;
@@ -93,7 +94,7 @@ export const withHrRole = (roles) => [...new Set([...(roles || []), 'admin'])];
  */
 export async function getRequesterLabel(profileId) {
   const { data } = await supabase
-    .from('profiles')
+    .from('profile_directory')
     .select('first_name, middle_name, last_name, outlet_location')
     .eq('id', profileId)
     .maybeSingle();
@@ -106,7 +107,7 @@ export async function getRequesterLabel(profileId) {
 export async function notifyTenant(tenantId, opts, excludeProfileId = null) {
   if (!tenantId) return;
 
-  let query = supabase.from('profiles').select('id').eq('tenant_id', tenantId);
+  let query = supabase.from('profile_directory').select('id').eq('tenant_id', tenantId);
   if (excludeProfileId) query = query.neq('id', excludeProfileId);
 
   const { data, error } = await query;

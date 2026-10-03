@@ -175,6 +175,21 @@ export default function MyPayslipsPage() {
                     <Amt value={slip.net_pay} show={showAmounts} />
                   </span>
                 </div>
+
+                {breakdown.pfInfo && (
+                  <div style={{ marginTop: 16, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 8, padding: '10px 14px' }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>Statutory Details (PF)</div>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4, fontSize: 12 }}>
+                      <div><span style={{ color: 'var(--text-muted)' }}>PF/UAN Number:</span> <strong>{breakdown.pfInfo.pfNumber || '—'}</strong></div>
+                      <div><span style={{ color: 'var(--text-muted)' }}>PF Wage Ceiling:</span> <strong>{fmt(breakdown.pfInfo.wageCeiling)}</strong></div>
+                      <div><span style={{ color: 'var(--text-muted)' }}>Employee Contribution:</span> <strong><Amt value={breakdown.pfInfo.employeeContribution} show={showAmounts} /></strong></div>
+                      <div><span style={{ color: 'var(--text-muted)' }}>Employer Contribution:</span> <strong><Amt value={breakdown.pfInfo.employerContribution} show={showAmounts} /></strong></div>
+                    </div>
+                    <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 6 }}>
+                      Employer contribution is shown for information only — it is not deducted from your pay.
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           </div>

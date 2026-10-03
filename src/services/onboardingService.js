@@ -21,7 +21,7 @@ export async function deleteChecklistItem(id) {
 export async function listProcesses(tenantId) {
   const { data, error } = await supabase
     .from('onboarding_processes')
-    .select('*, profile:profiles!onboarding_processes_profile_id_fkey(first_name, middle_name, last_name, department), tasks:onboarding_process_tasks(id, title, category, status)')
+    .select('*, profile:profile_directory!onboarding_processes_profile_id_fkey(first_name, middle_name, last_name, department), tasks:onboarding_process_tasks(id, title, category, status)')
     .eq('tenant_id', tenantId)
     .order('created_at', { ascending: false });
   return { data: data || [], error };

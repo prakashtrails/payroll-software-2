@@ -112,7 +112,7 @@ export default function AllEmployeesPage() {
           </select>
           <input
             className="form-input"
-            placeholder="🔍 Search name, email, department…"
+            placeholder="🔍 Search name, EMP code, email, department…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             style={{ minWidth: 220 }}

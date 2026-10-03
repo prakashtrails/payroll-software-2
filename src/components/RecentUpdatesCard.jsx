@@ -3,10 +3,10 @@ import { Link } from 'react-router-dom';
 import { timeAgo } from '@/lib/helpers';
 
 /** Generic "recent updates" feed — announcements, policies, KRAs, PIPs, etc. See activityFeedService.js. */
-export default function RecentUpdatesCard({ items, loading }) {
+export default function RecentUpdatesCard({ items, loading, title = 'Recent Updates', emptyText = 'Announcements, KRAs, and PIPs will appear here.' }) {
   return (
     <div className="card">
-      <div className="card-header"><h3>Recent Updates</h3></div>
+      <div className="card-header"><h3>{title}</h3></div>
       <div className="card-body">
         {loading ? (
           <div style={{ padding: '20px 0', textAlign: 'center' }}>
@@ -16,7 +16,7 @@ export default function RecentUpdatesCard({ items, loading }) {
           <div className="empty-state">
             <i className="fas fa-bullhorn empty-icon" />
             <h3>No updates yet</h3>
-            <p>Announcements, KRAs, and PIPs will appear here.</p>
+            <p>{emptyText}</p>
           </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>

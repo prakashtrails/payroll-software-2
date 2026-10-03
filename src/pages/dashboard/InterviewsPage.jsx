@@ -8,7 +8,7 @@ import {
   scheduleInterview, updateInterviewStatus, submitInterviewFeedback,
   uploadPiqForm, getPiqFormUrl, attachPiqForm, rejectInterview,
 } from '@/services/hiringService';
-import { listActiveEmployees } from '@/services/employeeService';
+import { listColleagues } from '@/services/employeeService';
 import { fullName } from '@/lib/helpers';
 
 const SKILLS = ['communication', 'technical', 'culture_fit'];
@@ -37,7 +37,7 @@ export default function InterviewsPage() {
     setLoading(true);
     try {
       if (canManage) {
-        const [refRes, empRes] = await Promise.all([listAllReferrals(tenant.id), listActiveEmployees(tenant.id)]);
+        const [refRes, empRes] = await Promise.all([listAllReferrals(tenant.id), listColleagues(tenant.id)]);
         setReferrals(refRes.data);
         setEmployees(empRes.data);
       }

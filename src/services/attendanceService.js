@@ -1,7 +1,8 @@
 import { supabase } from '@/lib/supabase';
-import { todayStr, timeStr, diffHours, checkGeofenceMulti, geofenceIsConfigured } from '@/lib/helpers';
+import { todayStr, timeStr, diffHours, checkGeofenceMulti, geofenceIsConfigured, computeEarlyLateBreach } from '@/lib/helpers';
 import { getOrCreateQuota, determineApproverRole, incrementSelfCount, incrementManagerCount, SELF_LIMIT } from './requestQuotaService';
-import { resolveAttendanceSettings, listAccessibleOutlets } from './tenantService';
+import { resolveAttendanceSettings, listAccessibleOutlets, getOutlet } from './tenantService';
+import { isFeatureEnabledForOutlet } from './featureService';
 import { getApprovedWfhForDate } from './wfhService';
 import { notifyProfiles, notifyRoles, withHrRole, getRequesterLabel } from './notificationService';
 
@@ -29,17 +30,21 @@ export async function clockIn(tenantId, profileId, tenant, locationData = null) 
   // row ready; on conflict (row already exists) it's ignored and the existing
   // row's status/location are left untouched.
   const { data: profile } = await supabase.from('profiles').select('shift_id, outlet_id').eq('id', profileId).single();
-  let shiftStart = tenant?.shift_start || '09:00';
+  const { data: outlet } = await getOutlet(profile?.outlet_id);
+  const attSettings = resolveAttendanceSettings(tenant, outlet);
+  let shiftStart = attSettings.shift_start;
+  let lateMin    = attSettings.late_threshold;
   if (profile?.shift_id) {
     const { data: shift } = await supabase.from('shifts').select('start_time').eq('id', profile.shift_id).single();
     if (shift) shiftStart = shift.start_time;
   }
 
-  const lateMin  = tenant?.late_threshold || 15;
   const [sh, sm] = shiftStart.split(':').map(Number);
   const now      = new Date();
   const diffMin  = (now.getHours() * 60 + now.getMinutes()) - (sh * 60 + sm);
-  const status   = diffMin > lateMin ? 'Late' : 'Present';
+  // Fixed rule, every day of the month: later than Report Time + Late Allowed
+  // minutes is Late, full stop — no monthly grace waiver on top of this.
+  let status     = diffMin > lateMin ? 'Late' : 'Present';
 
   // Authoritative, server-side geofence check for clock-IN. The dashboard already
   // gates this client-side (useGeofenceClock), but a client can't be trusted to
@@ -49,14 +54,20 @@ export async function clockIn(tenantId, profileId, tenant, locationData = null) 
   // Passes if inside ANY of the employee's accessible outlets (home outlet + any
   // extra multi-outlet access grants, or every outlet when the tenant has
   // "allow_any_outlet_clockin" on), not just their single home outlet. Approved
-  // WFH for today lifts the requirement entirely, same as the client.
-  const [{ data: accessibleOutlets }, { data: approvedWfh }] = await Promise.all([
+  // WFH for today lifts the requirement entirely, same as the client. A
+  // superadmin turning the 'geofencing' feature off for this employee's home
+  // outlet (Toggle Services > Geofencing > Scope) lifts it too — mirrors
+  // outlet_geofencing_enabled()/profile_punch_is_inside_geofence() in
+  // 20260918_1_outlet_geofencing_toggle.sql, which enforces the same rule at
+  // the DB layer for the raw INSERT.
+  const [{ data: accessibleOutlets }, { data: approvedWfh }, geofencingOn] = await Promise.all([
     listAccessibleOutlets(profileId, profile?.outlet_id, tenant),
     getApprovedWfhForDate(profileId, today),
+    isFeatureEnabledForOutlet(tenantId, profile?.outlet_id, 'geofencing'),
   ]);
 
   let outOfGeofence = false;
-  if (!approvedWfh && geofenceIsConfigured(accessibleOutlets, tenant)) {
+  if (!approvedWfh && geofencingOn && geofenceIsConfigured(accessibleOutlets, tenant)) {
     if (locationData?.lat == null || locationData?.lng == null) {
       throw new Error('Location is required to clock in. Please allow location access and try again.');
     }
@@ -96,8 +107,12 @@ export async function clockIn(tenantId, profileId, tenant, locationData = null) 
 
   const { error: punchErr } = await supabase
     .from('punches')
-    .insert([{ attendance_id: att.id, punch_time: timeStr(new Date()), punch_type: 'in' }]);
+    .insert([{ attendance_id: att.id, punch_time: timeStr(new Date()), punch_type: 'in', source: 'app' }]);
   if (punchErr) throw punchErr;
+
+  // Comp off for working a weekly off / holiday is credited by the DB
+  // (trg_comp_off_credit_from_hours, 20260928_4) from the day's hours, for
+  // comp-off-eligible employees — nothing to grant here.
 
   await notifyProfiles(tenantId, [profileId], {
     type: 'clock_in',
@@ -123,7 +138,7 @@ export async function clockOut(profileId, locationData = null, { allowOutsideGeo
 
   const { data: att, error: fetchErr } = await supabase
     .from('attendance')
-    .select('id, tenant_id, profile:profiles!attendance_profile_id_fkey(outlet_id)')
+    .select('id, tenant_id, status, profile:profiles!attendance_profile_id_fkey(outlet_id, shift_id)')
     .eq('profile_id', profileId)
     .eq('date', today)
     .maybeSingle();
@@ -132,27 +147,33 @@ export async function clockOut(profileId, locationData = null, { allowOutsideGeo
 
   // Thresholds: the employee's home outlet override, falling back to the tenant default.
   const outletId = att.profile?.outlet_id;
+  const shiftId = att.profile?.shift_id;
   const { data: tenant } = await supabase
     .from('tenants')
     .select('id, min_half_day_hours, min_full_day_hours, geofence_lat, geofence_lng, geofence_radius, allow_any_outlet_clockin')
     .eq('id', att.tenant_id)
     .single();
-  const [{ data: outlet }, { data: accessibleOutlets }, { data: approvedWfh }] = await Promise.all([
+  const [{ data: outlet }, { data: accessibleOutlets }, { data: approvedWfh }, { data: shift }, geofencingOn] = await Promise.all([
     outletId
       ? supabase.from('outlets').select('min_half_day_hours, min_full_day_hours, geofence_lat, geofence_lng, geofence_radius').eq('id', outletId).maybeSingle()
       : Promise.resolve({ data: null }),
     listAccessibleOutlets(profileId, outletId, tenant),
     getApprovedWfhForDate(profileId, today),
+    shiftId
+      ? supabase.from('shifts').select('start_time, end_time, early_departure_after, late_arrival_allowance_until').eq('id', shiftId).maybeSingle()
+      : Promise.resolve({ data: null }),
+    isFeatureEnabledForOutlet(att.tenant_id, outletId, 'geofencing'),
   ]);
 
   // Authoritative, server-side geofence check for clock-OUT — same rule as
-  // clock-IN (see comment there). Previously this only *flagged*
-  // out_of_geofence and let the punch-out through regardless, which meant an
-  // employee could leave the premises and still clock out from anywhere; now
-  // it's rejected outright, same as clock-in, unless this is the automatic
-  // safety-net clock-out (see allowOutsideGeofence doc above).
+  // clock-IN (see comment there, including the 'geofencing' per-outlet
+  // toggle). Previously this only *flagged* out_of_geofence and let the
+  // punch-out through regardless, which meant an employee could leave the
+  // premises and still clock out from anywhere; now it's rejected outright,
+  // same as clock-in, unless this is the automatic safety-net clock-out (see
+  // allowOutsideGeofence doc above).
   let outOfGeofence = false;
-  if (!allowOutsideGeofence && !approvedWfh && geofenceIsConfigured(accessibleOutlets, tenant)) {
+  if (!allowOutsideGeofence && !approvedWfh && geofencingOn && geofenceIsConfigured(accessibleOutlets, tenant)) {
     if (locationData?.lat == null || locationData?.lng == null) {
       throw new Error('Location is required to clock out. Please allow location access and try again.');
     }
@@ -166,7 +187,7 @@ export async function clockOut(profileId, locationData = null, { allowOutsideGeo
   const punchOutTime = timeStr(new Date());
   const { error: punchErr } = await supabase
     .from('punches')
-    .insert([{ attendance_id: att.id, punch_time: punchOutTime, punch_type: 'out' }]);
+    .insert([{ attendance_id: att.id, punch_time: punchOutTime, punch_type: 'out', source: 'app' }]);
   if (punchErr) throw punchErr;
 
   const { data: allPunches, error: allErr } = await supabase
@@ -176,14 +197,21 @@ export async function clockOut(profileId, locationData = null, { allowOutsideGeo
     .order('punch_time');
   if (allErr) throw allErr;
 
-  const ins  = allPunches.filter((p) => p.punch_type === 'in');
-  const outs = allPunches.filter((p) => p.punch_type === 'out');
-  let total  = 0;
-  for (let i = 0; i < ins.length; i++) {
-    if (outs[i]) total += diffHours(ins[i].punch_time, outs[i].punch_time);
-  }
+  // First punch of the day to the last, of EITHER type — not paired in/out
+  // sessions. A double-tap on Clock In/Out, or a mistaken extra clock-in
+  // after already clocking out, is still stored in `punches` above, it just
+  // no longer shifts every later in/out pairing by one slot and skews the
+  // total (mirrors trg_recompute_attendance_from_punches, the actual source
+  // of truth for this employee's own row — see that migration).
+  const sortedTimes = allPunches.map((p) => p.punch_time).sort();
+  const firstPunch = sortedTimes[0];
+  const lastPunch  = sortedTimes[sortedTimes.length - 1];
+  const total = diffHours(firstPunch, lastPunch);
 
-  const { min_half_day_hours: halfMin, min_full_day_hours: fullMin } = resolveAttendanceSettings(tenant, outlet);
+  const {
+    min_half_day_hours: halfMin, min_full_day_hours: fullMin,
+    shift_start: resolvedShiftStart, shift_end: resolvedShiftEnd,
+  } = resolveAttendanceSettings(tenant, outlet);
 
   let status = 'Absent';
   if (total >= fullMin) {
@@ -191,12 +219,74 @@ export async function clockOut(profileId, locationData = null, { allowOutsideGeo
   } else if (total >= halfMin) {
     status = 'Half Day';
   }
+  // A day that was already marked 'Late' at clock-in stays 'Late' once the
+  // employee has put in a full day's hours — clocking out must never quietly
+  // erase the late arrival. A short day (Half Day/Absent) still wins, since
+  // leaving early on top of arriving late is a bigger problem than either alone.
+  if (att.status === 'Late' && status === 'Present') {
+    status = 'Late';
+  }
+
+  // One-time-per-calendar-month allowance for an extreme early departure or
+  // extreme late arrival (per-shift, opt-in via shifts.early_departure_after /
+  // late_arrival_allowance_until). The first breach in the month keeps the
+  // status computed above; any further breach forces Half Day.
+  let allowanceUsed = false;
+  const toMin = (t) => { const [h, m] = t.split(':').map(Number); return h * 60 + m; };
+  const isEarlyDeparture = !!(shift?.early_departure_after && toMin(lastPunch) < toMin(shift.early_departure_after));
+  const isExtremeLateArrival = !!(shift?.late_arrival_allowance_until && toMin(firstPunch) > toMin(shift.late_arrival_allowance_until));
+  if ((isEarlyDeparture || isExtremeLateArrival) && status !== 'Absent') {
+    const monthStart = `${today.slice(0, 7)}-01`;
+    const { count: allowanceCount } = await supabase
+      .from('attendance')
+      .select('id', { count: 'exact', head: true })
+      .eq('profile_id', profileId)
+      .eq('monthly_allowance_used', true)
+      .gte('date', monthStart)
+      .lte('date', today);
+    if (!allowanceCount) {
+      allowanceUsed = true;
+    } else {
+      status = 'Half Day';
+    }
+  }
+
+  // Early Left / Late Arrival monthly-grace counter — independent, additive,
+  // visibility-only (see computeEarlyLateBreach doc). The employee's own
+  // shift override, falling back to the outlet/tenant resolution, gives the
+  // shift boundaries the 90-minute rule is measured against.
+  const effectiveShiftStart = shift?.start_time || resolvedShiftStart;
+  const effectiveShiftEnd   = shift?.end_time   || resolvedShiftEnd;
+  let earlyLateFlag = false;
+  let earlyLateGraced = false;
+  if (computeEarlyLateBreach(firstPunch, lastPunch, effectiveShiftStart, effectiveShiftEnd)) {
+    const monthStart = `${today.slice(0, 7)}-01`;
+    const { count: breachCount } = await supabase
+      .from('attendance')
+      .select('id', { count: 'exact', head: true })
+      .eq('profile_id', profileId)
+      // Any earlier breach day this month — graced OR counted. Counting only
+      // flagged rows kept the count at 0 after the graced first breach, so
+      // every breach in the month was graced. Today excluded so a re-punch
+      // on the same day doesn't count itself.
+      .or('early_late_flag.eq.true,early_late_graced.eq.true')
+      .gte('date', monthStart)
+      .lt('date', today);
+    if (!breachCount) {
+      earlyLateGraced = true;
+    } else {
+      earlyLateFlag = true;
+    }
+  }
 
   await supabase
     .from('attendance')
     .update({
       total_hours: Math.round(total * 100) / 100,
       status,
+      monthly_allowance_used: allowanceUsed,
+      early_late_flag: earlyLateFlag,
+      early_late_graced: earlyLateGraced,
       punch_out_lat: locationData?.lat,
       punch_out_lng: locationData?.lng,
       ...(outOfGeofence ? { out_of_geofence: true } : {}),
@@ -293,11 +383,21 @@ export async function saveManualAttendance(tenantId, { profile_id, date, clockIn
   await supabase.from('punches').delete().eq('attendance_id', attId);
 
   const punches = [];
-  if (ci) punches.push({ attendance_id: attId, punch_time: ci, punch_type: 'in' });
-  if (co) punches.push({ attendance_id: attId, punch_time: co, punch_type: 'out' });
+  if (ci) punches.push({ attendance_id: attId, punch_time: ci, punch_type: 'in', source: 'manual' });
+  if (co) punches.push({ attendance_id: attId, punch_time: co, punch_type: 'out', source: 'manual' });
   if (punches.length) {
     const { error: punchErr } = await supabase.from('punches').insert(punches);
     if (punchErr) throw punchErr;
+  }
+
+  // Marking a day 'Comp Off' spends 1 day from the employee's earned
+  // balance; correcting a day away from 'Comp Off' refunds it. No-op if the
+  // status isn't actually changing across the Comp Off boundary (e.g. saving
+  // the same 'Comp Off' entry again, or editing hours on a non-Comp-Off day).
+  if (status === 'Comp Off' && oldStatus !== 'Comp Off') {
+    await supabase.rpc('adjust_comp_off_balance', { p_profile_id: profile_id, p_delta: -1 });
+  } else if (oldStatus === 'Comp Off' && status !== 'Comp Off') {
+    await supabase.rpc('adjust_comp_off_balance', { p_profile_id: profile_id, p_delta: 1 });
   }
 
   // Write audit log entry
@@ -350,11 +450,36 @@ export async function fetchAllTenantAttendance(tenantId, year, month) {
   return { data: data || [], error };
 }
 
+/**
+ * Fetch every employee's attendance (with punches, for clock-in time) across a date
+ * range — used by Master Report's Attendance Log and Late Comers Report cards
+ * (date-range-wise, not employee-wise). Callers scope the result to the active
+ * outlet client-side via scopedToOutlet, same as fetchAllAttendanceWithPunches.
+ */
+export async function fetchAttendanceRangeWithPunches(tenantId, fromDate, toDate) {
+  const PAGE_SIZE = 1000;
+  const all = [];
+  for (let page = 0; ; page++) {
+    const { data, error } = await supabase
+      .from('attendance')
+      .select('profile_id, date, status, total_hours, punches(punch_time, punch_type)')
+      .eq('tenant_id', tenantId)
+      .gte('date', fromDate)
+      .lte('date', toDate)
+      .order('date')
+      .range(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE - 1);
+    if (error) return { data: all, error };
+    all.push(...(data || []));
+    if (!data || data.length < PAGE_SIZE) break;
+  }
+  return { data: all, error: null };
+}
+
 /** Fetch audit log entries for a tenant, optionally filtered by date. */
 export async function fetchAttendanceAuditLog(tenantId, date) {
   let query = supabase
     .from('attendance_audit_log')
-    .select('*, changed_by_profile:profiles!attendance_audit_log_changed_by_fkey(first_name, middle_name, last_name), target_profile:profiles!attendance_audit_log_profile_id_fkey(first_name, middle_name, last_name)')
+    .select('*, changed_by_profile:profile_directory!attendance_audit_log_changed_by_fkey(first_name, middle_name, last_name), target_profile:profile_directory!attendance_audit_log_profile_id_fkey(first_name, middle_name, last_name)')
     .eq('tenant_id', tenantId)
     .order('created_at', { ascending: false })
     .limit(50);
@@ -371,23 +496,37 @@ export async function fetchAttendanceAuditLog(tenantId, date) {
  * Fetch attendance records with punches for every employee in a tenant, scoped to one
  * calendar year — used for master report. An unbounded all-time fetch here would pull
  * hundreds of thousands of rows once a few years of daily attendance accumulate.
+ *
+ * Paginated in PAGE_SIZE chunks: PostgREST caps a single response at its
+ * project-configured max rows (1000 by default), so a tenant with enough
+ * employees/days in a year silently had its later months truncated by a single
+ * unpaged request — the query is ordered by date ascending, so whatever fell
+ * past the cap (the most recent months) just vanished from the result.
  */
 export async function fetchAllAttendanceWithPunches(tenantId, year = new Date().getFullYear()) {
-  const { data, error } = await supabase
-    .from('attendance')
-    .select('id, profile_id, date, status, total_hours, punches(punch_time, punch_type)')
-    .eq('tenant_id', tenantId)
-    .gte('date', `${year}-01-01`)
-    .lte('date', `${year}-12-31`)
-    .order('date');
-  return { data: data || [], error };
+  const PAGE_SIZE = 1000;
+  const all = [];
+  for (let page = 0; ; page++) {
+    const { data, error } = await supabase
+      .from('attendance')
+      .select('id, profile_id, date, status, total_hours, punches(punch_time, punch_type)')
+      .eq('tenant_id', tenantId)
+      .gte('date', `${year}-01-01`)
+      .lte('date', `${year}-12-31`)
+      .order('date')
+      .range(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE - 1);
+    if (error) return { data: all, error };
+    all.push(...(data || []));
+    if (!data || data.length < PAGE_SIZE) break;
+  }
+  return { data: all, error: null };
 }
 
 /** Fetch just the profile info for an employee (join_date, name, etc.) */
 export async function fetchEmployeeProfileInfo(profileId) {
   const { data, error } = await supabase
     .from('profiles')
-    .select('first_name, middle_name, last_name, join_date, department, designation')
+    .select('first_name, middle_name, last_name, join_date, probation_months, department, designation')
     .eq('id', profileId)
     .single();
   return { profile: data, error };
@@ -433,6 +572,30 @@ export async function fetchEmployeeFullHistory(profileId) {
  * When tier === 'self' the attendance change is applied immediately (no approval wait).
  */
 export async function submitRegularizeRequest(tenantId, profileId, { date, clockInTime, clockOutTime, reason }, tenantSettings = {}) {
+  // Block resubmission for a date that already has a Pending or Approved
+  // request -- once reviewed (or awaiting review) there's nothing left to
+  // regularize, and without this an employee could spam the same date over
+  // and over after it's already been approved.
+  const { data: existing } = await supabase
+    .from('regularize_requests')
+    .select('id, status')
+    .eq('profile_id', profileId)
+    .eq('date', date)
+    .in('status', ['Pending', 'Approved'])
+    .limit(1);
+
+  if (existing?.length > 0) {
+    const status = existing[0].status;
+    return {
+      data: null,
+      error: new Error(
+        status === 'Approved'
+          ? `Your attendance for ${date} has already been approved — no need to request again.`
+          : `You already have a pending regularization request for ${date}.`
+      ),
+    };
+  }
+
   const selfLimit = tenantSettings.autoApprovalEnabled === false
     ? 0
     : (tenantSettings.autoApprovalLimit ?? SELF_LIMIT);
@@ -452,35 +615,37 @@ export async function submitRegularizeRequest(tenantId, profileId, { date, clock
     approval_level:         tier === 'self' ? 'self' : null,
   };
 
-  if (tier === 'self') {
-    await regularizeAttendance(tenantId, {
-      fromDate:    date,
-      toDate:      date,
-      employeeIds: [profileId],
-      status:      'Present',
-      clockInTime,
-      clockOutTime,
-      reason,
-      changedBy:   profileId,
-    });
-  }
-
   const { data, error } = await supabase
     .from('regularize_requests')
     .insert([payload])
     .select()
     .single();
 
+  // enforce_regularize_request_approval_tier (see
+  // 20260903_5_server_side_regularize_special_approval_enforcement.sql)
+  // re-derives the tier from the tenant's *current* settings and may
+  // silently overwrite status/required_approver_role if this client's view
+  // was stale. Trust what actually landed in the row before applying the
+  // attendance change or notifying anyone — otherwise a request the server
+  // downgraded to Pending would still get its attendance auto-marked
+  // Present and its self-approval quota consumed.
+  const actualTier = data?.required_approver_role || tier;
+
+  // The attendance change itself (punches replaced with the requested
+  // in/out, hours + status recomputed) is applied by the DB trigger
+  // trg_apply_approved_regularize_request the moment the row lands as
+  // Approved -- see 20260925_6_regularize_apply_in_db_and_3day_window.sql.
+
   // Only spend a self-approval slot once the attendance change AND the request
   // record both succeeded — incrementing earlier burned quota on failed attempts
   // (e.g. a blocked audit-log insert) with nothing actually recorded.
-  if (tier === 'self' && !error) {
+  if (actualTier === 'self' && !error) {
     await incrementSelfCount(tenantId, profileId);
   }
 
   if (!error && data?.id) {
     const requester = await getRequesterLabel(profileId);
-    if (tier === 'self') {
+    if (actualTier === 'self') {
       await notifyProfiles(tenantId, [profileId], {
         type: 'regularize_auto_approved',
         title: 'Regularize request auto-approved',
@@ -497,7 +662,9 @@ export async function submitRegularizeRequest(tenantId, profileId, { date, clock
         relatedId: data.id,
       }, profileId);
     } else {
-      await notifyRoles(tenantId, withHrRole([tier]), {
+      // An HOD approves for the people directly under them, like a manager;
+      // for Raniwala the DB trigger keeps only the requester's own line.
+      await notifyRoles(tenantId, withHrRole(actualTier === 'manager' ? ['manager', 'hod'] : [actualTier]), {
         type: 'regularize_request_submitted',
         title: 'New regularize request',
         body: `${requester} submitted a new attendance correction for ${date} — needs your review.`,
@@ -508,29 +675,28 @@ export async function submitRegularizeRequest(tenantId, profileId, { date, clock
     }
   }
 
-  return { data, error, tier };
+  return { data, error, tier: actualTier };
 }
 
 /**
- * Admin/Manager: list all regularization requests for a tenant.
- * Pass forRole='manager' to restrict to manager-routed requests only.
+ * Admin/Manager: list all regularization requests for a tenant. Returns every
+ * request regardless of status or approval tier (Pending/Approved/Rejected,
+ * self/manager/admin) -- managers need visibility into auto-approved and
+ * admin-approved requests too, not just the ones routed to them for action.
+ * Callers gate the Approve/Reject actions themselves based on
+ * required_approver_role.
  */
-export async function listRegularizeRequests(tenantId, forRole = null) {
-  let query = supabase
+export async function listRegularizeRequests(tenantId) {
+  const { data, error } = await supabase
     .from('regularize_requests')
     .select(`
       *,
-      profile:profiles!regularize_requests_profile_id_fkey(first_name, middle_name, last_name, department, designation),
-      reviewer:profiles!regularize_requests_reviewed_by_fkey(first_name, middle_name, last_name, role)
+      profile:profile_directory!regularize_requests_profile_id_fkey(first_name, middle_name, last_name, department, designation),
+      reviewer:profile_directory!regularize_requests_reviewed_by_fkey(first_name, middle_name, last_name, role)
     `)
     .eq('tenant_id', tenantId)
     .order('created_at', { ascending: false });
 
-  if (forRole === 'manager') {
-    query = query.eq('required_approver_role', 'manager');
-  }
-
-  const { data, error } = await query;
   return { data: data || [], error };
 }
 
@@ -564,16 +730,8 @@ export async function approveRegularizeRequest(request, reviewerId, reviewerRole
   if (claimErr) return { error: claimErr };
   if (claimed?.length === 0) return { error: new Error('This request has already been reviewed.') };
 
-  await regularizeAttendance(request.tenant_id, {
-    fromDate:     request.date,
-    toDate:       request.date,
-    employeeIds:  [request.profile_id],
-    status:       'Present',
-    clockInTime:  request.clock_in_time,
-    clockOutTime: request.clock_out_time,
-    reason:       request.reason,
-    changedBy:    reviewerId,
-  });
+  // Flipping status to Approved fires trg_apply_approved_regularize_request,
+  // which writes the corrected punches/hours/status for that day.
 
   if (reviewerRole === 'manager') {
     await incrementManagerCount(request.tenant_id, request.profile_id);
@@ -763,8 +921,8 @@ export async function regularizeAttendance(tenantId, {
 
   if (clockInTime && clockOutTime) {
     const punchRows = attIds.flatMap((attId) => [
-      { attendance_id: attId, punch_time: clockInTime, punch_type: 'in' },
-      { attendance_id: attId, punch_time: clockOutTime, punch_type: 'out' },
+      { attendance_id: attId, punch_time: clockInTime, punch_type: 'in', source: 'manual' },
+      { attendance_id: attId, punch_time: clockOutTime, punch_type: 'out', source: 'manual' },
     ]);
     for (const part of chunks(punchRows)) {
       const { error: punchErr } = await supabase.from('punches').insert(part);

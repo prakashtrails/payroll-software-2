@@ -1,0 +1,6 @@
+# Never line-ending-convert binary documents
+*.pdf  binary
+*.xlsx binary
+*.docx binary
+*.png  binary
+*.jpg  binary

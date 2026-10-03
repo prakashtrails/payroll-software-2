@@ -1,4 +1,5 @@
 import { supabase } from '@/lib/supabase';
+import { STAFF_ROLES } from '@/lib/helpers';
 
 export const EMPLOYEE_PAGE_SIZE = 25;
 
@@ -27,12 +28,30 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 // of quick retries clears it without the caller ever seeing it.
 const isTransientAuthError = (msg) => /invalid jwt|signature is invalid|unable to (parse|verify) signature/i.test(msg || '');
 
+// The edge functions verify the caller's session with the auth server
+// (auth.getUser), unlike ordinary table reads which only check the JWT
+// signature — so a session that was revoked elsewhere (e.g. the same admin
+// account logged out on another device) still browses fine but fails here.
+const SESSION_ENDED_MSG = 'Your login session has ended (this account was signed out on another device or tab). Please log out and log in again, then retry.';
+const isSessionEndedError = (msg) => /not authenticated|session not found|session_not_found/i.test(msg || '');
+
 async function invokeWithRetry(fnName, body, maxRetries = 2) {
   let lastErr;
+  let refreshed = false;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     const { data, error } = await supabase.functions.invoke(fnName, { body });
     const msg = error ? await invokeMessage(error) : data?.error;
     if (!msg) return data;
+    if (isSessionEndedError(msg)) {
+      // One refresh attempt: recovers an access token that merely expired.
+      // A revoked session can't be refreshed — tell the user plainly.
+      if (!refreshed) {
+        refreshed = true;
+        const { error: refreshErr } = await supabase.auth.refreshSession();
+        if (!refreshErr) { attempt--; continue; }
+      }
+      throw new Error(SESSION_ENDED_MSG);
+    }
     lastErr = new Error(msg);
     if (attempt < maxRetries && isTransientAuthError(msg)) {
       await sleep(400 * (attempt + 1));
@@ -47,7 +66,7 @@ async function invokeWithRetry(fnName, body, maxRetries = 2) {
  * Paginated, server-side-filtered employee list.
  * Returns { data, count, error } — count is the total matching rows.
  */
-export async function listEmployees(tenantId, { page = 1, search = '', department = '', status = '', branch = '', outletId = '' } = {}) {
+export async function listEmployees(tenantId, { page = 1, search = '', department = '', division = '', status = '', outletId = '', managerId = '' } = {}) {
   // employee_current_passwords is RLS-scoped to superadmin, or an admin
   // reading their own tenant (see 20260901_1_hr_current_password_read.sql) —
   // it comes back empty for any other caller, so it's safe to always embed.
@@ -58,10 +77,25 @@ export async function listEmployees(tenantId, { page = 1, search = '', departmen
     .neq('role', 'superadmin')
     .order('first_name');
 
+  // Restricts a manager's "My Team" view to their own direct reports —
+  // profiles.manager_id, kept in sync with reporting_relationships by the
+  // set_direct_manager RPC (see orgHierarchyService). This profiles-table
+  // read is still a UI-level scope, not an RLS boundary (a manager account
+  // can still read the whole tenant's profiles here) — but for Raniwala,
+  // leave_requests RLS itself now scopes manager access to their own team's
+  // rows (leave_requests.manager_id = auth.uid()), see
+  // 20260921_2_raniwala_leave_manager_hod_approval.sql. Every other tenant's
+  // manager access to leave_requests is still tenant-wide, unchanged.
+  if (managerId) q = q.eq('manager_id', managerId);
+
   if (department) q = q.eq('department', department);
+  if (division)   q = q.eq('division', division);
   if (status)     q = q.eq('status', status);
-  if (branch)     q = q.eq('outlet_location', branch);
-  if (outletId)   q = q.eq('outlet_id', outletId);
+  // Include employees with no outlet assigned yet (outlet_id IS NULL — e.g. just
+  // added, or imported without a branch) in every outlet-scoped view instead of
+  // a strict equality match, otherwise a freshly added employee is invisible
+  // until someone happens to pick "Combined/All Outlets".
+  if (outletId)   q = q.or(`outlet_id.eq.${outletId},outlet_id.is.null`);
   if (search) {
     // A single-word query matches any one field directly. A multi-word query
     // (e.g. "Suraj Yadav") can't match any single column that way — no column
@@ -71,7 +105,7 @@ export async function listEmployees(tenantId, { page = 1, search = '', departmen
     // needing a concatenated-name column.
     search.trim().split(/\s+/).filter(Boolean).forEach((word) => {
       q = q.or(
-        `first_name.ilike.%${word}%,middle_name.ilike.%${word}%,last_name.ilike.%${word}%,email.ilike.%${word}%,department.ilike.%${word}%`
+        `first_name.ilike.%${word}%,middle_name.ilike.%${word}%,last_name.ilike.%${word}%,email.ilike.%${word}%,department.ilike.%${word}%,employee_id.ilike.%${word}%,essl_employee_code.ilike.%${word}%`
       );
     });
   }
@@ -83,26 +117,75 @@ export async function listEmployees(tenantId, { page = 1, search = '', departmen
   return { data: data || [], error, count: count || 0 };
 }
 
-/** Distinct non-empty branch names for the current tenant. */
-export async function listBranches(tenantId) {
-  const { data, error } = await supabase
+/**
+ * Distinct non-empty division names for the current tenant, optionally
+ * narrowed to one outlet and/or one department — so a division filter/dropdown
+ * only ever offers divisions that actually exist at the currently-selected
+ * outlet and/or department (Outlet -> Division -> Department cascade for the
+ * list-page filter bar; Department -> Division cascade for the Add/Edit
+ * Employee form's Division dropdown).
+ */
+export async function listDivisions(tenantId, outletId = '', department = '') {
+  let q = supabase
     .from('profiles')
-    .select('outlet_location')
+    .select('division')
     .eq('tenant_id', tenantId)
-    .neq('outlet_location', '')
-    .not('outlet_location', 'is', null);
-  const branches = [...new Set((data || []).map(r => r.outlet_location))].sort();
-  return { data: branches, error };
+    .neq('division', '')
+    .not('division', 'is', null);
+  if (outletId) q = q.eq('outlet_id', outletId);
+  if (department) q = q.eq('department', department);
+  const { data, error } = await q;
+  const divisions = [...new Set((data || []).map(r => r.division))].sort();
+  return { data: divisions, error };
+}
+
+/**
+ * Distinct non-empty department names for the current tenant, optionally
+ * narrowed to one outlet and/or division — the last leg of the Outlet ->
+ * Division -> Department filter cascade. Distinct from tenantService's
+ * listDepartments, which returns the full tenant-wide master list (used for
+ * the Add/Edit Employee form, where every department should stay selectable
+ * regardless of whatever filter is currently applied to the list view).
+ */
+export async function listDistinctDepartments(tenantId, { outletId = '', division = '' } = {}) {
+  let q = supabase
+    .from('profiles')
+    .select('department')
+    .eq('tenant_id', tenantId)
+    .neq('department', '')
+    .not('department', 'is', null);
+  if (outletId) q = q.eq('outlet_id', outletId);
+  if (division) q = q.eq('division', division);
+  const { data, error } = await q;
+  const departments = [...new Set((data || []).map(r => r.department))].sort();
+  return { data: departments, error };
 }
 
 /** Lightweight list for dropdowns (id + name only). */
+/**
+ * Active colleagues for pickers/name lookups on pages employees can open
+ * (Feedback, 1-on-1s, KRAs, PIP, Reviews, Interviews). Reads profile_directory
+ * — names/role/department only — since employees can't read other profiles
+ * rows. Use listActiveEmployees for admin pages that need payroll fields.
+ */
+export async function listColleagues(tenantId) {
+  const { data, error } = await supabase
+    .from('profile_directory')
+    .select('id, first_name, middle_name, last_name, employee_id, department, designation, division, role, manager_id, outlet_id, outlet_location')
+    .eq('tenant_id', tenantId)
+    .eq('status', 'Active')
+    .in('role', STAFF_ROLES)
+    .order('first_name');
+  return { data: data || [], error };
+}
+
 export async function listActiveEmployees(tenantId) {
   const { data, error } = await supabase
     .from('profiles')
-    .select('id, first_name, middle_name, last_name, department, designation, ctc, role, country, join_date, pf_enabled, pf_amount, esic_enabled, esic_amount, leave_allocation, employee_id, essl_employee_code, outlet_location, is_withheld, withheld_reason, bank_acc, bank_name, ifsc_code, manager_id')
+    .select('id, first_name, middle_name, last_name, department, designation, division, ctc, role, country, join_date, pf_enabled, pf_number, pf_amount, esic_enabled, esic_amount, leave_allocation, employee_id, essl_employee_code, outlet_id, outlet_location, is_withheld, withheld_reason, bank_acc, bank_name, ifsc_code, manager_id, comp_off_balance, overtime_applicable, comp_off_eligible')
     .eq('tenant_id', tenantId)
     .eq('status', 'Active')
-    .in('role', ['employee', 'admin', 'manager'])
+    .in('role', STAFF_ROLES)
     .order('first_name');
   return { data: data || [], error };
 }

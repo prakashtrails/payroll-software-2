@@ -13,6 +13,7 @@ import ResetPasswordPage from './pages/auth/ResetPasswordPage';
 import DashboardPage from './pages/dashboard/DashboardPage';
 import EmployeesPage from './pages/dashboard/EmployeesPage';
 import AttendancePage from './pages/dashboard/AttendancePage';
+import EsslRecordsPage from './pages/dashboard/EsslRecordsPage';
 import SalaryPage from './pages/dashboard/SalaryPage';
 import PayrollPage from './pages/dashboard/PayrollPage';
 import PayslipsPage from './pages/dashboard/PayslipsPage';
@@ -31,19 +32,21 @@ import NotificationsPage from './pages/dashboard/NotificationsPage';
 import HiringPage from './pages/dashboard/HiringPage';
 import ReferPage from './pages/dashboard/ReferPage';
 import RegularizeAttendancePage from './pages/dashboard/RegularizeAttendancePage';
+import PunchApprovalsPage from './pages/dashboard/PunchApprovalsPage';
 import WFHRequestsPage from './pages/dashboard/WFHRequestsPage';
+import VerificationRequestsPage from './pages/dashboard/VerificationRequestsPage';
 import SpecialRequestsPage from './pages/dashboard/SpecialRequestsPage';
 import EmployeeCalendarPage from './pages/dashboard/EmployeeCalendarPage';
+import LiveTrackingPage from './pages/dashboard/LiveTrackingPage';
 import MasterReportPage from './pages/dashboard/MasterReportPage';
 import GroupDashboardPage from './pages/dashboard/GroupDashboardPage';
 import OutletsOverviewPage from './pages/dashboard/OutletsOverviewPage';
 import CombinedOutletDashboardPage from './pages/dashboard/CombinedOutletDashboardPage';
 import AnnouncementsPage from './pages/dashboard/AnnouncementsPage';
 import PoliciesPage from './pages/dashboard/PoliciesPage';
-import KRAsPage from './pages/dashboard/KRAsPage';
+import PerformancePage from './pages/dashboard/PerformancePage';
 import FeedbackPage from './pages/dashboard/FeedbackPage';
 import PIPPage from './pages/dashboard/PIPPage';
-import ReviewsPage from './pages/dashboard/ReviewsPage';
 import OneOnOnesPage from './pages/dashboard/OneOnOnesPage';
 import TaxSlabsPage from './pages/dashboard/TaxSlabsPage';
 import SalaryAdditionsPage from './pages/dashboard/SalaryAdditionsPage';
@@ -65,12 +68,15 @@ import AssetsPage from './pages/dashboard/AssetsPage';
 import MyAssetsPage from './pages/employee/MyAssetsPage';
 import ProjectsPage from './pages/dashboard/ProjectsPage';
 import MyProjectsPage from './pages/employee/MyProjectsPage';
+import TasksPage from './pages/dashboard/TasksPage';
 import ExpenseClaimsPage from './pages/dashboard/ExpenseClaimsPage';
 import TravelRequestsPage from './pages/dashboard/TravelRequestsPage';
 import ApprovalChainsPage from './pages/dashboard/ApprovalChainsPage';
 import OrgHierarchyPage from './pages/dashboard/OrgHierarchyPage';
 
 import ManagerDashboardPage from './pages/dashboard/ManagerDashboardPage';
+import MyTeamPage from './pages/dashboard/MyTeamPage';
+import { isRaniwalaTenant } from './lib/helpers';
 
 import EmployeeDashboard from './pages/employee/DashboardPage';
 import MyAttendancePage from './pages/employee/MyAttendancePage';
@@ -87,13 +93,20 @@ import HomePageTab from './pages/home/HomePage';
 import DashboardLayout from './layouts/DashboardLayout';
 import AuthLayout from './layouts/AuthLayout';
 
+// Raniwala managers get the team calendar/summary page; every other
+// tenant's manager keeps the existing employee list.
+function ManagerTeamPage() {
+  const { tenant } = useAuth();
+  return isRaniwalaTenant(tenant) ? <MyTeamPage /> : <EmployeesPage />;
+}
+
 function homeFor(role) {
   if (role === 'superadmin') return '/master-dashboard';
   return '/home';
 }
 
-function PrivateRoute({ children, allowedRoles, featureKey }) {
-  const { user, profile, loading } = useAuth();
+function PrivateRoute({ children, allowedRoles, featureKey, notForRaniwala }) {
+  const { user, profile, tenant, loading } = useAuth();
   const { isEnabled, loading: featuresLoading } = useFeatures();
 
   if (loading) {
@@ -106,6 +119,12 @@ function PrivateRoute({ children, allowedRoles, featureKey }) {
 
   if (allowedRoles && !allowedRoles.includes(profile.role)) {
     return <Navigate to={homeFor(profile.role)} replace />;
+  }
+
+  // Raniwala's manager portal drops payroll, the company-wide attendance
+  // log and HR Settings (HR-only there) — RLS blocks the data too.
+  if (notForRaniwala && isRaniwalaTenant(tenant)) {
+    return <Navigate to={notForRaniwala === true ? homeFor(profile.role) : notForRaniwala} replace />;
   }
 
   if (featureKey) {
@@ -139,6 +158,7 @@ export default function App() {
         <Route path="/dashboard" element={<PrivateRoute allowedRoles={['admin', 'superadmin']}><DashboardPage /></PrivateRoute>} />
         <Route path="/employees" element={<PrivateRoute allowedRoles={['admin', 'superadmin']} featureKey="employees"><EmployeesPage /></PrivateRoute>} />
         <Route path="/attendance" element={<PrivateRoute allowedRoles={['admin', 'superadmin']} featureKey="attendance"><AttendancePage /></PrivateRoute>} />
+        <Route path="/essl-records" element={<PrivateRoute allowedRoles={['admin', 'superadmin']} featureKey="attendance"><EsslRecordsPage /></PrivateRoute>} />
         <Route path="/shift-roster" element={<PrivateRoute allowedRoles={['admin', 'superadmin']} featureKey="shift_roster"><ShiftAssignmentsPage /></PrivateRoute>} />
         <Route path="/salary" element={<PrivateRoute allowedRoles={['admin', 'superadmin']} featureKey="salary_structure"><SalaryPage /></PrivateRoute>} />
         <Route path="/payroll" element={<PrivateRoute allowedRoles={['admin', 'superadmin']} featureKey="run_payroll"><PayrollPage /></PrivateRoute>} />
@@ -151,12 +171,15 @@ export default function App() {
         <Route path="/advances" element={<PrivateRoute allowedRoles={['admin', 'superadmin']} featureKey="advances_loans"><AdvancesPage /></PrivateRoute>} />
         <Route path="/special-requests" element={<PrivateRoute allowedRoles={['admin', 'superadmin']} featureKey="special_requests"><SpecialRequestsPage /></PrivateRoute>} />
         <Route path="/employee-calendar" element={<PrivateRoute allowedRoles={['admin', 'superadmin']} featureKey="employee_calendar"><EmployeeCalendarPage /></PrivateRoute>} />
+        <Route path="/live-tracking" element={<PrivateRoute allowedRoles={['admin', 'superadmin']} featureKey="live_tracking"><LiveTrackingPage /></PrivateRoute>} />
         <Route path="/master-report" element={<PrivateRoute allowedRoles={['admin', 'superadmin']} featureKey="master_report"><MasterReportPage /></PrivateRoute>} />
         <Route path="/settings" element={<PrivateRoute allowedRoles={['admin', 'superadmin']}><SettingsPage /></PrivateRoute>} />
         <Route path="/approval-chains" element={<PrivateRoute allowedRoles={['admin', 'superadmin']} featureKey="approval_chains"><ApprovalChainsPage /></PrivateRoute>} />
         <Route path="/org-structure" element={<PrivateRoute allowedRoles={['admin', 'superadmin']} featureKey="org_hierarchy"><OrgHierarchyPage /></PrivateRoute>} />
+        <Route path="/punch-approvals" element={<PrivateRoute allowedRoles={['admin', 'superadmin']} featureKey="attendance"><PunchApprovalsPage /></PrivateRoute>} />
         <Route path="/regularize" element={<PrivateRoute allowedRoles={['admin', 'superadmin']} featureKey="regularize_attendance"><RegularizeAttendancePage /></PrivateRoute>} />
         <Route path="/wfh-requests" element={<PrivateRoute allowedRoles={['admin', 'superadmin']} featureKey="wfh_requests"><WFHRequestsPage /></PrivateRoute>} />
+        <Route path="/verification-requests" element={<PrivateRoute allowedRoles={['admin', 'superadmin']} featureKey="profile_verification"><VerificationRequestsPage /></PrivateRoute>} />
         <Route path="/group-dashboard" element={<PrivateRoute allowedRoles={['admin', 'superadmin']} featureKey="outlets_multi_branch"><GroupDashboardPage /></PrivateRoute>} />
         <Route path="/outlets" element={<PrivateRoute allowedRoles={['admin', 'superadmin']} featureKey="outlets_multi_branch"><OutletsOverviewPage /></PrivateRoute>} />
         <Route path="/outlets/combined" element={<PrivateRoute allowedRoles={['admin', 'superadmin']} featureKey="outlets_multi_branch"><CombinedOutletDashboardPage /></PrivateRoute>} />
@@ -164,18 +187,21 @@ export default function App() {
 
         {/* Manager Routes */}
         <Route path="/manager-dashboard" element={<PrivateRoute allowedRoles={['manager']}><ManagerDashboardPage /></PrivateRoute>} />
-        <Route path="/manager-employees" element={<PrivateRoute allowedRoles={['manager']} featureKey="employees"><EmployeesPage /></PrivateRoute>} />
-        <Route path="/manager-attendance" element={<PrivateRoute allowedRoles={['manager']} featureKey="attendance"><AttendancePage /></PrivateRoute>} />
-        <Route path="/manager-leaves" element={<PrivateRoute allowedRoles={['manager']} featureKey="leave_requests"><LeavesPage /></PrivateRoute>} />
-        <Route path="/manager-special-requests" element={<PrivateRoute allowedRoles={['manager']} featureKey="special_requests"><SpecialRequestsPage /></PrivateRoute>} />
-        <Route path="/manager-employee-calendar" element={<PrivateRoute allowedRoles={['manager']} featureKey="employee_calendar"><EmployeeCalendarPage /></PrivateRoute>} />
-        <Route path="/manager-regularize" element={<PrivateRoute allowedRoles={['manager']} featureKey="regularize_attendance"><RegularizeAttendancePage /></PrivateRoute>} />
-        <Route path="/manager-wfh-requests" element={<PrivateRoute allowedRoles={['manager']} featureKey="wfh_requests"><WFHRequestsPage /></PrivateRoute>} />
-        <Route path="/manager-payroll" element={<PrivateRoute allowedRoles={['manager']} featureKey="run_payroll"><PayrollPage /></PrivateRoute>} />
-        <Route path="/manager-payslips" element={<PrivateRoute allowedRoles={['manager']} featureKey="payslips"><PayslipsPage /></PrivateRoute>} />
-        <Route path="/manager-advances" element={<PrivateRoute allowedRoles={['manager']} featureKey="advances_loans"><AdvancesPage /></PrivateRoute>} />
-        <Route path="/manager-salary-additions" element={<PrivateRoute allowedRoles={['manager']} featureKey="salary_additions"><SalaryAdditionsPage /></PrivateRoute>} />
-        <Route path="/hr-settings" element={<PrivateRoute allowedRoles={['manager']}><HrFeatureSettingsPage /></PrivateRoute>} />
+        <Route path="/manager-employees" element={<PrivateRoute allowedRoles={['manager', 'hod', 'management']} featureKey="employees"><ManagerTeamPage /></PrivateRoute>} />
+        <Route path="/manager-attendance" element={<PrivateRoute allowedRoles={['manager']} notForRaniwala="/manager-employees" featureKey="attendance"><AttendancePage /></PrivateRoute>} />
+        <Route path="/manager-leaves" element={<PrivateRoute allowedRoles={['manager', 'hod', 'management']} featureKey="leave_requests"><LeavesPage /></PrivateRoute>} />
+        <Route path="/manager-special-requests" element={<PrivateRoute allowedRoles={['manager', 'hod', 'management']} featureKey="special_requests"><SpecialRequestsPage /></PrivateRoute>} />
+        <Route path="/manager-employee-calendar" element={<PrivateRoute allowedRoles={['manager']} notForRaniwala="/manager-employees" featureKey="employee_calendar"><EmployeeCalendarPage /></PrivateRoute>} />
+        <Route path="/manager-punch-approvals" element={<PrivateRoute allowedRoles={['manager', 'hod', 'management']} featureKey="attendance"><PunchApprovalsPage /></PrivateRoute>} />
+        <Route path="/manager-regularize" element={<PrivateRoute allowedRoles={['manager', 'hod', 'management']} featureKey="regularize_attendance"><RegularizeAttendancePage /></PrivateRoute>} />
+        <Route path="/manager-wfh-requests" element={<PrivateRoute allowedRoles={['manager', 'hod', 'management']} featureKey="wfh_requests"><WFHRequestsPage /></PrivateRoute>} />
+        <Route path="/manager-verification-requests" element={<PrivateRoute allowedRoles={['manager']} notForRaniwala="/manager-leaves" featureKey="profile_verification"><VerificationRequestsPage /></PrivateRoute>} />
+        <Route path="/manager-payroll" element={<PrivateRoute allowedRoles={['manager']} notForRaniwala featureKey="run_payroll"><PayrollPage /></PrivateRoute>} />
+        <Route path="/manager-payslips" element={<PrivateRoute allowedRoles={['manager']} notForRaniwala featureKey="payslips"><PayslipsPage /></PrivateRoute>} />
+        <Route path="/manager-advances" element={<PrivateRoute allowedRoles={['manager']} notForRaniwala featureKey="advances_loans"><AdvancesPage /></PrivateRoute>} />
+        <Route path="/manager-salary-additions" element={<PrivateRoute allowedRoles={['manager']} notForRaniwala featureKey="salary_additions"><SalaryAdditionsPage /></PrivateRoute>} />
+        <Route path="/hr-settings" element={<PrivateRoute allowedRoles={['manager']} notForRaniwala><HrFeatureSettingsPage /></PrivateRoute>} />
+        <Route path="/feature-settings" element={<PrivateRoute allowedRoles={['admin']}><HrFeatureSettingsPage /></PrivateRoute>} />
 
         {/* Superadmin specific */}
         <Route path="/master-dashboard" element={<PrivateRoute allowedRoles={['superadmin']}><MasterDashboardPage /></PrivateRoute>} />
@@ -185,58 +211,61 @@ export default function App() {
         <Route path="/helpdesk-admin" element={<PrivateRoute allowedRoles={['superadmin']}><HelpdeskAdminPage /></PrivateRoute>} />
 
         {/* Employee Routes */}
-        <Route path="/home" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager']}><HomePageTab /></PrivateRoute>} />
-        <Route path="/me" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager']}><MePage /></PrivateRoute>} />
-        <Route path="/my-dashboard" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager']}><EmployeeDashboard /></PrivateRoute>} />
-        <Route path="/my-attendance" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager']} featureKey="attendance"><MyAttendancePage /></PrivateRoute>} />
-        <Route path="/my-leaves" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager']} featureKey="leave_requests"><MyLeavesPage /></PrivateRoute>} />
-        <Route path="/my-special-requests" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager']} featureKey="special_requests"><MySpecialRequestsPage /></PrivateRoute>} />
-        <Route path="/my-regularize" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager']} featureKey="regularize_attendance"><MyRegularizeRequestsPage /></PrivateRoute>} />
-        <Route path="/my-wfh" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager']} featureKey="wfh_requests"><MyWfhRequestsPage /></PrivateRoute>} />
-        <Route path="/my-payslips" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager']} featureKey="payslips"><MyPayslipsPage /></PrivateRoute>} />
-        <Route path="/my-tax-declaration" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager']} featureKey="tax_declaration"><TaxDeclarationPage /></PrivateRoute>} />
+        <Route path="/home" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'hod', 'management']}><HomePageTab /></PrivateRoute>} />
+        <Route path="/me" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'hod', 'management']}><MePage /></PrivateRoute>} />
+        <Route path="/my-dashboard" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'hod', 'management']}><EmployeeDashboard /></PrivateRoute>} />
+        <Route path="/my-attendance" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'hod', 'management']} featureKey="attendance"><MyAttendancePage /></PrivateRoute>} />
+        <Route path="/my-leaves" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'hod', 'management']} featureKey="leave_requests"><MyLeavesPage /></PrivateRoute>} />
+        <Route path="/my-special-requests" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'hod', 'management']} featureKey="special_requests"><MySpecialRequestsPage /></PrivateRoute>} />
+        <Route path="/my-regularize" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'hod', 'management']} featureKey="regularize_attendance"><MyRegularizeRequestsPage /></PrivateRoute>} />
+        <Route path="/my-wfh" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'hod', 'management']} featureKey="wfh_requests"><MyWfhRequestsPage /></PrivateRoute>} />
+        <Route path="/my-payslips" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'hod', 'management']} featureKey="payslips"><MyPayslipsPage /></PrivateRoute>} />
+        <Route path="/my-tax-declaration" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'hod', 'management']} featureKey="tax_declaration"><TaxDeclarationPage /></PrivateRoute>} />
 
         {/* Notifications: core, available to every role, never feature-gated */}
-        <Route path="/notifications" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'superadmin']}><NotificationsPage /></PrivateRoute>} />
+        <Route path="/notifications" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'hod', 'management', 'superadmin']}><NotificationsPage /></PrivateRoute>} />
 
         {/* Shared: Announcements & Policies (visible to everyone, create restricted to admin inside the page) */}
-        <Route path="/announcements" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'superadmin']} featureKey="announcements"><AnnouncementsPage /></PrivateRoute>} />
-        <Route path="/policies" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'superadmin']} featureKey="policies"><PoliciesPage /></PrivateRoute>} />
-        <Route path="/grievances" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'superadmin']} featureKey="grievances"><GrievancePage /></PrivateRoute>} />
+        <Route path="/announcements" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'hod', 'management', 'superadmin']} featureKey="announcements"><AnnouncementsPage /></PrivateRoute>} />
+        <Route path="/policies" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'hod', 'management', 'superadmin']} featureKey="policies"><PoliciesPage /></PrivateRoute>} />
+        <Route path="/grievances" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'hod', 'management', 'superadmin']} featureKey="grievances"><GrievancePage /></PrivateRoute>} />
 
         {/* Hiring: everyone can browse open positions and refer candidates; creating/editing postings is gated to admins inside the page (canManage) */}
-        <Route path="/hiring" element={<PrivateRoute allowedRoles={['employee', 'manager', 'admin', 'superadmin']} featureKey="hiring"><HiringPage /></PrivateRoute>} />
+        <Route path="/hiring" element={<PrivateRoute allowedRoles={['employee', 'manager', 'hod', 'management', 'admin', 'superadmin']} featureKey="hiring"><HiringPage /></PrivateRoute>} />
         {/* Shared: Refer (submit + track referrals for everyone, all-referrals oversight restricted to admin inside the page) */}
-        <Route path="/refer" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'superadmin']} featureKey="refer"><ReferPage /></PrivateRoute>} />
+        <Route path="/refer" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'hod', 'management', 'superadmin']} featureKey="refer"><ReferPage /></PrivateRoute>} />
         <Route path="/headcount-requests" element={<PrivateRoute allowedRoles={['admin', 'manager', 'superadmin']} featureKey="headcount_requests"><HeadcountRequestsPage /></PrivateRoute>} />
         <Route path="/recruitment-pipeline" element={<PrivateRoute allowedRoles={['admin', 'manager', 'superadmin']} featureKey="recruitment_pipeline"><RecruitmentPipelinePage /></PrivateRoute>} />
         {/* Interviews: admin/manager schedule; any employee can be assigned as interviewer and needs "My Interviews" */}
-        <Route path="/interviews" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'superadmin']} featureKey="interviews"><InterviewsPage /></PrivateRoute>} />
+        <Route path="/interviews" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'hod', 'management', 'superadmin']} featureKey="interviews"><InterviewsPage /></PrivateRoute>} />
         <Route path="/offer-letters" element={<PrivateRoute allowedRoles={['admin', 'manager', 'superadmin']} featureKey="offer_letters"><OfferLettersPage /></PrivateRoute>} />
         <Route path="/training" element={<PrivateRoute allowedRoles={['admin', 'superadmin']} featureKey="training"><TrainingPage /></PrivateRoute>} />
-        <Route path="/my-training" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'superadmin']} featureKey="training"><MyTrainingPage /></PrivateRoute>} />
+        <Route path="/my-training" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'hod', 'management', 'superadmin']} featureKey="training"><MyTrainingPage /></PrivateRoute>} />
 
         {/* Onboarding / Offboarding: admin manages checklists and processes; employees see and act on their own via My Onboarding / My Offboarding */}
         <Route path="/onboarding" element={<PrivateRoute allowedRoles={['admin', 'superadmin']} featureKey="onboarding"><OnboardingPage /></PrivateRoute>} />
-        <Route path="/my-onboarding" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'superadmin']} featureKey="onboarding"><MyOnboardingPage /></PrivateRoute>} />
+        <Route path="/my-onboarding" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'hod', 'management', 'superadmin']} featureKey="onboarding"><MyOnboardingPage /></PrivateRoute>} />
         <Route path="/offboarding" element={<PrivateRoute allowedRoles={['admin', 'superadmin']} featureKey="offboarding"><OffboardingPage /></PrivateRoute>} />
-        <Route path="/my-offboarding" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'superadmin']} featureKey="offboarding"><MyOffboardingPage /></PrivateRoute>} />
+        <Route path="/my-offboarding" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'hod', 'management', 'superadmin']} featureKey="offboarding"><MyOffboardingPage /></PrivateRoute>} />
 
         {/* Assets: admin manages inventory + assignments; employees see what's currently/previously assigned to them */}
         <Route path="/assets" element={<PrivateRoute allowedRoles={['admin', 'superadmin']} featureKey="assets"><AssetsPage /></PrivateRoute>} />
-        <Route path="/my-assets" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'superadmin']} featureKey="assets"><MyAssetsPage /></PrivateRoute>} />
+        <Route path="/my-assets" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'hod', 'management', 'superadmin']} featureKey="assets"><MyAssetsPage /></PrivateRoute>} />
         {/* Projects: admin/manager manage projects, members, and tasks; employees see tasks assigned to them across projects */}
         <Route path="/projects" element={<PrivateRoute allowedRoles={['admin', 'manager', 'superadmin']} featureKey="projects"><ProjectsPage /></PrivateRoute>} />
-        <Route path="/my-projects" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'superadmin']} featureKey="projects"><MyProjectsPage /></PrivateRoute>} />
-        <Route path="/expense-claims" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'superadmin']} featureKey="expense_claims"><ExpenseClaimsPage /></PrivateRoute>} />
-        <Route path="/travel-requests" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'superadmin']} featureKey="travel_requests"><TravelRequestsPage /></PrivateRoute>} />
+        {/* Tasks: everyone; who sees/assigns/edits what is enforced in the DB (migration 20261003_1) */}
+        <Route path="/tasks" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'hod', 'management']} featureKey="tasks"><TasksPage /></PrivateRoute>} />
+        <Route path="/my-projects" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'hod', 'management', 'superadmin']} featureKey="projects"><MyProjectsPage /></PrivateRoute>} />
+        <Route path="/expense-claims" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'hod', 'management', 'superadmin']} featureKey="expense_claims"><ExpenseClaimsPage /></PrivateRoute>} />
+        <Route path="/travel-requests" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'hod', 'management', 'superadmin']} featureKey="travel_requests"><TravelRequestsPage /></PrivateRoute>} />
 
         {/* Shared: Performance Management (KRAs, Feedback, PIP, Reviews) — visible to everyone, role logic inside each page */}
-        <Route path="/performance/kras" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'superadmin']} featureKey="performance_kras"><KRAsPage /></PrivateRoute>} />
-        <Route path="/performance/feedback" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'superadmin']} featureKey="performance_feedback"><FeedbackPage /></PrivateRoute>} />
-        <Route path="/performance/pip" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'superadmin']} featureKey="performance_pip"><PIPPage /></PrivateRoute>} />
-        <Route path="/performance/reviews" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'superadmin']} featureKey="performance_reviews"><ReviewsPage /></PrivateRoute>} />
-        <Route path="/performance/one-on-ones" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'superadmin']} featureKey="performance_one_on_ones"><OneOnOnesPage /></PrivateRoute>} />
+        <Route path="/performance" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'hod', 'management', 'superadmin']}><PerformancePage /></PrivateRoute>} />
+        <Route path="/performance/kras" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'hod', 'management', 'superadmin']} featureKey="performance_kras"><PerformancePage defaultSection="Scorecards" /></PrivateRoute>} />
+        <Route path="/performance/feedback" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'hod', 'management', 'superadmin']} featureKey="performance_feedback"><FeedbackPage /></PrivateRoute>} />
+        <Route path="/performance/pip" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'hod', 'management', 'superadmin']} featureKey="performance_pip"><PIPPage /></PrivateRoute>} />
+        <Route path="/performance/reviews" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'hod', 'management', 'superadmin']} featureKey="performance_reviews"><PerformancePage defaultSection="Reviews" /></PrivateRoute>} />
+        <Route path="/performance/one-on-ones" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'hod', 'management', 'superadmin']} featureKey="performance_one_on_ones"><OneOnOnesPage /></PrivateRoute>} />
       </Route>
       
       <Route path="*" element={<Navigate to="/" replace />} />

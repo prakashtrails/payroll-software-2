@@ -6,7 +6,7 @@ import { useAuth } from '@/context/AuthContext';
 import {
   listMyMeetings, scheduleMeeting, updateMeetingStatus, addMeetingSummary,
 } from '@/services/oneOnOneService';
-import { listActiveEmployees } from '@/services/employeeService';
+import { listColleagues } from '@/services/employeeService';
 import { fullName, todayStr, fmtTime12 } from '@/lib/helpers';
 
 const EMPTY_FORM = {
@@ -77,7 +77,7 @@ export function OneOnOnesContent() {
     try {
       const [{ data: mData }, { data: eData }] = await Promise.all([
         listMyMeetings(tenant.id, profile.id),
-        listActiveEmployees(tenant.id),
+        listColleagues(tenant.id),
       ]);
       setMeetings(mData || []);
       setEmployees((eData || []).filter((e) => e.id !== profile.id));

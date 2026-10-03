@@ -9,6 +9,7 @@ import {
   listProjectTasks, createProjectTask, updateTaskStatus,
 } from '@/services/projectService';
 import { listActiveEmployees } from '@/services/employeeService';
+import { TASK_STATUSES } from '@/services/taskService';
 import { fullName, fmt } from '@/lib/helpers';
 
 const STATUS_BADGE = { Active: 'badge-success', 'On Hold': 'badge-warning', Completed: 'badge-info', Cancelled: 'badge-danger' };
@@ -86,7 +87,7 @@ export default function ProjectsPage() {
   const handleAddTask = async () => {
     if (!taskForm.title.trim()) return showToast('Task title is required', 'error');
     const { error } = await createProjectTask(tenant.id, activeProject.id, taskForm);
-    if (error) return showToast('Failed: ' + error.message, 'error');
+    if (error) return showToast(error.message, 'error');
     setTaskForm({ title: '', assigned_to: '', due_date: '' });
     const { data } = await listProjectTasks(activeProject.id);
     setTasks(data);
@@ -94,7 +95,8 @@ export default function ProjectsPage() {
   };
 
   const handleTaskStatus = async (id, status) => {
-    await updateTaskStatus(id, status);
+    const { error } = await updateTaskStatus(id, status);
+    if (error) showToast(error.message, 'error');
     const { data } = await listProjectTasks(activeProject.id);
     setTasks(data);
     fetchData();
@@ -219,9 +221,7 @@ export default function ProjectsPage() {
                       <td style={{ fontSize: 12 }}>{fmt.date(t.due_date)}</td>
                       <td>
                         <select className="form-select" style={{ fontSize: 12, padding: '4px 8px' }} value={t.status} onChange={(e) => handleTaskStatus(t.id, e.target.value)}>
-                          <option>To Do</option>
-                          <option>In Progress</option>
-                          <option>Done</option>
+                          {TASK_STATUSES.map((s) => <option key={s}>{s}</option>)}
                         </select>
                       </td>
                     </tr>

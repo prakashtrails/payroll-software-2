@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback, useMemo } from 'react';
 import Header from '@/components/Header';
 import { showToast } from '@/components/Toast';
 import { useAuth } from '@/context/AuthContext';
+import { useOutletView } from '@/context/OutletViewContext';
 import {
   listFeatures, listCompanyFeatureToggles, resolveFeatureState, setFeatureToggle, clearFeatureOverride,
 } from '@/services/featureService';
@@ -22,7 +23,12 @@ const OUTLET_HR_FEATURE_KEYS = [
 
 export default function HrFeatureSettingsPage() {
   const { tenant, profile } = useAuth();
-  const outletId = profile?.outlet_id || null;
+  const { outlets } = useOutletView();
+  // HR (admin) picks which outlet to configure, or '' for company-wide; an
+  // outlet manager (other tenants) is locked to their own outlet.
+  const isHr = profile?.role === 'admin';
+  const [hrOutletId, setHrOutletId] = useState('');
+  const outletId = isHr ? (hrOutletId || null) : (profile?.outlet_id || null);
   const [features, setFeatures] = useState([]);
   const [toggles, setToggles] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -70,9 +76,19 @@ export default function HrFeatureSettingsPage() {
 
   return (
     <>
-      <Header title="HR Settings" breadcrumb="Turn features on or off for your outlet's employee portal" />
+      <Header title="HR Settings" breadcrumb={isHr ? "Turn employee-portal features on or off, company-wide or per outlet" : "Turn features on or off for your outlet's employee portal"} />
       <div className="page-content">
-        {!outletId ? (
+        {isHr && (
+          <div className="card" style={{ padding: 14, marginBottom: 16, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+            <label className="form-label" style={{ margin: 0 }}>Apply to</label>
+            <select className="form-select" style={{ maxWidth: 280 }} value={hrOutletId} onChange={(e) => setHrOutletId(e.target.value)}>
+              <option value="">All outlets (company-wide)</option>
+              {outlets.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
+            </select>
+            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>An outlet setting overrides the company-wide one for that outlet.</span>
+          </div>
+        )}
+        {!outletId && !isHr ? (
           <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)' }}>
             You're not assigned to an outlet, so there's nothing to configure here yet.
           </div>

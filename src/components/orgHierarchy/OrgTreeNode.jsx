@@ -2,91 +2,80 @@ import React from 'react';
 import { fullName, getInitials, getAvatarColor } from '@/lib/helpers';
 
 /**
- * Recursive org-chart card. Connector lines are pure CSS (flex row of
- * children, each with a border-top + border-left "elbow") — no diagram
- * library needed for a shallow, mostly-static reporting tree.
+ * One org-chart card (Keka-style): avatar, name, designation, code/location
+ * and a DIVISION > DEPARTMENT footer. Positioning, connectors and animation
+ * live in OrgTree — this only renders the card at a fixed width/height so the
+ * layout maths there stays exact.
+ *
+ * Synthetic nodes (top-management / department / "no manager" group) reuse
+ * the same card with an icon avatar instead of initials.
  */
-export default function OrgTreeNode({ node, depth = 0, collapsedIds, onToggleCollapse, onAssignManager, levelLabel }) {
-  const isRoot = node.isSynthetic;
-  const hasChildren = node.children && node.children.length > 0;
-  const collapsed = collapsedIds.has(node.id);
-  const [g1, g2] = isRoot ? ['#00AEEF', '#0078A8'] : getAvatarColor(node.id).split(',');
+export default function OrgTreeNode({
+  node, width, height, collapsed, focused, onToggleCollapse, onAssignManager, onSelect,
+}) {
+  const isSynthetic = !!node.isSynthetic;
+  const directCount = node.children ? node.children.length : 0;
+  const avatarColor = isSynthetic
+    ? (node.isGroup ? '#94A3B8' : 'var(--primary)')
+    : getAvatarColor(node.id).split(',')[0];
+
+  const secondLine = isSynthetic ? node.subtitle : (node.designation || node.role);
+  const thirdLine = isSynthetic
+    ? null
+    : [node.employee_id && `#${node.employee_id}`, node.outlet_location].filter(Boolean).join(' · ');
+  const deptLine = !isSynthetic && [node.division, node.department].filter(Boolean)
+    .filter((v, i, arr) => arr.indexOf(v) === i).join(' > ');
+
+  const classes = ['org-card'];
+  if (isSynthetic && !node.isGroup) classes.push('is-top');
+  if (node.isGroup) classes.push('is-group');
+  if (focused) classes.push('is-focused');
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-      <div
-        className="card"
-        style={{
-          padding: '10px 14px', minWidth: 180, maxWidth: 220, display: 'flex', alignItems: 'center', gap: 10,
-          border: isRoot ? '1px solid var(--primary)' : '1px solid var(--border)', position: 'relative',
-        }}
-      >
-        <div
-          style={{
-            width: 36, height: 36, borderRadius: '50%', flexShrink: 0, display: 'flex', alignItems: 'center',
-            justifyContent: 'center', fontWeight: 600, fontSize: 13, color: '#fff',
-            background: `linear-gradient(135deg, ${g1}, ${g2})`,
-          }}
-        >
-          {isRoot ? <i className="fas fa-building" /> : getInitials(node.first_name, node.last_name)}
-        </div>
-        <div style={{ minWidth: 0, flex: 1 }}>
-          <div style={{ fontWeight: 600, fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={isRoot ? node.name : fullName(node)}>
-            {isRoot ? node.name : fullName(node)}
+    <div
+      className={classes.join(' ')}
+      style={{ width, height }}
+      data-org-card
+      onClick={() => onSelect(node)}
+      title={isSynthetic ? node.name : `${fullName(node)}${node.designation ? ` — ${node.designation}` : ''}`}
+    >
+      <div className="org-card-avatar" style={{ background: avatarColor }}>
+        {isSynthetic ? <i className={`fas ${node.icon || 'fa-building'}`} /> : getInitials(node.first_name, node.last_name)}
+      </div>
+
+      <div style={{ minWidth: 0, flex: 1 }}>
+        <div className="org-card-name">{isSynthetic ? node.name : fullName(node)}</div>
+        {secondLine && <div className="org-card-line">{secondLine}</div>}
+        {thirdLine && <div className="org-card-line">{thirdLine}</div>}
+        {deptLine && <div className="org-card-dept">{deptLine}</div>}
+        {node.reportsTo && (
+          <div className="org-card-line" style={{ fontSize: 11, marginTop: 2 }}>
+            <i className="fas fa-arrow-up" style={{ fontSize: 9, marginRight: 4 }} />
+            Reports to {fullName(node.reportsTo)}
           </div>
-          {!isRoot && (
-            <div style={{ fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-              {levelLabel || node.designation || node.role}
-            </div>
-          )}
-        </div>
-        {!isRoot && (
-          <button
-            className="btn-icon"
-            title="Reassign manager"
-            onClick={() => onAssignManager(node)}
-            style={{ border: 'none', background: 'none', cursor: 'pointer', color: 'var(--text-muted)', flexShrink: 0 }}
-          >
-            <i className="fas fa-pen" style={{ fontSize: 12 }} />
-          </button>
-        )}
-        {hasChildren && (
-          <button
-            title={collapsed ? 'Expand' : 'Collapse'}
-            onClick={() => onToggleCollapse(node.id)}
-            style={{
-              position: 'absolute', bottom: -10, left: '50%', transform: 'translateX(-50%)',
-              width: 20, height: 20, borderRadius: '50%', border: '1px solid var(--border)', background: 'var(--card-bg, #fff)',
-              cursor: 'pointer', fontSize: 10, color: 'var(--text-muted)', display: 'flex', alignItems: 'center', justifyContent: 'center', lineHeight: 1,
-            }}
-          >
-            <i className={`fas fa-chevron-${collapsed ? 'down' : 'up'}`} />
-          </button>
         )}
       </div>
 
-      {hasChildren && !collapsed && (
-        <>
-          <div style={{ width: 1, height: 20, background: 'var(--border)' }} />
-          <div style={{ display: 'flex', gap: 24, position: 'relative', paddingTop: 1 }}>
-            {node.children.length > 1 && (
-              <div style={{ position: 'absolute', top: 0, left: '10%', right: '10%', height: 1, background: 'var(--border)' }} />
-            )}
-            {node.children.map((child) => (
-              <div key={child.id} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-                <div style={{ width: 1, height: 19, background: 'var(--border)' }} />
-                <OrgTreeNode
-                  node={child}
-                  depth={depth + 1}
-                  collapsedIds={collapsedIds}
-                  onToggleCollapse={onToggleCollapse}
-                  onAssignManager={onAssignManager}
-                  levelLabel={child.levelLabel}
-                />
-              </div>
-            ))}
-          </div>
-        </>
+      {!isSynthetic && (
+        <button
+          className="org-card-edit"
+          title="Reassign manager"
+          onClick={(e) => { e.stopPropagation(); onAssignManager(node); }}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <i className="fas fa-pen" style={{ fontSize: 11 }} />
+        </button>
+      )}
+
+      {directCount > 0 && (
+        <button
+          className="org-toggle"
+          title={collapsed ? `Show ${directCount} direct report${directCount === 1 ? '' : 's'}` : 'Collapse'}
+          onClick={(e) => { e.stopPropagation(); onToggleCollapse(node.id); }}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          {collapsed ? directCount : <i className="fas fa-minus" style={{ fontSize: 9 }} />}
+        </button>
       )}
     </div>
   );

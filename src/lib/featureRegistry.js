@@ -12,8 +12,10 @@
 export const FEATURE_REGISTRY = [
   { key: 'employees', name: 'Employees', category: 'General', description: 'Employee directory, profiles, and records management.', sort_order: 10 },
   { key: 'attendance', name: 'Attendance', category: 'General', description: 'Daily attendance, punches, and attendance overview.', sort_order: 20 },
+  { key: 'geofencing', name: 'Geofencing', category: 'General', description: 'Location-fence check on clock-in/out. Turn off for one outlet (via Scope below) to let that outlet\'s employees clock in/out from anywhere — leave on everywhere else.', sort_order: 25 },
   { key: 'shift_roster', name: 'Shift Roster', category: 'General', description: 'Assigning employees to shifts and roster planning.', sort_order: 30 },
   { key: 'employee_calendar', name: 'Employee Calendar', category: 'General', description: 'Calendar view of leave, holidays, and attendance.', sort_order: 40 },
+  { key: 'late_comers_report', name: 'Late Comers Report', category: 'General', description: 'Date-wise and date-range late/absent report, with repeat-offender highlighting.', sort_order: 45 },
   { key: 'master_report', name: 'Master Report', category: 'General', description: 'Consolidated cross-module reporting.', sort_order: 50 },
   { key: 'helpdesk', name: 'Helpdesk', category: 'General', description: 'Internal support ticketing for employees.', sort_order: 60 },
   { key: 'announcements', name: 'Announcements', category: 'General', description: 'Company-wide announcements and notices.', sort_order: 70 },
@@ -23,6 +25,7 @@ export const FEATURE_REGISTRY = [
   { key: 'training', name: 'Training & Skills', category: 'General', description: 'Training programs and skill tracking.', sort_order: 90 },
   { key: 'assets', name: 'Assets', category: 'General', description: 'Company equipment inventory and assignment tracking.', sort_order: 93 },
   { key: 'projects', name: 'Projects', category: 'General', description: 'Project tracking and task assignment.', sort_order: 94 },
+  { key: 'tasks', name: 'Tasks', category: 'General', description: 'Create, assign and track tasks with priorities, due dates, comments and status notifications.', sort_order: 95 },
   { key: 'grievances', name: 'Grievances', category: 'General', description: 'Employee grievance submission and resolution.', sort_order: 100 },
   { key: 'outlets_multi_branch', name: 'Outlets / Multi-Branch', category: 'General', description: 'Multi-outlet overview, combined and group dashboards.', sort_order: 110 },
 
@@ -42,11 +45,11 @@ export const FEATURE_REGISTRY = [
   { key: 'offer_letters', name: 'Offer Letters', category: 'Hiring', description: 'Offer letter generation and tracking.', sort_order: 330 },
   { key: 'refer', name: 'Refer a Candidate', category: 'Hiring', description: 'Employee referral submissions.', sort_order: 340 },
 
-  { key: 'performance_kras', name: 'KRAs', category: 'Performance', description: 'Key result area goal tracking.', sort_order: 400 },
+  { key: 'performance_kras', name: 'Goals & Scorecards', category: 'Performance', description: 'Goal alignment, KRA/KPI scorecards, monthly results, approvals and analytics.', sort_order: 400 },
   { key: 'performance_one_on_ones', name: '1:1 Meetings', category: 'Performance', description: 'One-on-one meeting scheduling and notes.', sort_order: 410 },
   { key: 'performance_feedback', name: 'Feedback', category: 'Performance', description: 'Peer and manager feedback.', sort_order: 420 },
   { key: 'performance_pip', name: 'PIP', category: 'Performance', description: 'Performance improvement plans.', sort_order: 430 },
-  { key: 'performance_reviews', name: 'Reviews', category: 'Performance', description: 'Formal performance review cycles.', sort_order: 440 },
+  { key: 'performance_reviews', name: 'Performance Reviews', category: 'Performance', description: 'Cycle appraisals, review templates and independent (peer, 360, project) reviews.', sort_order: 440 },
 
   { key: 'salary_structure', name: 'Salary Structure', category: 'Payroll', description: 'Employee salary component structure.', sort_order: 500 },
   { key: 'run_payroll', name: 'Run Payroll', category: 'Payroll', description: 'Monthly payroll processing.', sort_order: 510 },
@@ -56,4 +59,10 @@ export const FEATURE_REGISTRY = [
   { key: 'tax_slabs', name: 'Income Tax Slabs', category: 'Payroll', description: 'Income tax slab configuration.', sort_order: 550 },
 
   { key: 'approval_chains', name: 'Approval Chains', category: 'System', description: 'Multi-step approval workflow configuration.', sort_order: 600 },
+
+  // Premium: is_premium defaults every other entry above to `false` (enabled
+  // by default, same as before). A premium feature instead defaults to OFF
+  // for every tenant until a superadmin explicitly turns it on from Toggle
+  // Services — see resolveFeatureState()'s defaultEnabled param.
+  { key: 'live_tracking', name: 'Live Tracking', category: 'Premium', description: 'Real-time and historical field-employee location tracking, with standing/moving time and a route map. Opt in per employee.', sort_order: 700, is_premium: true },
 ];

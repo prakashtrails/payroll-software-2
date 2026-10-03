@@ -5,8 +5,12 @@ import { showToast } from '@/components/Toast';
 import { useAuth } from '@/context/AuthContext';
 import { useOutletView } from '@/context/OutletViewContext';
 import { listActiveEmployees } from '@/services/employeeService';
-import { fetchMyMonthAttendance, fetchEmployeeProfileInfo } from '@/services/attendanceService';
-import { fmt, fmtTime12, dateStr, monthLabel, fullName, scopedToOutlet } from '@/lib/helpers';
+import { fetchMyMonthAttendance, fetchEmployeeProfileInfo, fetchTeamAttendance, fetchAllTenantAttendance } from '@/services/attendanceService';
+import {
+  fmt, fmtTime12, fmtDuration, dateStr, monthLabel, fullName, scopedToOutlet, isTenantWeeklyOff,
+  isShortDay, MONTHLY_LATE_HIGHLIGHT_LIMIT, toTitleCase, probationInfo, isRaniwalaTenant, raniwalaPayableOtHours,
+} from '@/lib/helpers';
+import ExtraHoursCell from '@/components/ExtraHoursCell';
 
 function getFirstIn(punches) {
   return (punches || [])
@@ -19,25 +23,54 @@ function getLastOut(punches) {
   return outs[outs.length - 1]?.punch_time || null;
 }
 
+// `source` ('app'/'device'/'manual') of the punch getFirstIn/getLastOut
+// picked — used only to show HR the small "via App" indicator, so this stays
+// separate from the two functions above rather than changing their (widely
+// reused, export-facing) string-returning shape.
+function getFirstInSource(punches) {
+  return (punches || [])
+    .filter(p => p.punch_type === 'in')
+    .sort((a, b) => a.punch_time.localeCompare(b.punch_time))[0]?.source || null;
+}
+
+function getLastOutSource(punches) {
+  const outs = (punches || []).filter(p => p.punch_type === 'out').sort((a, b) => a.punch_time.localeCompare(b.punch_time));
+  return outs[outs.length - 1]?.source || null;
+}
+
 const STATUS_COLOR = {
   Present: 'var(--success)',
   Late: 'var(--accent)',
   'Half Day': 'var(--warning)',
+  Mispunch: 'var(--danger)',
   Absent: 'var(--danger)',
   Leave: 'var(--purple)',
+  'Pending Approval': 'var(--warning)',
 };
 
 const now = new Date();
 
 export default function EmployeeCalendarPage() {
   const { tenant } = useAuth();
-  const { outletProfileIds } = useOutletView();
+  const { outlets, outletProfileIds } = useOutletView();
+  // Outlet lookup for weekly-off resolution — an outlet's own weekly_off_days
+  // (e.g. Raniwala's Delhi outlet off Monday) overrides the tenant-wide
+  // default (Sunday), so "Weekend" must be resolved per employee, not off
+  // the tenant alone.
+  const outletById = Object.fromEntries(outlets.map((o) => [o.id, o]));
+  const [viewMode, setViewMode] = useState('employee'); // 'employee' | 'date'
   const [employees, setEmployees] = useState([]);
   const [selectedId, setSelectedId] = useState('');
   const [records, setRecords] = useState([]);
   const [empProfile, setEmpProfile] = useState(null);
   const [loadingEmps, setLoadingEmps] = useState(true);
   const [loading, setLoading] = useState(false);
+
+  // By-date mode: only absent/late employees for one selected date
+  const [dateForList, setDateForList] = useState(dateStr(now));
+  const [dateRecords, setDateRecords] = useState([]);
+  const [loadingDateList, setLoadingDateList] = useState(false);
+  const [dateMonthAtt, setDateMonthAtt] = useState([]); // whole calendar month of dateForList, all employees — for the >3-late highlight
   const [viewMonth, setViewMonth] = useState(now.getMonth()); // 0-based
   const [viewYear, setViewYear] = useState(now.getFullYear());
   const [searchTerm, setSearchTerm] = useState('');
@@ -65,7 +98,8 @@ export default function EmployeeCalendarPage() {
     if (!q) return true;
     const name = fullName(emp).toLowerCase();
     const dept = (emp.department || '').toLowerCase();
-    return name.includes(q) || dept.includes(q);
+    const code = `${emp.employee_id || ''} ${emp.essl_employee_code || ''}`.toLowerCase();
+    return name.includes(q) || dept.includes(q) || code.includes(q);
   });
 
   useEffect(() => {
@@ -96,6 +130,73 @@ export default function EmployeeCalendarPage() {
       else setRecords(data || []);
     }).finally(() => setLoading(false));
   }, [selectedId, viewMonth, viewYear]);
+
+  // By-date mode: fetch every employee's attendance for the selected date and
+  // keep only Absent/Late — the reverse of the by-employee view above (one
+  // date, many employees, instead of one employee, many dates).
+  useEffect(() => {
+    if (!tenant || viewMode !== 'date' || !dateForList) return;
+    setLoadingDateList(true);
+    fetchTeamAttendance(tenant.id, dateForList).then(({ records: recs, error }) => {
+      if (error) showToast(error.message, 'error');
+      else setDateRecords(scopedToOutlet(recs || [], outletProfileIds, 'profile_id'));
+    }).finally(() => setLoadingDateList(false));
+  }, [tenant, viewMode, dateForList, outletProfileIds]);
+
+  // Whole calendar month containing dateForList, all employees — used only to
+  // count each employee's Late days this month for the repeat-offender highlight.
+  useEffect(() => {
+    if (!tenant || viewMode !== 'date' || !dateForList) return;
+    const d = new Date(dateForList);
+    fetchAllTenantAttendance(tenant.id, d.getFullYear(), d.getMonth()).then(({ data }) => setDateMonthAtt(data || []));
+  }, [tenant, viewMode, dateForList]);
+
+  const dateMonthLateCountByProfile = (() => {
+    const counts = {};
+    dateMonthAtt.forEach((r) => {
+      if (r.status !== 'Late') return;
+      counts[r.profile_id] = (counts[r.profile_id] || 0) + 1;
+    });
+    return counts;
+  })();
+
+  const dateModeRows = (() => {
+    const byProfile = Object.fromEntries(dateRecords.map((r) => [r.profile_id, r]));
+    const listDay = new Date(dateForList);
+    return employees
+      .map((emp) => {
+        const rec = byProfile[emp.id];
+        // No punch on the employee's own effective weekly-off day (outlet
+        // override, e.g. Raniwala's Delhi off Monday, falling back to the
+        // tenant default) is a weekend, not an absence.
+        const isWeekend = !rec && isTenantWeeklyOff(listDay, tenant, outletById[emp.outlet_id]);
+        const status = rec?.status || (isWeekend ? 'Weekend' : 'Absent');
+        const lateThisMonth = dateMonthLateCountByProfile[emp.id] || 0;
+        return {
+          emp, status,
+          clockIn: rec ? getFirstIn(rec.punches) : null,
+          rawHours: rec?.total_hours || null,
+          isRepeatLate: lateThisMonth > MONTHLY_LATE_HIGHLIGHT_LIMIT,
+          lateThisMonth,
+        };
+      })
+      .filter((r) => r.status === 'Absent' || r.status === 'Late')
+      .sort((a, b) => fullName(a.emp).localeCompare(fullName(b.emp)));
+  })();
+
+  const downloadDateModeList = () => {
+    if (!dateModeRows.length) return showToast('No absent/late employees for this date', 'warning');
+    const headers = ['#', 'Employee Name', 'Department', 'Designation', 'Status', 'Clock In', 'Hours', 'Late This Month'];
+    const rows = dateModeRows.map((r, i) => [
+      i + 1, fullName(r.emp), r.emp.department || '', r.emp.designation || '',
+      r.status, r.clockIn ? fmtTime12(r.clockIn) : '', r.rawHours ?? '', r.lateThisMonth,
+    ]);
+    const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+    ws['!cols'] = [{ wch: 5 }, { wch: 24 }, { wch: 18 }, { wch: 20 }, { wch: 10 }, { wch: 12 }, { wch: 8 }, { wch: 14 }];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Absent & Late');
+    XLSX.writeFile(wb, `absent_late_${dateForList}.xlsx`);
+  };
 
   // Build month options from join date (or 12 months back) to current month, newest first
   const monthOptions = () => {
@@ -134,45 +235,60 @@ export default function EmployeeCalendarPage() {
 
   const days = buildDays();
 
-  // Month summary stats (weekdays only)
-  const stats = { present: 0, absent: 0, halfDay: 0, late: 0, leave: 0 };
+  // Selected employee's own outlet — its weekly_off_days override (e.g.
+  // Raniwala's Delhi outlet off Monday) takes precedence over the tenant
+  // default (Sunday) for every weekend computation below.
+  const selectedEmp = employees.find((e) => e.id === selectedId);
+  const selectedOutlet = outletById[selectedEmp?.outlet_id];
+  const raniwala = isRaniwalaTenant(tenant);
+
+  // Month summary stats. An untouched weekly off is skipped, but one the
+  // employee actually punched on counts like any other worked day.
+  const stats = { present: 0, absent: 0, halfDay: 0, late: 0, leave: 0, earlyLate: 0, mispunch: 0, otHours: 0, compOff: 0 };
   days.forEach(({ rec, dayObj }) => {
-    if (dayObj.getDay() === 0 || dayObj.getDay() === 6) return;
+    if (rec) {
+      if (selectedEmp?.overtime_applicable) stats.otHours += raniwalaPayableOtHours(rec.total_hours);
+      stats.compOff += Number(rec.comp_off_credit) || 0;
+    }
+    if (!rec && isTenantWeeklyOff(dayObj, tenant, selectedOutlet)) return;
     const s = rec?.status;
     if (s === 'Present') stats.present++;
     else if (s === 'Late') { stats.present++; stats.late++; }
     else if (s === 'Half Day') stats.halfDay++;
+    else if (s === 'Mispunch') stats.mispunch++;
     else if (s === 'Leave') stats.leave++;
     else stats.absent++;
+    if (rec?.early_late_flag) stats.earlyLate++;
   });
 
   const exportToExcel = () => {
     if (!empProfile) return;
-    const empName = fullName(empProfile);
+    const empName = tenant?.uppercase_user_data ? fullName(empProfile) : toTitleCase(fullName(empProfile));
     const wsData = [
       [`Employee: ${empName}`],
       [`Month: ${monthLabel(viewMonth, viewYear)}`],
       [`Generated: ${new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}`],
       [],
-      ['Date', 'Day', 'Status', 'Clock In', 'Clock Out', 'Hours'],
+      ['Date', 'Day', 'Status', 'Clock In', 'Clock Out', 'Hours', 'Early/Late'],
     ];
     days.forEach(({ date, rec, dayObj }) => {
-      const isWeekend = dayObj.getDay() === 0 || dayObj.getDay() === 6;
+      const isWeekend = isTenantWeeklyOff(dayObj, tenant, selectedOutlet);
       wsData.push([
         date,
         dayObj.toLocaleDateString('en-IN', { weekday: 'short' }),
         rec?.status || (isWeekend ? 'Weekend' : 'Absent'),
         rec ? (getFirstIn(rec.punches) || '') : '',
         rec ? (getLastOut(rec.punches) || '') : '',
-        rec?.total_hours ? `${rec.total_hours}h` : '',
+        rec?.total_hours ? fmtDuration(rec.total_hours) : '',
+        rec?.early_late_flag ? 'Counted' : rec?.early_late_graced ? 'Graced' : '',
       ]);
     });
     const ws = XLSX.utils.aoa_to_sheet(wsData);
-    ws['!cols'] = [{ wch: 14 }, { wch: 6 }, { wch: 10 }, { wch: 12 }, { wch: 12 }, { wch: 8 }];
+    ws['!cols'] = [{ wch: 14 }, { wch: 6 }, { wch: 10 }, { wch: 12 }, { wch: 12 }, { wch: 14 }, { wch: 10 }];
     ws['!merges'] = [
-      { s: { r: 0, c: 0 }, e: { r: 0, c: 5 } },
-      { s: { r: 1, c: 0 }, e: { r: 1, c: 5 } },
-      { s: { r: 2, c: 0 }, e: { r: 2, c: 5 } },
+      { s: { r: 0, c: 0 }, e: { r: 0, c: 6 } },
+      { s: { r: 1, c: 0 }, e: { r: 1, c: 6 } },
+      { s: { r: 2, c: 0 }, e: { r: 2, c: 6 } },
     ];
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Attendance');
@@ -187,16 +303,97 @@ export default function EmployeeCalendarPage() {
         title="Employee Calendar"
         breadcrumb="Dashboard / Employee Calendar"
         actions={
-          selectedId && days.length > 0 && (
+          viewMode === 'employee' && selectedId && days.length > 0 ? (
             <button className="btn btn-outline" onClick={exportToExcel}>
               <i className="fas fa-file-excel" style={{ marginRight: 6 }} />
               Export to Excel
             </button>
-          )
+          ) : viewMode === 'date' ? (
+            <button className="btn btn-outline" onClick={downloadDateModeList} disabled={loadingDateList || dateModeRows.length === 0}>
+              <i className="fas fa-download" style={{ marginRight: 6 }} />
+              Download List
+            </button>
+          ) : null
         }
       />
 
-      <div className="card" style={{ marginTop: 24 }}>
+      <div style={{ display: 'flex', gap: 8, marginTop: 20 }}>
+        <button className={`btn ${viewMode === 'employee' ? 'btn-primary' : 'btn-outline'}`} onClick={() => setViewMode('employee')}>
+          By Employee
+        </button>
+        <button className={`btn ${viewMode === 'date' ? 'btn-primary' : 'btn-outline'}`} onClick={() => setViewMode('date')}>
+          By Date (Absent &amp; Late)
+        </button>
+      </div>
+
+      {viewMode === 'date' && (
+        <div className="card" style={{ marginTop: 16 }}>
+          <div className="card-header" style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Date:</span>
+            <input
+              type="date"
+              className="form-select"
+              style={{ maxWidth: 180 }}
+              value={dateForList}
+              max={dateStr(new Date())}
+              onChange={(e) => setDateForList(e.target.value)}
+            />
+          </div>
+          {loadingEmps || loadingDateList ? (
+            <div style={{ textAlign: 'center', padding: 60 }}><div className="spinner" /></div>
+          ) : (
+            <div className="table-wrap">
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>Employee</th>
+                    <th>Department</th>
+                    <th>Designation</th>
+                    <th>Status</th>
+                    <th>Clock In</th>
+                    <th>Hours</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {dateModeRows.length === 0 ? (
+                    <tr><td colSpan="6" style={{ textAlign: 'center', padding: 40, color: 'var(--text-muted)' }}>
+                      No absent or late employees on {dateForList}.
+                    </td></tr>
+                  ) : dateModeRows.map((r) => {
+                    const isShort = isShortDay(r.rawHours);
+                    return (
+                    <tr key={r.emp.id} style={r.isRepeatLate ? { background: 'var(--danger-light, #fee2e2)' } : undefined}>
+                      <td>{fullName(r.emp)}</td>
+                      <td>{r.emp.department || ''}</td>
+                      <td>{r.emp.designation || ''}</td>
+                      <td>
+                        <span style={{
+                          display: 'inline-block', padding: '2px 8px', borderRadius: 12, fontSize: 11, fontWeight: 600,
+                          background: r.status === 'Absent' ? 'var(--danger-light, #fee2e2)' : 'var(--accent-light, #fef3c7)',
+                          color: r.status === 'Absent' ? 'var(--danger)' : 'var(--accent)',
+                        }}>
+                          {r.status}
+                        </span>
+                        {r.isRepeatLate && (
+                          <i className="fas fa-exclamation-triangle" style={{ marginLeft: 6, color: 'var(--danger)' }} title={`Late ${r.lateThisMonth}x this month`} />
+                        )}
+                      </td>
+                      <td style={{ fontFamily: 'monospace' }}>{r.clockIn ? fmtTime12(r.clockIn) : '—'}</td>
+                      <td style={isShort ? { color: 'var(--danger)', fontWeight: 700 } : undefined} title={isShort ? 'Worked less than 8 hr 30 min' : undefined}>
+                        {r.rawHours ? `${r.rawHours}h` : '—'}{isShort && <i className="fas fa-triangle-exclamation" style={{ marginLeft: 6 }} />}
+                      </td>
+                    </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {viewMode === 'employee' && (
+      <div className="card" style={{ marginTop: 16 }}>
         {/* Controls row */}
         <div className="card-header" style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <h3 style={{ margin: 0, whiteSpace: 'nowrap' }}>Select Employee</h3>
@@ -211,7 +408,7 @@ export default function EmployeeCalendarPage() {
                 type="text"
                 className="form-select"
                 style={{ paddingLeft: 28, width: '100%' }}
-                placeholder={loadingEmps ? 'Loading employees…' : 'Search employee by name or department…'}
+                placeholder={loadingEmps ? 'Loading employees…' : 'Search employee by name, EMP code or department…'}
                 value={searchTerm}
                 disabled={loadingEmps}
                 onChange={e => {
@@ -247,7 +444,7 @@ export default function EmployeeCalendarPage() {
                       background: emp.id === selectedId ? 'var(--primary-light, #ede9fe)' : 'transparent',
                     }}
                   >
-                    {fullName(emp)}{emp.department ? ` · ${emp.department}` : ''}
+                    {fullName(emp)}{emp.employee_id ? ` (${emp.employee_id})` : ''}{emp.department ? ` · ${emp.department}` : ''}
                   </div>
                 ))}
               </div>
@@ -284,9 +481,25 @@ export default function EmployeeCalendarPage() {
               padding: '3px 12px', fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap',
             }}>
               <i className="fas fa-calendar-check" />
-              Joined: {fmt.date(empProfile.join_date)}
+              Date of Joining: {fmt.date(empProfile.join_date)}
             </span>
           )}
+          {(() => {
+            const prob = probationInfo(empProfile?.join_date, empProfile?.probation_months);
+            if (!prob) return null;
+            const done = prob.completed;
+            return (
+              <span style={{
+                display: 'inline-flex', alignItems: 'center', gap: 6,
+                background: done ? 'var(--success-light)' : 'var(--warning-light)', color: done ? 'var(--success)' : 'var(--warning)',
+                border: `1px solid ${done ? 'var(--success)' : 'var(--warning)'}`, borderRadius: 20,
+                padding: '3px 12px', fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap',
+              }}>
+                <i className={`fas ${done ? 'fa-check-circle' : 'fa-hourglass-half'}`} />
+                Probation: {done ? 'Completed' : `completes ${fmt.date(prob.endsOn)}`}
+              </span>
+            );
+          })()}
         </div>
 
         {!selectedId && (
@@ -305,14 +518,25 @@ export default function EmployeeCalendarPage() {
             {/* Stats bar */}
             <div style={{ display: 'flex', gap: 28, padding: '14px 20px', borderBottom: '1px solid var(--border)', flexWrap: 'wrap' }}>
               {[
-                ['Present', stats.present, 'var(--success)'],
-                ['Absent', stats.absent, 'var(--danger)'],
-                ['Half Day', stats.halfDay, 'var(--warning)'],
-                ['Late', stats.late, 'var(--accent)'],
-                ['Leave', stats.leave, 'var(--purple)'],
-              ].map(([label, val, color]) => (
-                <div key={label} style={{ textAlign: 'center', minWidth: 52 }}>
-                  <div style={{ fontSize: 22, fontWeight: 700, color }}>{val}</div>
+                ['Present', stats.present, 'var(--success)', false],
+                ['Absent', stats.absent, 'var(--danger)', false],
+                ['Half Day', stats.halfDay, 'var(--warning)', false],
+                ['Late', stats.late, 'var(--accent)', stats.late > MONTHLY_LATE_HIGHLIGHT_LIMIT],
+                ['Mispunch', stats.mispunch, 'var(--danger)', false],
+                ['Leave', stats.leave, 'var(--purple)', false],
+                ['Early Left / Late Arrival', stats.earlyLate, 'var(--danger)', false],
+                ...(raniwala ? [
+                  ...(selectedEmp?.overtime_applicable ? [['OT Hours (payable)', stats.otHours, 'var(--success)', false]] : []),
+                  ['Comp Off Earned', stats.compOff, 'var(--purple)', false],
+                ] : []),
+              ].map(([label, val, color, flagged]) => (
+                <div key={label} style={{
+                  textAlign: 'center', minWidth: 52,
+                  ...(flagged ? { background: 'var(--danger-light, #fee2e2)', borderRadius: 8, padding: '4px 8px' } : {}),
+                }}>
+                  <div style={{ fontSize: 22, fontWeight: 700, color: flagged ? 'var(--danger)' : color }}>
+                    {val}{flagged && <i className="fas fa-exclamation-triangle" style={{ marginLeft: 6, fontSize: 14 }} title={`More than ${MONTHLY_LATE_HIGHLIGHT_LIMIT} late days this month`} />}
+                  </div>
                   <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{label}</div>
                 </div>
               ))}
@@ -334,25 +558,29 @@ export default function EmployeeCalendarPage() {
                     <th>Clock In</th>
                     <th>Clock Out</th>
                     <th>Hours</th>
+                    {raniwala && <th>Extra Hours</th>}
+                    <th>Early/Late</th>
                   </tr>
                 </thead>
                 <tbody>
                   {days.length === 0 ? (
                     <tr>
-                      <td colSpan="6" style={{ textAlign: 'center', padding: 40, color: 'var(--text-muted)' }}>
+                      <td colSpan={raniwala ? 8 : 7} style={{ textAlign: 'center', padding: 40, color: 'var(--text-muted)' }}>
                         No data for {monthLabel(viewMonth, viewYear)}.
                       </td>
                     </tr>
                   ) : days.map(({ date, rec, dayObj }) => {
-                    const isWeekend = dayObj.getDay() === 0 || dayObj.getDay() === 6;
+                    const isWeekend = isTenantWeeklyOff(dayObj, tenant, selectedOutlet);
                     const dayName = dayObj.toLocaleDateString('en-IN', { weekday: 'short' });
                     const clockIn = rec ? getFirstIn(rec.punches) : null;
                     const clockOut = rec ? getLastOut(rec.punches) : null;
+                    const clockInSource = rec ? getFirstInSource(rec.punches) : null;
+                    const clockOutSource = rec ? getLastOutSource(rec.punches) : null;
                     const status = rec?.status || (isWeekend ? 'Weekend' : 'Absent');
                     const color = STATUS_COLOR[status];
 
                     return (
-                      <tr key={date} style={isWeekend ? { opacity: 0.55 } : undefined}>
+                      <tr key={date} style={isWeekend && !rec ? { opacity: 0.55 } : undefined}>
                         <td style={{ fontFamily: 'monospace', fontSize: 13 }}>{date}</td>
                         <td style={{ fontSize: 12, color: isWeekend ? 'var(--text-muted)' : undefined }}>{dayName}</td>
                         <td>
@@ -368,12 +596,36 @@ export default function EmployeeCalendarPage() {
                         </td>
                         <td style={{ fontFamily: 'monospace', fontSize: 13, color: 'var(--success)' }}>
                           {clockIn ? fmtTime12(clockIn) : '—'}
+                          {clockInSource === 'app' && (
+                            <i className="fas fa-mobile-screen-button" style={{ marginLeft: 6, color: 'var(--primary)' }} title="Clocked in via App" />
+                          )}
                         </td>
                         <td style={{ fontFamily: 'monospace', fontSize: 13, color: 'var(--danger)' }}>
                           {clockOut ? fmtTime12(clockOut) : '—'}
+                          {clockOutSource === 'app' && (
+                            <i className="fas fa-mobile-screen-button" style={{ marginLeft: 6, color: 'var(--primary)' }} title="Clocked out via App" />
+                          )}
                         </td>
-                        <td style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                          {rec?.total_hours ? `${rec.total_hours}h` : '—'}
+                        <td
+                          style={isShortDay(rec?.total_hours) ? { fontSize: 12, color: 'var(--danger)', fontWeight: 700 } : { fontSize: 12, color: 'var(--text-muted)' }}
+                          title={isShortDay(rec?.total_hours) ? 'Worked less than 8 hr 30 min' : undefined}
+                        >
+                          {rec?.total_hours ? fmtDuration(rec.total_hours) : '—'}
+                          {isShortDay(rec?.total_hours) && <i className="fas fa-triangle-exclamation" style={{ marginLeft: 6 }} />}
+                        </td>
+                        {raniwala && (
+                          <td style={{ fontSize: 12 }}>
+                            <ExtraHoursCell totalHours={rec?.total_hours} overtime={selectedEmp?.overtime_applicable} compOffCredit={Number(rec?.comp_off_credit) || 0} />
+                          </td>
+                        )}
+                        <td style={{ textAlign: 'center' }}>
+                          {rec?.early_late_flag ? (
+                            <span className="badge badge-danger" title="Counted — not this month's free breach">Counted</span>
+                          ) : rec?.early_late_graced ? (
+                            <span className="badge badge-secondary" title="Graced — first breach this month, not counted">Graced</span>
+                          ) : (
+                            <span style={{ color: 'var(--text-muted)' }}>—</span>
+                          )}
                         </td>
                       </tr>
                     );
@@ -384,6 +636,7 @@ export default function EmployeeCalendarPage() {
           </>
         )}
       </div>
+      )}
     </div>
   );
 }

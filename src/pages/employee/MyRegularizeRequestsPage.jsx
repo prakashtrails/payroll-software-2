@@ -2,11 +2,12 @@ import React, { useEffect, useState, useCallback } from 'react';
 import Header from '@/components/Header';
 import Modal from '@/components/Modal';
 import QuotaRings from '@/components/QuotaRings';
+import RegularizeExtensionNotice from '@/components/RegularizeExtensionNotice';
 import { showToast } from '@/components/Toast';
 import { useAuth } from '@/context/AuthContext';
 import { submitRegularizeRequest, listMyRegularizeRequests } from '@/services/attendanceService';
 import { fetchMyQuota, SELF_LIMIT } from '@/services/requestQuotaService';
-import { todayStr, fmtTime12 } from '@/lib/helpers';
+import { todayStr, fmtTime12, regularizeMinDate, regularizeWindowLabel, isRaniwalaTenant } from '@/lib/helpers';
 
 const STATUS_BADGE = {
   Pending:  'badge-warning',
@@ -62,6 +63,7 @@ export function RegularizeContent() {
   const handleSubmit = async () => {
     if (!form.date) return showToast('Please select the date', 'error');
     if (form.date > todayStr()) return showToast('Cannot request regularization for a future date', 'error');
+    if (form.date < regularizeMinDate(tenant)) return showToast(`Regularization can only be requested for ${regularizeWindowLabel(tenant)}`, 'error');
     if (!form.clockInTime) return showToast('Clock-in time is required', 'error');
     if (!form.clockOutTime) return showToast('Clock-out time is required', 'error');
     if (form.clockInTime >= form.clockOutTime) return showToast('Clock-out must be after clock-in', 'error');
@@ -79,8 +81,8 @@ export function RegularizeContent() {
       const msg = tier === 'self'
         ? 'Auto-approved! Attendance updated instantly.'
         : tier === 'manager'
-        ? 'Request sent to Manager for approval'
-        : 'Request escalated to HR for approval';
+        ? 'Sent to your manager for approval — HR gets a copy'
+        : 'Sent to HR for approval';
       showToast(msg, tier === 'self' ? 'success' : 'info');
       setShowModal(false);
       fetchRequests();
@@ -97,8 +99,10 @@ export function RegularizeContent() {
   return (
     <>
       <div className="page-content">
+        <RegularizeExtensionNotice tenant={tenant} />
 
-        {quota && <QuotaRings quota={quota} autoApprovalEnabled={autoApprovalEnabled} title="Regularization Approval Quota" actionLabel="regularization request" />}
+        {/* Raniwala regularizations always go to the reporting manager — no self-approval quota to show. */}
+        {quota && !isRaniwalaTenant(tenant) && <QuotaRings quota={quota} autoApprovalEnabled={autoApprovalEnabled} title="Regularization Approval Quota" actionLabel="regularization request" />}
 
       <div className="filter-bar" style={{ marginTop: 16 }}>
           {['Pending', 'Approved', 'Rejected', 'All'].map(s => (
@@ -216,9 +220,9 @@ export function RegularizeContent() {
       >
         <div className="form-group">
           <label className="form-label">Date *</label>
-          <input type="date" className="form-input" max={todayStr()} value={form.date}
+          <input type="date" className="form-input" min={regularizeMinDate(tenant)} max={todayStr()} value={form.date}
             onChange={e => setForm({ ...form, date: e.target.value })} />
-          <div className="form-hint">Select the date you need to correct attendance for.</div>
+          <div className="form-hint">You can request a correction for {regularizeWindowLabel(tenant)} only. It goes to your manager for approval, and HR gets a copy (either can approve).</div>
         </div>
         <div className="form-row">
           <div className="form-group">

@@ -25,6 +25,7 @@ import { fmt, getInitials, getAvatarColor, todayStr, fullName, resolveEmployeeCr
 import { parseImportFile, runBulkImport, downloadSampleCSV, resolveLoginEmail, isValidEmail } from '@/lib/employeeImport';
 import { startProcess as startOnboardingProcess } from '@/services/onboardingService';
 import { advanceReferralStage } from '@/services/hiringService';
+import { lookupEsslCode, refreshEsslFromMachine, splitMachineName } from '@/services/esslService';
 
 function buildNewEmployeeId(currentId, destLocationCode) {
   if (!currentId || currentId.length < 4) return currentId || '';
@@ -515,7 +516,7 @@ function TempPasswordModal({ show, onClose, empName, username, password, passwor
 
 const EMPTY_FORM = {
   first_name: '', middle_name: '', last_name: '', email: '', phone: '',
-  department: '', designation: '', division: '', join_date: '', date_of_birth: '', ctc: '',
+  department: '', designation: '', division: '', divisionNew: '', join_date: '', date_of_birth: '', ctc: '',
   bank_acc: '', pan: '', aadhar: '', role: 'employee',
   weekly_holiday: 'Sunday', shift_id: '', leave_allocation: 0,
   country: 'India', passport_number: '', work_permit_number: '', work_permit_expiry: '',
@@ -523,7 +524,7 @@ const EMPTY_FORM = {
   pf_enabled: false, pf_number: '', pf_amount: '',
   esic_enabled: false, esic_number: '', esic_amount: '',
   employee_id: '', outlet_location: '', probation_months: 0, manager_id: '',
-  essl_employee_code: '',
+  essl_employee_code: '', overtime_applicable: false, comp_off_eligible: false,
 };
 
 function getComplianceStatus(emp) {
@@ -537,6 +538,95 @@ const COMPLIANCE_BADGE = {
   partial:   { label: 'Compliance',  cls: 'badge-warning' },
   na:        { label: 'N/A',         cls: 'badge-secondary' },
 };
+
+// What the punch machine has for the code typed in the Add/Edit form. Found:
+// every machine detail (name, department, location, shift, left date,
+// enrolled/first punch, totals) plus the last 10 punch days — next to what
+// CrewCore recorded when the code already belongs to an employee. Not found:
+// says so, and that this code's upcoming punches will land here and in
+// attendance on their own once it punches. Codes are unique per employee.
+const UPC = (v) => (v == null || v === '' ? '—' : String(v).toUpperCase());
+const fmtDay = (d) => (d ? new Date(`${d}T00:00:00`).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }).toUpperCase() : '—');
+
+function EsslLookupCard({ lookup, editId, onFillName, onUseCode, onCheckNow, showUseCode, showFillName }) {
+  if (!lookup) return null;
+  const box = (tone, children) => (
+    <div style={{ marginTop: 8, padding: '10px 12px', borderRadius: 8, border: `1px solid var(--${tone})`, background: `var(--${tone}-light)`, fontSize: 12 }}>
+      {children}
+    </div>
+  );
+  if (lookup.checking) {
+    return box('primary', <><i className="fas fa-spinner fa-spin" /> Checking code {lookup.code} on the punch machine…</>);
+  }
+  if (lookup.notFound) {
+    return box('warning', <>
+      <div style={{ fontWeight: 700 }}><i className="fas fa-fingerprint" /> CODE {lookup.code} IS NOT ON THE PUNCH MACHINE YET</div>
+      <div style={{ marginTop: 2 }}>
+        {lookup.checkedLive ? 'Checked the machine live just now. ' : ''}
+        Save the employee with this code — as soon as {lookup.code} is enrolled and punches, the upcoming records show up here, on the ESSL Records page and in attendance automatically (checked every 2 minutes).
+      </div>
+      {onCheckNow && <button type="button" className="btn btn-sm btn-outline" style={{ marginTop: 6 }} onClick={onCheckNow}><i className="fas fa-rotate" /> Check machine again</button>}
+    </>);
+  }
+  const m = lookup.machine || {};
+  const s = lookup.stats;
+  const days = lookup.recentDays || [];
+  const takenByOther = lookup.holder && lookup.holder.id !== editId;
+  const isThisEmployee = lookup.holder && lookup.holder.id === editId;
+  return box(takenByOther ? 'danger' : 'success', <>
+    <div style={{ fontWeight: 700, marginBottom: 4 }}>
+      <i className="fas fa-fingerprint" /> FOUND ON PUNCH MACHINE · CODE {lookup.code}
+    </div>
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '2px 12px' }}>
+      <div><span style={{ color: 'var(--text-muted)' }}>NAME:</span> <strong>{UPC(m.name)}</strong></div>
+      <div><span style={{ color: 'var(--text-muted)' }}>DEPARTMENT:</span> {UPC(m.department)}</div>
+      <div><span style={{ color: 'var(--text-muted)' }}>LOCATION:</span> {UPC(m.location)}</div>
+      <div><span style={{ color: 'var(--text-muted)' }}>SHIFT:</span> {UPC(m.shift)}</div>
+      <div><span style={{ color: 'var(--text-muted)' }}>STATUS:</span> {m.left_on ? <span style={{ color: 'var(--danger)', fontWeight: 600 }}>LEFT {fmtDay(m.left_on)}</span> : 'ACTIVE'}</div>
+      <div><span style={{ color: 'var(--text-muted)' }}>DAYS PUNCHED:</span> {s ? `${s.days_punched} (${s.days_this_month} THIS MONTH)` : '0'}</div>
+      <div><span style={{ color: 'var(--text-muted)' }}>FIRST PUNCH:</span> {fmtDay(s?.first_date)}</div>
+      <div><span style={{ color: 'var(--text-muted)' }}>LAST PUNCH:</span> {fmtDay(s?.last_date)}</div>
+    </div>
+    {days.length > 0 && (
+      <table style={{ width: '100%', marginTop: 8, fontSize: 11, borderCollapse: 'collapse' }}>
+        <thead>
+          <tr style={{ textAlign: 'left', color: 'var(--text-muted)' }}>
+            <th>DATE</th><th>IN</th><th>OUT</th><th>PUNCHES</th>{lookup.holder && <th>CREWCORE</th>}
+          </tr>
+        </thead>
+        <tbody>
+          {days.map((d) => (
+            <tr key={d.date} style={{ borderTop: '1px solid var(--border)' }}>
+              <td>{fmtDay(d.date)}</td>
+              <td>{d.first_in || '—'}</td>
+              <td>{d.last_out || <span style={{ color: 'var(--warning)' }}>NO OUT</span>}</td>
+              <td>{d.punch_count > 0 ? d.punch_count : '—'}</td>
+              {lookup.holder && <td>{d.crewcore ? `${UPC(d.crewcore.status)}${d.crewcore.total_hours ? ` · ${d.crewcore.total_hours}H` : ''}` : '—'}</td>}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    )}
+    {takenByOther && (
+      <div style={{ marginTop: 6, color: 'var(--danger)', fontWeight: 600 }}>
+        Already linked to {`${lookup.holder.first_name || ''} ${lookup.holder.last_name || ''}`.trim().toUpperCase()} (EMP {lookup.holder.employee_id || '—'}). A code can belong to one employee only.
+      </div>
+    )}
+    {!lookup.holder && (
+      <div style={{ marginTop: 6 }}>Not linked to anyone yet — on save, all of these punches (from the go-live date) are added to this employee's attendance straight away.</div>
+    )}
+    {isThisEmployee && (
+      <div style={{ marginTop: 6 }}>Linked to this employee — new punches sync automatically every 2 minutes.</div>
+    )}
+    {!takenByOther && (showFillName || showUseCode || onCheckNow) && (
+      <div style={{ marginTop: 6, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        {showUseCode && <button type="button" className="btn btn-sm btn-outline" onClick={onUseCode}>Use as ESSL code</button>}
+        {showFillName && m.name && <button type="button" className="btn btn-sm btn-outline" onClick={onFillName}>Fill name from machine</button>}
+        {onCheckNow && <button type="button" className="btn btn-sm btn-outline" onClick={onCheckNow}><i className="fas fa-rotate" /> Check machine now</button>}
+      </div>
+    )}
+  </>);
+}
 
 export default function EmployeesPage() {
   const { tenant, profile } = useAuth();
@@ -577,11 +667,18 @@ export default function EmployeesPage() {
   // distinct from `departments` above, which stays the full tenant-wide
   // master list for the Add/Edit Employee form's Department dropdown.
   const [filterDepartments, setFilterDepartments] = useState([]);
+  // Division options for the Add/Edit Employee form's Division dropdown —
+  // narrowed to whatever department is currently selected in that form
+  // (Department -> Division cascade), refetched by the effect below whenever
+  // `form.department` changes. Distinct from `divisions` above, which is
+  // outlet-scoped and feeds the list page's filter bar instead.
+  const [allDivisions, setAllDivisions] = useState([]);
   const [shifts, setShifts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [clockedInSet, setClockedInSet] = useState(new Set());
   const [importProgress, setImportProgress] = useState(null); // null | { current, total }
   const [allowPlaceholderLogins, setAllowPlaceholderLogins] = useState(false);
+  const [allowMissingCtc, setAllowMissingCtc] = useState(false);
 
   // ---- modal ----
   const [showModal, setShowModal] = useState(false);
@@ -592,6 +689,19 @@ export default function EmployeesPage() {
   const [prefillReferralId, setPrefillReferralId] = useState(null); // set when opened via "Convert to Employee" from the recruitment pipeline
   const [resettingId, setResettingId] = useState(null);
   const [extraOutletIds, setExtraOutletIds] = useState([]); // multi-outlet clock-in access, existing employees only
+
+  // ---- punch-machine lookup (ESSL mirror) ----
+  // Raniwala's EMP code IS the ESSL code, so for them the lookup falls back to
+  // the EMP code field when the ESSL field is empty.
+  const isRaniwala = isRaniwalaTenant(tenant);
+  // Punch-machine data is HR-only (RLS + essl-code-lookup enforce it too);
+  // managers using this page never get the lookup.
+  const isHr = profile?.role === 'admin' || profile?.role === 'superadmin';
+  const [esslLookup, setEsslLookup] = useState(null);
+  const lookupCode = useDebounce(
+    isHr ? String(form.essl_employee_code || (isRaniwala ? form.employee_id : '') || '').trim().toUpperCase() : '',
+    400,
+  );
 
   // ---- transfer ----
   const [transferEmp,   setTransferEmp]   = useState(null);
@@ -666,6 +776,7 @@ export default function EmployeesPage() {
       department: emp.department || '',
       designation: emp.designation || '',
       division: emp.division || '',
+      divisionNew: '',
       join_date: emp.join_date || '',
       date_of_birth: emp.date_of_birth || '',
       ctc: emp.ctc || '',
@@ -692,11 +803,39 @@ export default function EmployeesPage() {
       probation_months: emp.probation_months ?? 0,
       manager_id: emp.manager_id || '',
       essl_employee_code: emp.essl_employee_code || '',
+      overtime_applicable: !!emp.overtime_applicable,
+      comp_off_eligible: !!emp.comp_off_eligible,
     } : EMPTY_FORM);
     setExtraOutletIds([]);
     if (emp) listProfileOutletAccess(emp.id).then(({ data }) => setExtraOutletIds(data || []));
     setShowModal(true);
   };
+
+  // Department -> Division cascade for the Add/Edit Employee form: whenever
+  // the selected department changes (including on initial open), refetch the
+  // Division dropdown scoped to just that department. If the division
+  // currently on the form no longer belongs to the newly-fetched list (e.g.
+  // HR switched departments mid-edit), clear it back to "Select" instead of
+  // silently saving a division that doesn't actually exist under this
+  // department — same "clear stale selection" behavior as the filter bar
+  // above. This never fires on a fresh initial load with an unrelated
+  // division, since the employee's own current department+division combo is
+  // always a match for the very query that just ran.
+  useEffect(() => {
+    if (!tenant || !showModal) return;
+    let cancelled = false;
+    listDivisions(tenant.id, '', form.department).then(({ data }) => {
+      if (cancelled) return;
+      const next = data || [];
+      setAllDivisions(next);
+      setForm((f) => (
+        f.division && f.division !== '__new__' && !next.includes(f.division)
+          ? { ...f, division: '', divisionNew: '' }
+          : f
+      ));
+    });
+    return () => { cancelled = true; };
+  }, [tenant, showModal, form.department]);
 
   // Opened via "Convert to Employee →" on the Recruitment Pipeline page,
   // which navigates here with router state instead of a prop, since the two
@@ -708,6 +847,57 @@ export default function EmployeesPage() {
     navigate(location.pathname, { replace: true }); // clear router state so a refresh doesn't re-trigger
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Opened from the ESSL Records page: ?edit=<profile id> opens that
+  // employee's Edit form, ?newEssl=<code> opens Add Employee prefilled with
+  // what the punch machine has for that code.
+  useEffect(() => {
+    const editId = searchParams.get('edit');
+    const newEssl = searchParams.get('newEssl');
+    if (!tenant || (!editId && !newEssl)) return;
+    (async () => {
+      if (editId) {
+        const { data } = await supabase.from('profiles').select('*').eq('id', editId).eq('tenant_id', tenant.id).maybeSingle();
+        if (data) openModal(data);
+      } else {
+        const code = newEssl.trim().toUpperCase();
+        const [{ data: found }, { data: depts }] = await Promise.all([lookupEsslCode(tenant.id, code), listDepartments(tenant.id)]);
+        const machineDept = found?.machine?.department || '';
+        const dept = (depts || []).map((d) => d.name).find((n) => String(n).toUpperCase() === machineDept);
+        openModal(null, {
+          ...splitMachineName(found?.machine?.name),
+          essl_employee_code: code,
+          employee_id: isRaniwala ? code : '',
+          department: dept || '',
+        });
+      }
+      navigate(location.pathname, { replace: true });
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tenant]);
+
+  // Stored copy first (instant). If the machine isn't known there yet — e.g.
+  // enrolled since the last 2-minute poll — ask the machine feed live, then
+  // read again. `force` is the card's "Check machine now" button.
+  const [esslCheckNonce, setEsslCheckNonce] = useState(0);
+  useEffect(() => {
+    if (!showModal || !tenant || !lookupCode) { setEsslLookup(null); return; }
+    let cancelled = false;
+    const force = esslCheckNonce > 0;
+    (async () => {
+      let { data } = await lookupEsslCode(tenant.id, lookupCode);
+      if (cancelled) return;
+      if (data?.machine && !force) { setEsslLookup(data); return; }
+      setEsslLookup({ code: lookupCode, checking: true, previous: data });
+      const { data: live } = await refreshEsslFromMachine(lookupCode);
+      if (cancelled) return;
+      if (live?.live) ({ data } = await lookupEsslCode(tenant.id, lookupCode));
+      if (cancelled) return;
+      setEsslLookup(data || { code: lookupCode, notFound: true, checkedLive: !!live?.live, checkedAt: live?.checkedAt });
+    })();
+    return () => { cancelled = true; };
+  }, [showModal, tenant, lookupCode, esslCheckNonce]);
+  useEffect(() => { setEsslCheckNonce(0); }, [lookupCode]);
 
   const saveEmployee = async () => {
     if (!form.first_name || !form.last_name) return showToast('First and last name required', 'error');
@@ -727,7 +917,9 @@ export default function EmployeesPage() {
       phone: form.phone.trim(),
       department: form.department,
       designation: form.designation.trim(),
-      division: form.division.trim(),
+      // "__new__" is the dropdown's "+ Add new division…" sentinel — resolve
+      // it to whatever was typed in the companion text field before saving.
+      division: (form.division === '__new__' ? form.divisionNew : form.division).trim(),
       join_date: form.join_date || null,
       date_of_birth: form.date_of_birth || null,
       ctc: parseFloat(form.ctc) || 0,
@@ -754,6 +946,8 @@ export default function EmployeesPage() {
       probation_months: parseInt(form.probation_months, 10) || 0,
       manager_id: form.manager_id || null,
       essl_employee_code: (form.essl_employee_code || '').trim() || null,
+      overtime_applicable: !!form.overtime_applicable,
+      comp_off_eligible: !!form.comp_off_eligible,
     };
 
     setSaving(true);
@@ -814,6 +1008,16 @@ export default function EmployeesPage() {
         // credentials modal shows the phone number itself, not that placeholder,
         // since that's what the employee actually types in on the login page.
         const { tempPassword, userId } = await createEmployee(tenant?.id, { ...profileData, login_email: resolveLoginEmail(profileData) });
+        // The create-employee-user edge function only writes a fixed field
+        // list that doesn't include these — set them straight after.
+        if (userId) {
+          const { error: extraErr } = await updateEmployee(userId, {
+            overtime_applicable: profileData.overtime_applicable,
+            comp_off_eligible: profileData.comp_off_eligible,
+            probation_months: profileData.probation_months,
+          });
+          if (extraErr) showToast('Employee created, but overtime/comp off/probation settings failed to save: ' + extraErr.message, 'warning');
+        }
         setShowModal(false);
         setTempCreds({
           empName: fullName(profileData),
@@ -866,6 +1070,7 @@ export default function EmployeesPage() {
         rows,
         onProgress: (current, total) => setImportProgress({ current, total }),
         allowPlaceholderLogins,
+        allowMissingCtc,
       });
     } finally {
       setImportProgress(null);
@@ -1020,7 +1225,7 @@ export default function EmployeesPage() {
           </select>
           <input
             className="form-input"
-            placeholder="🔍 Search name, email, department…"
+            placeholder="🔍 Search name, EMP code, email, department…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             style={{ minWidth: 220 }}
@@ -1048,6 +1253,18 @@ export default function EmployeesPage() {
                       disabled={!!importProgress}
                     />
                     Allow rows without email/phone
+                  </label>
+                  <label
+                    style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-muted)', cursor: 'pointer' }}
+                    title="New employees are normally rejected without a Monthly CTC. Check this to create them anyway with CTC = 0 — useful for a roster sheet with no salary column, to be filled in later from HR records."
+                  >
+                    <input
+                      type="checkbox"
+                      checked={allowMissingCtc}
+                      onChange={(e) => setAllowMissingCtc(e.target.checked)}
+                      disabled={!!importProgress}
+                    />
+                    Allow missing CTC (defaults to 0)
                   </label>
                   <button
                     className="btn btn-outline"
@@ -1236,7 +1453,13 @@ export default function EmployeesPage() {
               <input
                 className="form-input"
                 value={form.employee_id}
-                onChange={(e) => setForm({ ...form, employee_id: e.target.value.toUpperCase() })}
+                onChange={(e) => {
+                  const employeeId = e.target.value.toUpperCase();
+                  // Raniwala: EMP code and ESSL code are the same number, so
+                  // the ESSL field follows it until HR types something else there.
+                  const followEssl = isRaniwala && (!form.essl_employee_code || form.essl_employee_code === form.employee_id);
+                  setForm({ ...form, employee_id: employeeId, ...(followEssl ? { essl_employee_code: employeeId } : {}) });
+                }}
                 placeholder="e.g. MCMU1042"
                 style={{ fontFamily: 'monospace', fontWeight: 700, letterSpacing: 1 }}
               />
@@ -1293,10 +1516,34 @@ export default function EmployeesPage() {
             <div className="form-group"><label className="form-label">Designation</label><input className="form-input" value={form.designation} onChange={(e) => setForm({ ...form, designation: e.target.value })} /></div>
           </div>
           <div className="form-row">
-            <div className="form-group"><label className="form-label">Division</label><input className="form-input" value={form.division} onChange={(e) => setForm({ ...form, division: e.target.value })} /></div>
+            <div className="form-group">
+              <label className="form-label">Division</label>
+              {form.division === '__new__' ? (
+                <input
+                  className="form-input"
+                  autoFocus
+                  placeholder="Enter new division name"
+                  value={form.divisionNew}
+                  onChange={(e) => setForm({ ...form, divisionNew: e.target.value })}
+                />
+              ) : (
+                <select
+                  className="form-select"
+                  value={form.division}
+                  onChange={(e) => setForm({ ...form, division: e.target.value, divisionNew: '' })}
+                >
+                  <option value="">Select</option>
+                  {allDivisions.map((d) => <option key={d}>{d}</option>)}
+                  {form.division && !allDivisions.includes(form.division) && (
+                    <option value={form.division}>{form.division}</option>
+                  )}
+                  <option value="__new__">+ Add new division…</option>
+                </select>
+              )}
+            </div>
           </div>
           <div className="form-row">
-            <div className="form-group"><label className="form-label">Joining Date *</label><input className="form-input" type="date" value={form.join_date} onChange={(e) => setForm({ ...form, join_date: e.target.value })} /></div>
+            <div className="form-group"><label className="form-label">Date of Joining *</label><input className="form-input" type="date" value={form.join_date} onChange={(e) => setForm({ ...form, join_date: e.target.value })} /></div>
             <div className="form-group"><label className="form-label">Monthly CTC (₹) *</label><input className="form-input" type="number" min="0" value={form.ctc} onChange={(e) => setForm({ ...form, ctc: e.target.value })} /></div>
           </div>
           <div className="form-row">
@@ -1305,8 +1552,21 @@ export default function EmployeesPage() {
           <div className="form-row">
             <div className="form-group">
               <label className="form-label">ESSL / Biometric Employee Code</label>
-              <input className="form-input" value={form.essl_employee_code} onChange={(e) => setForm({ ...form, essl_employee_code: e.target.value })} placeholder="Employee ID as set on the punch machine" />
-              <div className="form-hint">Links this employee to their punch-machine ID so attendance from the ESSL device syncs automatically.</div>
+              <input className="form-input" value={form.essl_employee_code} onChange={(e) => setForm({ ...form, essl_employee_code: e.target.value.toUpperCase() })} placeholder="Employee ID as set on the punch machine" style={{ fontFamily: 'monospace', fontWeight: 700 }} />
+              <div className="form-hint">
+                {isRaniwala
+                  ? 'Same as the EMP code. On save, every punch the machine has for this code is added to attendance straight away.'
+                  : 'Links this employee to their punch-machine ID so attendance from the ESSL device syncs automatically.'}
+              </div>
+              <EsslLookupCard
+                lookup={esslLookup}
+                editId={editEmp?.id}
+                onFillName={() => setForm((f) => ({ ...f, ...splitMachineName(esslLookup?.machine?.name) }))}
+                onUseCode={() => setForm((f) => ({ ...f, essl_employee_code: esslLookup.code }))}
+                onCheckNow={() => setEsslCheckNonce((n) => n + 1)}
+                showUseCode={!form.essl_employee_code}
+                showFillName={!editEmp && !form.first_name}
+              />
             </div>
           </div>
           <div className="form-group">
@@ -1360,12 +1620,13 @@ export default function EmployeesPage() {
                       <div className="form-hint">Auto at payroll: 12% if CTC ≤ ₹15,000, else ₹1,800</div>
                     </div>
                     <div className="form-group">
-                      <label className="form-label">PF Number</label>
+                      {/* Raniwala files PF against the employee's UAN, so HR knows it by that name. */}
+                      <label className="form-label">{isRaniwalaTenant(tenant) ? 'UAN Number' : 'PF Number'}</label>
                       <input
                         className="form-input"
                         value={form.pf_number}
                         onChange={(e) => setForm({ ...form, pf_number: e.target.value })}
-                        placeholder="e.g. MH/BAN/1234567/000/0000001"
+                        placeholder={isRaniwalaTenant(tenant) ? 'e.g. 100123456789' : 'e.g. MH/BAN/1234567/000/0000001'}
                       />
                     </div>
                   </div>
@@ -1433,13 +1694,47 @@ export default function EmployeesPage() {
               <div className="form-hint">Set 0 if no probation. Employee earns 1 leave per full-attendance month during probation.</div>
             </div>
             <div className="form-group">
+              <label className="form-label">Overtime</label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', marginTop: 6 }}>
+                <input type="checkbox" checked={!!form.overtime_applicable}
+                  onChange={(e) => setForm({ ...form, overtime_applicable: e.target.checked })} />
+                <span>Apply overtime for this employee</span>
+              </label>
+              <div className="form-hint">
+                {isRaniwalaTenant(tenant)
+                  ? 'Paid for time beyond the 8h 30m day: 2h+ extra = 2h, 3h–4h59m = 3h, 5h+ = 8h (a full shift).'
+                  : 'Only ticked employees get extra hours calculated as overtime pay when payroll is generated.'}
+              </div>
+            </div>
+          </div>
+          {tenant?.auto_comp_off_on_weekly_off_worked && (
+            <div className="form-row">
+              <div className="form-group">
+                <label className="form-label">Comp Off</label>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', marginTop: 6 }}>
+                  <input type="checkbox" checked={!!form.comp_off_eligible}
+                    onChange={(e) => setForm({ ...form, comp_off_eligible: e.target.checked })} />
+                  <span>Earn comp off for working a weekly off / holiday</span>
+                </label>
+                <div className="form-hint">4h–4h59m worked earns a half-day comp off; 5h or more earns a full day.</div>
+              </div>
+            </div>
+          )}
+          <div className="form-row">
+            <div className="form-group">
               <label className="form-label">User Role</label>
               <select className="form-select" value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}>
                 <option value="employee">Employee</option>
                 <option value="admin">HR</option>
                 <option value="manager">Manager</option>
+                {isRaniwalaTenant(tenant) && <option value="hod">HOD</option>}
+                {isRaniwalaTenant(tenant) && <option value="management">Management</option>}
               </select>
-              <div className="form-hint">HR has full access. Manager can approve leaves and manage attendance.</div>
+              <div className="form-hint">
+                {isRaniwalaTenant(tenant)
+                  ? 'HR has full access. Manager sees and approves their own team. HOD is the Reporting Manager of managers and sees their whole team. Management gives final approval on leaves over 5 days.'
+                  : 'HR has full access. Manager can approve leaves and manage attendance.'}
+              </div>
             </div>
           </div>
           <div className="form-row">

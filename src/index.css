@@ -734,6 +734,88 @@ tr:hover td {
 .badge-danger { background: var(--danger-light); color: var(--danger); }
 .badge-info { background: var(--primary-light); color: var(--primary); }
 .badge-purple { background: var(--purple-light); color: var(--purple); }
+.badge-secondary { background: var(--surface-hover); color: var(--text-muted); border: 1px solid var(--border-light); }
+.badge-teal { background: #CCFBF1; color: #0D9488; }
+.badge-pink { background: #FCE7F3; color: #DB2777; }
+.badge-lg { padding: 5px 12px; font-size: 12px; border-radius: 8px; }
+
+/* ======================== PREMIUM ======================== */
+/* Gold/amber accent reserved for premium-gated features (e.g. Live
+   Tracking) — distinct from the app's primary/purple palette so a premium
+   feature reads as visually distinct wherever it appears. */
+.premium-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: #7C4A03;
+  background: linear-gradient(135deg, #FDE68A, #F59E0B);
+  box-shadow: 0 1px 3px rgba(245, 158, 11, 0.35);
+}
+.premium-badge i { font-size: 10px; }
+
+.premium-hero {
+  position: relative;
+  border-radius: var(--radius, 12px);
+  padding: 22px 26px;
+  margin-bottom: 20px;
+  color: #fff;
+  background: linear-gradient(135deg, #1E1B4B 0%, #4C1D95 55%, #7C2D12 130%);
+  overflow: hidden;
+}
+.premium-hero::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle at 85% -20%, rgba(245, 158, 11, 0.35), transparent 55%);
+  pointer-events: none;
+}
+.premium-hero h1 {
+  font-size: 20px;
+  font-weight: 700;
+  margin: 0 0 6px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.premium-hero p {
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.75);
+  margin: 0;
+  max-width: 640px;
+  position: relative;
+}
+
+.premium-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+  margin-bottom: 20px;
+}
+.premium-stat-tile {
+  background: var(--surface, #fff);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm, 10px);
+  padding: 14px 16px;
+}
+.premium-stat-tile .stat-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  margin-bottom: 6px;
+}
+.premium-stat-tile .stat-value {
+  font-size: 20px;
+  font-weight: 700;
+}
+.premium-stat-tile.standing .stat-value { color: var(--warning); }
+.premium-stat-tile.moving .stat-value { color: var(--success); }
 
 /* ======================== BUTTONS ======================== */
 .btn {
@@ -1198,7 +1280,10 @@ tr:hover td {
 .att-cal-day.present { background: var(--success-light); color: var(--success); }
 .att-cal-day.absent { background: var(--danger-light); color: var(--danger); }
 .att-cal-day.half-day { background: var(--warning-light); color: var(--warning); }
+.att-cal-day.mispunch { background: var(--danger-light); color: var(--danger); outline: 1px dashed var(--danger); outline-offset: -3px; }
 .att-cal-day.late { background: #FFF7ED; color: var(--accent); }
+/* App punch waiting for the manager's approval — hours don't count yet. */
+.att-cal-day.pending-approval { background: var(--warning-light); color: var(--warning); outline: 1px dashed var(--warning); outline-offset: -3px; }
 .att-cal-day.leave { background: var(--purple-light); color: var(--purple); }
 .att-cal-day.holiday { background: var(--primary-light); color: var(--primary); }
 .att-cal-day.today { border: 2px solid var(--primary); box-shadow: 0 0 0 2px rgba(108, 92, 231, 0.15); }
@@ -1234,6 +1319,23 @@ tr:hover td {
   color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.5px;
+}
+
+/* Present/Absent/Late tiles double as one-click downloads of that status's
+   employees — <button> reset back to the plain tile look, plus a hover/
+   active affordance so it still reads as clickable. */
+.att-summary-item-clickable {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  transition: box-shadow 0.12s ease, transform 0.12s ease;
+}
+.att-summary-item-clickable:hover {
+  box-shadow: var(--shadow-md, 0 4px 10px rgba(0, 0, 0, 0.1));
+  transform: translateY(-1px);
+}
+.att-summary-item-clickable:active {
+  transform: translateY(0);
 }
 
 /* ======================== TIMELINE ======================== */
@@ -1853,13 +1955,16 @@ tr:hover td {
   .tab-bar-wrap { padding: 16px 16px 0; }
   .subtab-bar-wrap { padding: 0 16px; }
 
+  .holiday-banner-card { min-height: 200px; }
   .holiday-banner { padding: 16px 44px; min-height: 100px; }
   .holiday-banner-name { font-size: 17px; }
   .holiday-banner-icon { font-size: 70px; }
 }
 
 /* ======================== HOLIDAY BANNER ======================== */
-.holiday-banner-card { padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+/* Fixed-size card: the banner always fills it, whether it's showing a
+   holiday, loading, or empty — so the Home row never jumps in height. */
+.holiday-banner-card { padding: 16px; display: flex; flex-direction: column; gap: 10px; min-height: 240px; }
 
 .holiday-banner-label {
   display: flex;
@@ -1874,10 +1979,12 @@ tr:hover td {
 
 .holiday-banner-count { font-weight: 500; text-transform: none; letter-spacing: 0; }
 
-.holiday-banner-empty { padding: 20px 0; color: var(--text-muted); font-size: 13px; text-align: center; }
+.holiday-banner-empty { flex: 1; display: flex; align-items: center; justify-content: center; padding: 20px 0; color: var(--text-muted); font-size: 13px; text-align: center; }
+.holiday-banner-loading { flex: 1; display: flex; align-items: center; justify-content: center; }
 
 .holiday-banner {
   position: relative;
+  flex: 1;
   border-radius: var(--radius-md);
   min-height: 120px;
   display: flex;
@@ -1969,4 +2076,244 @@ tr:hover td {
   margin-left: 8px;
   font-size: 12px;
   color: var(--text-muted);
+}
+
+/* ── Org chart (Keka-style pan/zoom canvas) ─────────────────────────────── */
+/* Nodes and connector segments are absolutely positioned inside one scaled
+   "world" layer; position changes transition so expanding/collapsing a
+   branch glides instead of jumping. */
+:root {
+  --org-canvas-bg: #F7F8FA;
+  --org-line: #D8DDE6;
+  --org-card-border: #D8DDE6;
+  --org-ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+.org-viewport {
+  position: relative; overflow: hidden; background: var(--org-canvas-bg);
+  height: calc(100vh - 250px); min-height: 480px; cursor: grab; user-select: none;
+  touch-action: none;
+}
+.org-viewport.is-panning { cursor: grabbing; }
+.org-world { position: absolute; top: 0; left: 0; transform-origin: 0 0; will-change: transform; }
+.org-world.is-animating { transition: transform 450ms var(--org-ease); }
+
+.org-node {
+  position: absolute; top: 0; left: 0;
+  transition: transform 450ms var(--org-ease);
+}
+.org-node-enter { animation: orgNodeIn 380ms var(--org-ease) both; }
+@keyframes orgNodeIn {
+  from { opacity: 0; transform: translateY(-14px) scale(0.96); }
+  to   { opacity: 1; transform: none; }
+}
+
+.org-line {
+  position: absolute; background: var(--org-line);
+  transition: left 450ms var(--org-ease), top 450ms var(--org-ease),
+              width 450ms var(--org-ease), height 450ms var(--org-ease);
+  animation: orgFadeIn 380ms ease both;
+}
+@keyframes orgFadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+.org-group {
+  position: absolute; border-radius: 6px; border: 1px solid;
+  transition: left 450ms var(--org-ease), top 450ms var(--org-ease),
+              width 450ms var(--org-ease), height 450ms var(--org-ease);
+  animation: orgFadeIn 380ms ease both;
+}
+.org-group-label {
+  position: absolute; top: 8px; left: 12px; font-size: 10.5px; font-weight: 700;
+  letter-spacing: 0.6px; text-transform: uppercase; white-space: nowrap;
+}
+
+.org-card {
+  position: relative; box-sizing: border-box; background: var(--surface);
+  border: 1px solid var(--org-card-border); border-radius: 4px;
+  padding: 14px 14px 12px; display: flex; gap: 12px; cursor: pointer;
+  transition: border-color 160ms ease, box-shadow 200ms ease, transform 200ms var(--org-ease);
+}
+.org-card:hover {
+  border-color: var(--primary);
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.08);
+  transform: translateY(-2px);
+}
+.org-card.is-top { border-top: 3px solid var(--primary); }
+.org-card.is-group { border-style: dashed; background: transparent; }
+.org-card.is-focused { border-color: var(--primary); animation: orgPulse 1.6s ease-out 1; }
+@keyframes orgPulse {
+  0%   { box-shadow: 0 0 0 0 rgba(108, 92, 231, 0.45); }
+  70%  { box-shadow: 0 0 0 14px rgba(108, 92, 231, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(108, 92, 231, 0); }
+}
+.org-card-avatar {
+  width: 40px; height: 40px; border-radius: 50%; flex-shrink: 0; display: flex;
+  align-items: center; justify-content: center; color: #fff; font-weight: 600; font-size: 14px;
+  letter-spacing: 0.3px;
+}
+.org-card-name {
+  font-size: 14px; font-weight: 600; color: var(--text); line-height: 18px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.org-card-line {
+  font-size: 12px; color: #6B7280; line-height: 17px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.org-card-dept {
+  font-size: 10.5px; font-weight: 600; color: #374151; letter-spacing: 0.4px; margin-top: 4px;
+  text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.org-card-edit {
+  position: absolute; top: 6px; right: 6px; width: 24px; height: 24px; border-radius: 6px;
+  border: none; background: transparent; color: var(--text-muted); cursor: pointer;
+  opacity: 0; transition: opacity 150ms ease, background 150ms ease;
+}
+.org-card:hover .org-card-edit { opacity: 1; }
+.org-card-edit:hover { background: var(--primary-light); color: var(--primary); }
+
+.org-toggle {
+  position: absolute; left: 50%; bottom: 0; transform: translate(-50%, 50%);
+  min-width: 22px; height: 22px; padding: 0 6px; border-radius: 11px; border: 2px solid var(--org-canvas-bg);
+  background: var(--primary); color: #fff; font-size: 11px; font-weight: 700; line-height: 1;
+  display: flex; align-items: center; justify-content: center; cursor: pointer; z-index: 2;
+  transition: transform 160ms ease, background 160ms ease;
+}
+.org-toggle:hover { transform: translate(-50%, 50%) scale(1.12); background: var(--primary-dark); }
+
+.org-zoom-panel {
+  position: absolute; top: 16px; right: 16px; z-index: 5; display: flex; flex-direction: column;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.06); overflow: hidden;
+}
+.org-zoom-panel button {
+  width: 36px; height: 36px; border: none; background: transparent; color: #6B7280; cursor: pointer;
+  transition: background 150ms ease, color 150ms ease;
+}
+.org-zoom-panel button + button { border-top: 1px solid var(--border-light); }
+.org-zoom-panel button:hover { background: var(--primary-light); color: var(--primary); }
+.org-zoom-label {
+  position: absolute; bottom: 14px; right: 16px; z-index: 5; font-size: 11px; color: var(--text-muted);
+  background: var(--surface); border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px;
+}
+
+.org-segment { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; background: var(--surface); }
+.org-segment button {
+  border: none; background: transparent; padding: 7px 14px; font-size: 13px; color: var(--text);
+  display: inline-flex; align-items: center; gap: 7px; cursor: pointer; transition: background 150ms ease, color 150ms ease;
+}
+.org-segment button + button { border-left: 1px solid var(--border); }
+.org-segment button:hover { background: var(--border-light); }
+.org-segment button.is-active { background: var(--primary-light); color: var(--primary); box-shadow: inset 0 0 0 1px var(--primary); }
+.org-segment button:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.org-switch { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text); cursor: pointer; }
+.org-switch-track {
+  width: 32px; height: 18px; border-radius: 999px; background: #CBD5E1; position: relative;
+  transition: background 180ms ease;
+}
+.org-switch-track::after {
+  content: ''; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%;
+  background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,0.2); transition: transform 180ms var(--org-ease);
+}
+.org-switch.is-on .org-switch-track { background: var(--primary); }
+.org-switch.is-on .org-switch-track::after { transform: translateX(14px); }
+
+.org-search { position: relative; width: 260px; }
+.org-search-results {
+  position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 20; background: var(--surface);
+  border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 10px 30px rgba(15, 23, 42, 0.12);
+  max-height: 320px; overflow-y: auto; padding: 4px; animation: orgFadeIn 140ms ease both;
+}
+.org-search-item {
+  display: flex; align-items: center; gap: 10px; padding: 7px 8px; border-radius: 6px; cursor: pointer;
+}
+.org-search-item:hover, .org-search-item.is-active { background: var(--primary-light); }
+
+/* ── My Team (manager / HOD portal) ─────────────────────────────────────── */
+.team-section-title { font-size: 15px; font-weight: 700; margin: 4px 0 12px; }
+.team-ellipsis { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 170px; }
+
+.team-toolbar { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; padding: 12px 16px; }
+.team-search { position: relative; flex: 1; min-width: 220px; }
+.team-search > i { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--text-muted); font-size: 13px; }
+.team-search .form-input { padding-left: 34px; width: 100%; }
+
+.team-month-nav { display: flex; align-items: center; gap: 8px; }
+.team-month-nav span { font-size: 13px; font-weight: 600; min-width: 128px; text-align: center; }
+
+/* Calendar: global table/th styles, compact day columns, sticky name column. */
+.team-cal th, .team-cal td { padding: 6px 1px; text-align: center; white-space: nowrap; }
+.team-cal th { padding-top: 8px; padding-bottom: 8px; }
+/* Two header rows: weekday names on top, date numbers underneath. */
+.team-cal .team-cal-wd-row th { font-size: 10px; font-weight: 600; letter-spacing: 0.3px; padding-bottom: 2px; min-width: 30px; }
+.team-cal .team-cal-dn-row th { font-size: 12px; font-weight: 700; color: var(--text-secondary); padding-top: 2px; }
+.team-cal th.is-sunday { color: var(--danger, #EF4444); }
+.team-cal .team-cal-dn-row th.is-sunday { color: var(--danger, #EF4444); }
+.team-cal th.is-today, .team-cal .team-cal-dn-row th.is-today { background: var(--primary-light); color: var(--primary); }
+
+/* Team Stats: one row per employee, a count column per day type. */
+.team-stats th, .team-stats td { text-align: center; white-space: nowrap; padding: 8px 10px; }
+.team-stats th:first-child, .team-stats td:first-child { text-align: left; }
+.team-stats th .team-cal-swatch { margin-right: 5px; }
+.team-stats td.is-zero { color: var(--text-muted); }
+.team-stats td.is-count { font-weight: 700; color: var(--text); }
+.team-cal td.is-today { background: rgba(108, 92, 231, 0.06); }
+.team-cal .team-cal-name { position: sticky; left: 0; z-index: 1; text-align: left; padding: 6px 14px; min-width: 210px; max-width: 210px; }
+.team-cal td.team-cal-name { background: var(--surface); box-shadow: 1px 0 0 var(--border-light); }
+.team-cal tr:hover td.team-cal-name { background: var(--surface-hover); }
+.team-cal-group td { background: var(--bg) !important; padding-top: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+.team-cal-group td.team-cal-name { font-size: 11px; font-weight: 700; letter-spacing: 0.4px; text-transform: uppercase; color: var(--text-secondary); }
+.team-cal-group td.team-cal-name span { margin-left: 6px; padding: 1px 7px; border-radius: 10px; background: var(--primary-light); color: var(--primary); font-size: 10px; }
+.team-mgr-icon { margin-left: 6px; font-size: 10px; color: var(--primary); }
+
+/* Day kinds: --k is the mark colour, --kt its light tint (range bands). */
+.k-present { --k: #CBD5E1; --kt: #F1F5F9; }
+.k-leave { --k: #0EA5E9; --kt: #E0F2FE; }
+.k-leave-pending { --k: #0EA5E9; --kt: #E0F2FE; }
+.k-wfh { --k: #8B5CF6; --kt: #EDE9FE; }
+.k-late { --k: #F97316; --kt: #FFEDD5; }
+.k-half { --k: #6366F1; --kt: #E0E7FF; }
+.k-absent { --k: #EF4444; --kt: #FEE2E2; }
+.k-mispunch { --k: #EC4899; --kt: #FCE7F3; }
+.k-off { --k: #FBBF24; --kt: #FEF3C7; }
+.k-holiday { --k: #10B981; --kt: #D1FAE5; }
+
+/* Every cell shows its date. A marked day is a filled circle; consecutive
+   days of the same kind are joined by a tinted band, with circles only at
+   the two ends of the run. */
+.team-cal td.team-cal-cell { position: relative; padding: 4px 0; }
+.team-cal-cell.run-l::before, .team-cal-cell.run-r::before {
+  content: ''; position: absolute; top: 50%; left: 50%; right: 50%; height: 24px; transform: translateY(-50%); background: var(--kt);
+}
+.team-cal-cell.run-l::before { left: 0; }
+.team-cal-cell.run-r::before { right: 0; }
+.team-cal-num {
+  position: relative; display: inline-flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px; border-radius: 50%; font-size: 11px; color: var(--text-secondary); vertical-align: middle;
+}
+.k-none .team-cal-num { color: var(--text-muted); }
+.team-cal-num.is-mark { background: var(--k); color: #fff; font-weight: 700; }
+.team-cal-num.is-mid { color: var(--text); font-weight: 600; }
+.k-leave-pending .team-cal-num.is-mark { background: var(--kt); color: var(--k); box-shadow: inset 0 0 0 1.5px var(--k); }
+.k-half .team-cal-num.is-mark { background: linear-gradient(90deg, var(--k) 50%, var(--kt) 50%); }
+.team-cal td.is-today .team-cal-num:not(.is-mark) { box-shadow: inset 0 0 0 1.5px var(--primary); color: var(--primary); font-weight: 700; }
+
+.team-cal-legend { display: flex; flex-wrap: wrap; gap: 8px 18px; padding: 12px 20px; border-top: 1px solid var(--border-light); font-size: 11px; color: var(--text-secondary); }
+.team-cal-swatch { display: inline-block; width: 12px; height: 12px; border-radius: 50%; margin-right: 6px; vertical-align: -2px; background: var(--k); }
+.team-cal-swatch.k-leave-pending { background: var(--kt); box-shadow: inset 0 0 0 1.5px var(--k); }
+.team-cal-swatch.k-half { background: linear-gradient(90deg, var(--k) 50%, var(--kt) 50%); }
+
+/* Department-wise members */
+.team-dept { margin-bottom: 12px; }
+.team-dept-head { display: flex; align-items: center; gap: 12px; width: 100%; padding: 14px 20px; background: none; border: none; cursor: pointer; font: inherit; color: inherit; }
+.team-dept-head:hover { background: var(--surface-hover); }
+.team-dept-icon { width: 36px; height: 36px; border-radius: var(--radius-md); background: var(--purple-light); color: var(--purple); display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.team-dept-name { font-size: 14px; font-weight: 700; }
+.team-dept-meta { font-size: 12px; color: var(--text-muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.team-dept-caret { color: var(--text-muted); transition: transform 0.2s ease; }
+.team-dept-caret.open { transform: rotate(180deg); }
+.team-dept .table-wrap { border-top: 1px solid var(--border-light); }
+
+@media (max-width: 520px) {
+  .team-cal .team-cal-name { min-width: 150px; max-width: 150px; }
+  .team-ellipsis { max-width: 110px; }
 }

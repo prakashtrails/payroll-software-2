@@ -11,7 +11,7 @@ const SUPPORT_EMAIL = 'crewcoreadmin@gmail.com';
 // icons; Toggle Services just needs the name/description/category.
 const FEATURE_ICONS = {
   employees: 'fa-users', attendance: 'fa-fingerprint', shift_roster: 'fa-calendar-days',
-  employee_calendar: 'fa-calendar-alt', master_report: 'fa-file-alt', helpdesk: 'fa-headset',
+  employee_calendar: 'fa-calendar-alt', late_comers_report: 'fa-clock', master_report: 'fa-file-alt', helpdesk: 'fa-headset',
   announcements: 'fa-bullhorn', policies: 'fa-file-contract', onboarding: 'fa-door-open',
   offboarding: 'fa-door-closed', training: 'fa-graduation-cap', assets: 'fa-laptop',
   projects: 'fa-diagram-project', grievances: 'fa-gavel', outlets_multi_branch: 'fa-store',

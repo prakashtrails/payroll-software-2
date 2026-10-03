@@ -67,6 +67,17 @@ export default function PayslipsPage() {
     ${slip.advance_deduction > 0 ? `<div class="row"><span>Advance Recovery</span><span>₹${slip.advance_deduction?.toLocaleString('en-IN')}</span></div>` : ''}
     <div class="row" style="font-weight:600;border-top:1px solid #ccc;padding-top:6px"><span>Total Deductions</span><span>₹${(slip.total_deductions + slip.advance_deduction)?.toLocaleString('en-IN')}</span></div>
     <div class="row total"><span>Net Pay</span><span>₹${slip.net_pay?.toLocaleString('en-IN')}</span></div>
+    ${breakdown.pfInfo ? `
+    <div style="margin-top:16px;background:#f8f8f8;border:1px solid #ddd;border-radius:6px;padding:10px 14px">
+      <div style="font-size:12px;font-weight:700;margin-bottom:6px">Statutory Details (PF)</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;font-size:12px">
+        <div>PF/UAN Number: <strong>${escapeHtml(breakdown.pfInfo.pfNumber || '—')}</strong></div>
+        <div>PF Wage Ceiling: <strong>₹${escapeHtml((breakdown.pfInfo.wageCeiling || 0).toLocaleString('en-IN'))}</strong></div>
+        <div>Employee Contribution: <strong>₹${escapeHtml((breakdown.pfInfo.employeeContribution || 0).toLocaleString('en-IN'))}</strong></div>
+        <div>Employer Contribution: <strong>₹${escapeHtml((breakdown.pfInfo.employerContribution || 0).toLocaleString('en-IN'))}</strong></div>
+      </div>
+      <div style="font-size:10px;color:#666;margin-top:6px">Employer contribution is shown for information only — it is not deducted from the employee's pay.</div>
+    </div>` : ''}
     </body></html>`);
     w.document.close();
     w.print();
@@ -145,6 +156,20 @@ export default function PayslipsPage() {
                       <span>Total Deductions</span><span>{fmt(slip.total_deductions + slip.advance_deduction)}</span>
                     </div>
                     <div className="payslip-row total"><span>Net Pay</span><span style={{ color: 'var(--success)' }}>{fmt(slip.net_pay)}</span></div>
+                    {breakdown.pfInfo && (
+                      <div style={{ marginTop: 16, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 8, padding: '10px 14px' }}>
+                        <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>Statutory Details (PF)</div>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4, fontSize: 12 }}>
+                          <div><span style={{ color: 'var(--text-muted)' }}>PF/UAN Number:</span> <strong>{breakdown.pfInfo.pfNumber || '—'}</strong></div>
+                          <div><span style={{ color: 'var(--text-muted)' }}>PF Wage Ceiling:</span> <strong>{fmt(breakdown.pfInfo.wageCeiling)}</strong></div>
+                          <div><span style={{ color: 'var(--text-muted)' }}>Employee Contribution:</span> <strong>{fmt(breakdown.pfInfo.employeeContribution)}</strong></div>
+                          <div><span style={{ color: 'var(--text-muted)' }}>Employer Contribution:</span> <strong>{fmt(breakdown.pfInfo.employerContribution)}</strong></div>
+                        </div>
+                        <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 6 }}>
+                          Employer contribution is shown for information only — it is not deducted from the employee's pay.
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>

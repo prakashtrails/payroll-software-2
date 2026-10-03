@@ -7,7 +7,7 @@ import {
   listPips, getMyActivePip, createPip, updatePipStatus,
   addPipGoal, listPipCheckins, addPipCheckin,
 } from '@/services/pipService';
-import { listActiveEmployees } from '@/services/employeeService';
+import { listColleagues } from '@/services/employeeService';
 import { fullName } from '@/lib/helpers';
 
 const EMPTY_FORM = { profile_id: '', manager_id: '', reason: '', start_date: '', end_date: '' };
@@ -61,7 +61,7 @@ export function PIPContent() {
         const { data, error } = await listPips(tenant.id);
         if (error) showToast(error.message || 'Failed to load PIPs', 'error');
         setPips(data || []);
-        const { data: empData } = await listActiveEmployees(tenant.id);
+        const { data: empData } = await listColleagues(tenant.id);
         setEmployees((empData || []).filter((e) => e.id !== profile.id));
       } else {
         const { data } = await getMyActivePip(tenant.id, profile.id);

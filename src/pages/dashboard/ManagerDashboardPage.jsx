@@ -8,6 +8,7 @@ import { fetchTodayAttendanceSummary, fetchMyMonthAttendance, clockIn as svcCloc
 import { todayStr, timeStr, fmtTime12, diffHours, monthLabel, elapsedSecondsToday } from '@/lib/helpers';
 import { showToast } from '@/components/Toast';
 import { useGeofenceClock } from '@/hooks/useGeofenceClock';
+import { useLiveTrackingCapture } from '@/hooks/useLiveTrackingCapture';
 
 export default function ManagerDashboard({ embedded = false }) {
   const { tenant, profile } = useAuth();
@@ -101,8 +102,9 @@ export default function ManagerDashboard({ embedded = false }) {
     }
   }, [profile, fetchMyAttendance]);
 
+  const { trackingOn } = useLiveTrackingCapture({ profile, tenant, isClockedIn });
   const { geofenceEnabled, insideFence, locationStatus, resolveClockLocation, isWfhToday } =
-    useGeofenceClock({ profile, tenant, isClockedIn, onAutoClockOut: doAutoClockOut });
+    useGeofenceClock({ profile, tenant, isClockedIn, onAutoClockOut: doAutoClockOut, bypassGeofence: trackingOn });
 
   const handleClockIn = async () => {
     if (isClockedIn || !tenant || !profile) return;

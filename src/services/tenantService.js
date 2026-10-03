@@ -1,4 +1,5 @@
 import { supabase } from '@/lib/supabase';
+import { STAFF_ROLES } from '@/lib/helpers';
 
 /**
  * supabase.functions.invoke() reports any non-2xx response as a generic
@@ -108,12 +109,23 @@ export async function addShift(tenantId, shift) {
   return { error };
 }
 
-export async function listHolidays(tenantId) {
-  const { data, error } = await supabase
+/**
+ * @param {string} tenantId
+ * @param {string|null} [outletId] - When given, returns tenant-wide holidays
+ *   (outlet_id IS NULL) plus holidays scoped to this outlet only. Omit to
+ *   return every holiday across the whole tenant (all outlets combined).
+ */
+export async function listHolidays(tenantId, outletId) {
+  let query = supabase
     .from('holidays')
     .select('*')
-    .eq('tenant_id', tenantId)
-    .order('date', { ascending: true });
+    .eq('tenant_id', tenantId);
+
+  if (outletId) {
+    query = query.or(`outlet_id.is.null,outlet_id.eq.${outletId}`);
+  }
+
+  const { data, error } = await query.order('date', { ascending: true });
 
   return { data: (data || []).map(normalizeHoliday), error };
 }
@@ -123,6 +135,7 @@ export async function addHoliday(tenantId, holiday) {
     .from('holidays')
     .insert([{
       tenant_id: tenantId,
+      outlet_id: holiday.outlet_id || null,
       name: holiday.name,
       date: holiday.date || holiday.holiday_date,
       type: holiday.type || holiday.description || 'Public Holiday',
@@ -130,16 +143,17 @@ export async function addHoliday(tenantId, holiday) {
   return { error };
 }
 
-export async function importHolidays(tenantId, holidays) {
+export async function importHolidays(tenantId, holidays, outletId) {
   const rows = holidays.map((h) => ({
     tenant_id: tenantId,
+    outlet_id: h.outlet_id || outletId || null,
     name: h.name,
     date: h.date || h.holiday_date,
     type: h.type || h.description || 'Public Holiday',
   }));
   const { error } = await supabase
     .from('holidays')
-    .upsert(rows, { onConflict: 'tenant_id,date', ignoreDuplicates: true });
+    .upsert(rows, { onConflict: 'tenant_id,outlet_id,date', ignoreDuplicates: true });
   return { error };
 }
 
@@ -165,7 +179,7 @@ export async function initializeMajorHolidays(tenantId) {
   ];
   const { error } = await supabase
     .from('holidays')
-    .upsert(rows, { onConflict: 'tenant_id,date', ignoreDuplicates: true });
+    .upsert(rows, { onConflict: 'tenant_id,outlet_id,date', ignoreDuplicates: true });
   return { error };
 }
 
@@ -175,11 +189,15 @@ export async function removeShift(id) {
 }
 
 /** Grace/threshold config used by the nightly auto-attendance sweep (mark_attendance_from_punches). */
-export async function updateShiftThresholds(id, { grace_minutes, early_exit_threshold_minutes, auto_absent_after_hours }) {
+export async function updateShiftThresholds(id, { grace_minutes, early_exit_threshold_minutes, auto_absent_after_hours, early_departure_after, late_arrival_allowance_until }) {
   const { error } = await supabase.from('shifts').update({
     grace_minutes: parseInt(grace_minutes) || 0,
     early_exit_threshold_minutes: parseInt(early_exit_threshold_minutes) || 0,
     auto_absent_after_hours: parseInt(auto_absent_after_hours) || 0,
+    // Per-shift monthly early-departure / late-arrival allowance window (see
+    // shifts.early_departure_after / late_arrival_allowance_until). Blank clears it.
+    early_departure_after: early_departure_after || null,
+    late_arrival_allowance_until: late_arrival_allowance_until || null,
   }).eq('id', id);
   return { error };
 }
@@ -191,7 +209,11 @@ export async function updateShiftThresholds(id, { grace_minutes, early_exit_thre
  * run is a per-tenant batch, not owned by any single outlet.
  */
 export async function fetchDashboardStats(tenantId, outletProfileIds = null) {
-  let empsQuery = supabase.from('profiles').select('id, ctc').eq('tenant_id', tenantId).eq('role', 'employee').eq('status', 'Active');
+  // Every active staff member — managers, HODs and management are employees
+  // too. HR (admin) logins count only when they're a real person with an
+  // employee code; a shared HR login (e.g. "RANIWALA HR") has none.
+  let empsQuery = supabase.from('profiles').select('id, ctc').eq('tenant_id', tenantId).eq('status', 'Active')
+    .or('role.in.(employee,manager,hod,management),and(role.eq.admin,employee_id.not.is.null)');
   let advQuery = supabase.from('advances').select('balance, profile_id').eq('tenant_id', tenantId).eq('status', 'Active');
   if (outletProfileIds) {
     const ids = [...outletProfileIds];
@@ -281,7 +303,39 @@ export function resolveAttendanceSettings(tenant, outlet) {
     geofence_radius: outlet?.geofence_radius ?? tenant?.geofence_radius ?? 200,
     min_half_day_hours: outlet?.min_half_day_hours ?? tenant?.min_half_day_hours ?? 4,
     min_full_day_hours: outlet?.min_full_day_hours ?? tenant?.min_full_day_hours ?? 8,
+    // No outlet/tenant reporting time configured -> default reporting time is
+    // 10:30 AM with a 0-minute grace, i.e. a punch at 10:31 or later is Late.
+    // Fixed, single-field rule: Report Time (shift_start) + Late Allowed
+    // minutes (late_threshold) — a punch more than late_threshold minutes
+    // after shift_start is Late, every time, for every day of the month.
+    // There is no separate monthly "grace" waiver on top of this anymore
+    // (retired the late_grace_minutes/late_grace_max_per_month mechanism
+    // from 20260914_6/20260916_1 — it was quietly turning some genuinely
+    // late arrivals back into 'Present' and hiding them from reports).
+    shift_start: outlet?.shift_start ?? tenant?.shift_start ?? '10:30',
+    shift_end: outlet?.shift_end ?? tenant?.shift_end ?? '18:00',
+    late_threshold: outlet?.late_threshold ?? tenant?.late_threshold ?? 0,
+    // Outlet-level override of the tenant-wide weekly off days.
+    weekly_off_days: outlet?.weekly_off_days ?? tenant?.weekly_off_days ?? [],
   };
+}
+
+/**
+ * Re-scores Present/Late on existing attendance rows against whatever Report
+ * Time / Late Allowed minutes are configured *right now* — call this right
+ * after saving those settings so already-written rows for the affected
+ * window reflect the new rule immediately, not just punches from here on.
+ * `outletId` null recomputes every outlet under the tenant (i.e. after a
+ * company-wide default change). Returns how many rows actually changed.
+ */
+export async function recomputeAttendanceLateStatus(tenantId, outletId, fromDate, toDate) {
+  const { data, error } = await supabase.rpc('recompute_attendance_late_status', {
+    p_tenant_id: tenantId,
+    p_outlet_id: outletId,
+    p_from_date: fromDate,
+    p_to_date: toDate,
+  });
+  return { count: data ?? 0, error };
 }
 
 /**
@@ -366,7 +420,7 @@ export async function transferEmployeeOutlet({ tenantId, profileId, toOutletId, 
 export async function fetchOutletTransferHistory(profileId) {
   const { data, error } = await supabase
     .from('outlet_transfers')
-    .select('*, transferred_by_profile:profiles!outlet_transfers_transferred_by_fkey(first_name, middle_name, last_name)')
+    .select('*, transferred_by_profile:profile_directory!outlet_transfers_transferred_by_fkey(first_name, middle_name, last_name)')
     .eq('profile_id', profileId)
     .order('transferred_at', { ascending: false });
   return { data: data || [], error };
@@ -380,7 +434,7 @@ export async function listUnassignedEmployees(tenantId) {
     .eq('tenant_id', tenantId)
     .eq('status', 'Active')
     .is('outlet_id', null)
-    .in('role', ['employee', 'admin', 'manager'])
+    .in('role', STAFF_ROLES)
     .order('first_name');
   return { data: data || [], error };
 }

@@ -46,7 +46,29 @@ function resolveAttendanceSettings(tenant: any, outlet: any) {
   return {
     min_half_day_hours: outlet?.min_half_day_hours ?? tenant?.min_half_day_hours ?? 4,
     min_full_day_hours: outlet?.min_full_day_hours ?? tenant?.min_full_day_hours ?? 8,
+    // Same hard default as resolveAttendanceSettings() in src/services/tenantService.js.
+    // Fixed rule: Report Time (shift_start) + Late Allowed minutes
+    // (late_threshold) — no separate monthly grace waiver on top of this.
+    shift_start: outlet?.shift_start ?? tenant?.shift_start ?? "10:30",
+    shift_end: outlet?.shift_end ?? tenant?.shift_end ?? "18:00",
+    late_threshold: outlet?.late_threshold ?? tenant?.late_threshold ?? 0,
   };
+}
+
+/** "HH:MM" to minutes-since-midnight. */
+function toMinutes(t: string): number {
+  const [h, m] = t.split(":").map(Number);
+  return h * 60 + m;
+}
+
+const EARLY_LATE_THRESHOLD_MINUTES = 90;
+
+/** Mirrors src/lib/helpers.js computeEarlyLateBreach exactly — see that doc for the rule. */
+function computeEarlyLateBreach(firstPunch: string, lastPunch: string, shiftStart: string, shiftEnd: string): boolean {
+  if (!firstPunch || !lastPunch || !shiftStart || !shiftEnd) return false;
+  const isLateArrival = toMinutes(firstPunch) > toMinutes(shiftStart) + EARLY_LATE_THRESHOLD_MINUTES;
+  const isEarlyDeparture = toMinutes(lastPunch) < toMinutes(shiftEnd) - EARLY_LATE_THRESHOLD_MINUTES;
+  return isLateArrival || isEarlyDeparture;
 }
 
 type PunchInput = {
@@ -86,18 +108,44 @@ serve(async (req) => {
     if (deviceErr) return json({ error: deviceErr.message }, 500);
     if (!device || !device.is_active) return json({ error: "Invalid or inactive device key" }, 401);
 
-    const [{ data: tenant }, { data: outlet }] = await Promise.all([
-      db.from("tenants")
-        .select("id, shift_start, late_threshold, min_half_day_hours, min_full_day_hours")
-        .eq("id", device.tenant_id)
-        .single(),
-      device.outlet_id
-        ? db.from("outlets")
-            .select("min_half_day_hours, min_full_day_hours")
-            .eq("id", device.outlet_id)
-            .maybeSingle()
-        : Promise.resolve({ data: null }),
-    ]);
+    const { data: tenant } = await db
+      .from("tenants")
+      .select("id, shift_start, shift_end, late_threshold, min_half_day_hours, min_full_day_hours")
+      .eq("id", device.tenant_id)
+      .single();
+
+    // Resolved per employee (profile.outlet_id), NOT per device: a single ESSL
+    // device/API key can front punches for employees across several outlets
+    // (e.g. Raniwala's web-poll dashboard aggregates all on-site terminals
+    // under one key — see essl-web-poll), so using device.outlet_id here would
+    // apply just one outlet's reporting-time override to every employee synced
+    // through it, silently ignoring every other outlet's own Shift Start/Late
+    // Threshold. Cached per outlet_id since a batch commonly repeats outlets.
+    const outletCache = new Map<string, any>();
+    async function getOutlet(outletId: string | null) {
+      if (!outletId) return null;
+      if (outletCache.has(outletId)) return outletCache.get(outletId);
+      const { data } = await db
+        .from("outlets")
+        .select("min_half_day_hours, min_full_day_hours, shift_start, shift_end, late_threshold")
+        .eq("id", outletId)
+        .maybeSingle();
+      outletCache.set(outletId, data);
+      return data;
+    }
+
+    const shiftCache = new Map<string, any>();
+    async function getShift(shiftId: string | null) {
+      if (!shiftId) return null;
+      if (shiftCache.has(shiftId)) return shiftCache.get(shiftId);
+      const { data } = await db
+        .from("shifts")
+        .select("start_time, end_time, early_departure_after, late_arrival_allowance_until")
+        .eq("id", shiftId)
+        .maybeSingle();
+      shiftCache.set(shiftId, data);
+      return data;
+    }
 
     const results = {
       processed: 0,
@@ -114,7 +162,7 @@ serve(async (req) => {
 
       const { data: profile } = await db
         .from("profiles")
-        .select("id, shift_id")
+        .select("id, shift_id, outlet_id")
         .eq("tenant_id", device.tenant_id)
         .eq("essl_employee_code", p.essl_employee_code)
         .maybeSingle();
@@ -124,15 +172,21 @@ serve(async (req) => {
         continue;
       }
 
+      // Falls back to the device's own outlet only when the employee has none
+      // set on their profile — same precedence gap as before, just no longer
+      // the *only* path, so a profile with the correct outlet always wins.
+      const outlet = (await getOutlet(profile.outlet_id)) ?? (await getOutlet(device.outlet_id));
+      const attSettings = resolveAttendanceSettings(tenant, outlet);
+
       try {
-        // Status on first creation of the day's row, same rule as clockIn: late
-        // past the shift-start + grace threshold. Ignored on conflict (row exists).
-        let shiftStart = tenant?.shift_start || "09:00";
-        if (profile.shift_id) {
-          const { data: shift } = await db.from("shifts").select("start_time").eq("id", profile.shift_id).maybeSingle();
-          if (shift?.start_time) shiftStart = shift.start_time;
-        }
-        const lateMin = tenant?.late_threshold || 15;
+        // Status on first creation of the day's row, same fixed rule as
+        // clockIn(): later than Report Time + Late Allowed minutes is Late,
+        // every day of the month, no monthly grace waiver. Ignored on
+        // conflict (row exists).
+        const shift = await getShift(profile.shift_id);
+        let shiftStart = attSettings.shift_start;
+        if (shift?.start_time) shiftStart = shift.start_time;
+        const lateMin = attSettings.late_threshold;
         const [sh, sm] = shiftStart.split(":").map(Number);
         const [ph, pm] = p.time.split(":").map(Number);
         const diffMin = (ph * 60 + pm) - (sh * 60 + sm);
@@ -154,11 +208,15 @@ serve(async (req) => {
 
         const { data: att, error: attErr } = await db
           .from("attendance")
-          .select("id")
+          .select("id, status")
           .eq("profile_id", profile.id)
           .eq("date", p.date)
           .single();
         if (attErr) throw attErr;
+
+        // Comp off for working a weekly off / holiday is credited by the DB
+        // trigger trg_comp_off_credit_from_hours (20260928_4) from the day's
+        // hours, for comp-off-eligible employees — nothing to grant here.
 
         // Idempotency: an agent may resync a window it already sent (retry after a
         // dropped connection, clock skew, etc.) — skip rather than double-insert.
@@ -181,28 +239,121 @@ serve(async (req) => {
           .insert([{ attendance_id: att.id, punch_time: p.time, punch_type: p.punch_type, source: "device" }]);
         if (punchErr) throw punchErr;
 
-        if (p.punch_type === "out") {
-          const { data: allPunches } = await db
-            .from("punches")
-            .select("punch_time, punch_type")
-            .eq("attendance_id", att.id)
-            .order("punch_time");
+        // Same app_notifications row clockIn()/clockOut() write for an app punch
+        // (see notifyProfiles in src/services/notificationService.js) — an ESSL
+        // machine punch never goes through those functions, so without this the
+        // employee gets an attendance row but no "Clocked in/out" push, unlike
+        // punching in through the app itself. Insert (not the notifyProfiles
+        // helper, which needs a user-scoped supabase client) since this function
+        // only holds the service-role client `db`; the push itself is fired by
+        // the push-app-notification DB webhook on this table, same as every
+        // other notification path.
+        const { error: notifyErr } = await db.from("app_notifications").insert([{
+          tenant_id: device.tenant_id,
+          profile_id: profile.id,
+          actor_id: null,
+          type: p.punch_type === "in" ? "clock_in" : "clock_out",
+          title: p.punch_type === "in" ? "Clocked in" : "Clocked out",
+          body: `You clocked ${p.punch_type} at ${p.time} (biometric device).`,
+          link_key: "attendance",
+          related_id: att.id,
+        }]);
+        if (notifyErr) console.error(`app_notifications insert failed for ${p.essl_employee_code}:`, notifyErr.message);
 
-          const ins = (allPunches || []).filter((r) => r.punch_type === "in");
-          const outs = (allPunches || []).filter((r) => r.punch_type === "out");
-          let total = 0;
-          for (let i = 0; i < ins.length; i++) {
-            if (outs[i]) total += diffHours(ins[i].punch_time, outs[i].punch_time);
-          }
+        // First punch of the day to the day's LAST punch so far, of EITHER
+        // type — not paired in/out sessions. A device double-punch (the same
+        // scan logged twice seconds apart) or a mistaken extra re-scan after
+        // already leaving just becomes one more row in the middle that
+        // doesn't move either end; whatever the day's last punch turns out
+        // to be (in or out) is always what "Clock Out" reflects. Every
+        // individual punch still gets stored in `punches` for the audit
+        // trail (see the insert above) — this just stops using each one's
+        // in/out tag to decide the total. Skipped on the very first punch of
+        // the day (nothing to span yet — running this here would overwrite
+        // the initial Late/Present status with 'Absent' from a 0-hour span).
+        const { data: allPunches } = await db
+          .from("punches")
+          .select("punch_time")
+          .eq("attendance_id", att.id)
+          .order("punch_time");
+        const times = (allPunches || []).map((r) => r.punch_time).sort();
+
+        if (times.length > 1) {
+          const { data: currentAtt } = await db.from("attendance").select("status").eq("id", att.id).single();
+
+          const firstPunch = times[0];
+          const lastPunch = times[times.length - 1];
+          const total = diffHours(firstPunch, lastPunch);
 
           const { min_half_day_hours: halfMin, min_full_day_hours: fullMin } = resolveAttendanceSettings(tenant, outlet);
           let status = "Absent";
           if (total >= fullMin) status = "Present";
           else if (total >= halfMin) status = "Half Day";
+          // Mirrors src/services/attendanceService.js clockOut(): a day already
+          // marked 'Late' at clock-in stays 'Late' on a full day's hours — a
+          // later punch must never silently erase the late arrival.
+          if (currentAtt?.status === "Late" && status === "Present") {
+            status = "Late";
+          }
+
+          // One-time-per-calendar-month allowance for an extreme early
+          // departure or extreme late arrival (per-shift, opt-in). "Arrival"
+          // = the day's first punch, "departure" = the day's last punch so
+          // far — same first/last model as the total above. First breach in
+          // the month keeps the status computed above; any further breach
+          // forces Half Day. Mirrors src/services/attendanceService.js clockOut().
+          let allowanceUsed = false;
+          const earlyDepartureAfter = shift?.early_departure_after ?? null;
+          const lateArrivalAllowanceUntil = shift?.late_arrival_allowance_until ?? null;
+          const isEarlyDeparture = !!(earlyDepartureAfter && toMinutes(lastPunch) < toMinutes(earlyDepartureAfter));
+          const isExtremeLateArrival = !!(lateArrivalAllowanceUntil && toMinutes(firstPunch) > toMinutes(lateArrivalAllowanceUntil));
+          if ((isEarlyDeparture || isExtremeLateArrival) && status !== "Absent") {
+            const monthStart = `${p.date.slice(0, 7)}-01`;
+            const { count: allowanceCount } = await db
+              .from("attendance")
+              .select("id", { count: "exact", head: true })
+              .eq("profile_id", profile.id)
+              .eq("monthly_allowance_used", true)
+              .gte("date", monthStart)
+              .lte("date", p.date);
+            if (!allowanceCount) {
+              allowanceUsed = true;
+            } else {
+              status = "Half Day";
+            }
+          }
+
+          // Early Left / Late Arrival monthly-grace counter — independent,
+          // additive, visibility-only. Mirrors src/services/attendanceService.js
+          // clockOut() exactly, so app and device punches are counted the same way.
+          const effectiveShiftStart = shift?.start_time || attSettings.shift_start;
+          const effectiveShiftEnd = shift?.end_time || attSettings.shift_end;
+          let earlyLateFlag = false;
+          let earlyLateGraced = false;
+          if (computeEarlyLateBreach(firstPunch, lastPunch, effectiveShiftStart, effectiveShiftEnd)) {
+            const monthStart = `${p.date.slice(0, 7)}-01`;
+            const { count: breachCount } = await db
+              .from("attendance")
+              .select("id", { count: "exact", head: true })
+              .eq("profile_id", profile.id)
+              // Any earlier breach day this month — graced OR counted (see
+              // src/services/attendanceService.js clockOut). Same day excluded.
+              .or("early_late_flag.eq.true,early_late_graced.eq.true")
+              .gte("date", monthStart)
+              .lt("date", p.date);
+            if (!breachCount) {
+              earlyLateGraced = true;
+            } else {
+              earlyLateFlag = true;
+            }
+          }
 
           await db
             .from("attendance")
-            .update({ total_hours: Math.round(total * 100) / 100, status })
+            .update({
+              total_hours: Math.round(total * 100) / 100, status, monthly_allowance_used: allowanceUsed,
+              early_late_flag: earlyLateFlag, early_late_graced: earlyLateGraced,
+            })
             .eq("id", att.id);
         }
 

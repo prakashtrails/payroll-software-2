@@ -1,5 +1,4 @@
 import { supabase } from '@/lib/supabase';
-import { notifyProfiles } from './notificationService';
 
 // ── Projects ─────────────────────────────────────────────────────────────
 export async function listProjects(tenantId) {
@@ -26,7 +25,7 @@ export async function updateProject(id, payload) {
 export async function listProjectMembers(projectId) {
   const { data, error } = await supabase
     .from('project_members')
-    .select('*, profile:profiles!project_members_profile_id_fkey(first_name, middle_name, last_name, department)')
+    .select('*, profile:profile_directory!project_members_profile_id_fkey(first_name, middle_name, last_name, department)')
     .eq('project_id', projectId);
   return { data: data || [], error };
 }
@@ -45,38 +44,29 @@ export async function removeProjectMember(id) {
 export async function listProjectTasks(projectId) {
   const { data, error } = await supabase
     .from('project_tasks')
-    .select('*, assignee:profiles!project_tasks_assigned_to_fkey(first_name, middle_name, last_name)')
+    .select('*, assignee:profile_directory!project_tasks_assigned_to_fkey(first_name, middle_name, last_name)')
     .eq('project_id', projectId)
     .order('created_at', { ascending: false });
   return { data: data || [], error };
 }
 
-/** A single employee's tasks across every project in the tenant. */
+/** A single employee's tasks across every project in the tenant (standalone tasks live on /tasks). */
 export async function listMyTasks(profileId) {
   const { data, error } = await supabase
     .from('project_tasks')
     .select('*, project:projects(name, status)')
     .eq('assigned_to', profileId)
+    .not('project_id', 'is', null)
     .order('due_date', { ascending: true, nullsFirst: false });
   return { data: data || [], error };
 }
 
+// The assignee's notification is sent by the DB trigger (trg_project_tasks_after).
 export async function createProjectTask(tenantId, projectId, payload) {
-  const { data: inserted, error } = await supabase.from('project_tasks').insert([{
+  const { error } = await supabase.from('project_tasks').insert([{
     tenant_id: tenantId, project_id: projectId, title: payload.title.trim(), description: payload.description || '',
-    assigned_to: payload.assigned_to || null, due_date: payload.due_date || null,
-  }]).select('id').single();
-
-  if (!error && inserted?.id && payload.assigned_to) {
-    await notifyProfiles(tenantId, [payload.assigned_to], {
-      type: 'project_task_assigned',
-      title: 'New project task assigned',
-      body: `You were assigned "${payload.title.trim()}".`,
-      linkKey: 'my-projects',
-      relatedId: inserted.id,
-    });
-  }
-
+    assigned_to: payload.assigned_to || null, due_date: payload.due_date || null, source: 'web',
+  }]);
   return { error };
 }
 
