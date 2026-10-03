@@ -735,3 +735,66 @@
     width: 100%;
   }
 }
+
+/* ── 2026-10: what's new, clients strip, ERP teaser ─────────────────────── */
+.homepage .soon-pill {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 2px 8px;
+  border-radius: 99px;
+  background: #EDE9FE;
+  color: #6C5CE7;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  vertical-align: middle;
+}
+.homepage .whats-new { background: #FFFFFF; }
+.homepage .whats-new .section-header .eyebrow { margin-bottom: 10px; }
+.homepage .feature-index.new-badge {
+  color: #6C5CE7;
+  background: #EDE9FE;
+  padding: 2px 8px;
+  border-radius: 99px;
+  font-size: 11px;
+}
+.homepage .clients-strip { padding: 28px 0 8px; }
+.homepage .clients-title {
+  text-align: center;
+  font-size: 13px;
+  font-weight: 600;
+  color: #64748B;
+  margin: 0 0 16px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+}
+.homepage .clients-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 28px 40px;
+  align-items: center;
+}
+.homepage .client-item { color: #475569; font-weight: 700; font-size: 16px; opacity: 0.85; }
+.homepage .client-item img { height: 36px; max-width: 140px; object-fit: contain; filter: grayscale(1); }
+.homepage .client-item img:hover { filter: none; }
+.homepage .erp-teaser { padding: 40px 0; }
+.homepage .erp-teaser-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 32px;
+  border-radius: 16px;
+  background: linear-gradient(135deg, #1E1B4B 0%, #312E81 100%);
+  color: #fff;
+}
+.homepage .erp-teaser-card h2 { margin: 10px 0 8px; font-size: 28px; color: #fff; }
+.homepage .erp-teaser-card p { margin: 0; color: #C7D2FE; max-width: 560px; line-height: 1.6; }
+.homepage .erp-teaser-card .soon-pill { margin-left: 0; background: rgba(255,255,255,.15); color: #fff; }
+.homepage a.btn-primary, .homepage a.btn-outline { display: inline-flex; align-items: center; text-decoration: none; }
+@media (max-width: 768px) {
+  .homepage .erp-teaser-card { flex-direction: column; align-items: flex-start; padding: 24px 16px; }
+  .homepage .erp-teaser-card h2 { font-size: 22px; }
+}

@@ -2,9 +2,8 @@ import React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { QRCodeSVG } from 'qrcode.react';
 import { FEATURE_REGISTRY } from '@/lib/featureRegistry';
+import { SUPPORT_EMAIL, WHATS_NEW, CLIENTS } from '@/lib/siteContent';
 import './HomePage.css';
-
-const SUPPORT_EMAIL = 'crewcoreadmin@gmail.com';
 
 // Icons for every entry in FEATURE_REGISTRY — kept here (rather than in the
 // registry itself) since this page is the only consumer that needs per-item
@@ -25,6 +24,8 @@ const FEATURE_ICONS = {
   salary_structure: 'fa-sitemap', run_payroll: 'fa-money-bill-wave', payslips: 'fa-file-invoice-dollar',
   advances_loans: 'fa-hand-holding-dollar', salary_additions: 'fa-coins', tax_slabs: 'fa-percent',
   approval_chains: 'fa-route',
+  tasks: 'fa-list-check', geofencing: 'fa-location-crosshairs', live_tracking: 'fa-location-dot',
+  ai_assistant: 'fa-robot', ai_meetings: 'fa-microphone-lines',
 };
 
 const CATEGORY_META = {
@@ -34,9 +35,10 @@ const CATEGORY_META = {
   Performance: { icon: 'fa-trophy',        blurb: 'Goals, feedback, and review cycles' },
   Payroll:     { icon: 'fa-wallet',        blurb: 'Salary structure through payslip delivery' },
   System:      { icon: 'fa-gears',         blurb: 'Configuration that powers everything else' },
+  Premium:     { icon: 'fa-gem',           blurb: 'Add-ons you can switch on per company' },
 };
 
-const CATEGORY_ORDER = ['General', 'Requests', 'Hiring', 'Performance', 'Payroll', 'System'];
+const CATEGORY_ORDER = ['General', 'Requests', 'Hiring', 'Performance', 'Payroll', 'System', 'Premium'];
 
 const FEATURE_CATEGORIES = CATEGORY_ORDER.map((category) => ({
   category,
@@ -61,7 +63,9 @@ export default function HomePage() {
                 <span>CrewCore</span>
               </div>
               <div className="nav-links">
+                <a href="#whats-new">What's New</a>
                 <a href="#features">Features</a>
+                <a href="/erp" onClick={(e) => { e.preventDefault(); navigate('/erp'); }}>ERP <span className="soon-pill">Soon</span></a>
                 <a href="#support">Support</a>
               </div>
             </div>
@@ -81,14 +85,15 @@ export default function HomePage() {
       <section className="hero">
         <div className="container">
           <div className="hero-inner">
-            <span className="eyebrow">Payroll &amp; Workforce Management</span>
+            <span className="eyebrow">HR, Payroll &amp; Workforce Platform</span>
             <h1>
               Run your workforce.<br />
               <span className="accent">Not the paperwork.</span>
             </h1>
             <p>
-              CrewCore brings your team, attendance, leaves, and payroll together in one
-              platform — built for businesses that would rather move than manage spreadsheets.
+              CrewCore brings your team, attendance, leave, payroll, tasks, performance and hiring
+              together in one platform — with an AI assistant built in — for businesses that would
+              rather move than manage spreadsheets.
             </p>
             <div className="hero-buttons">
               <button className="btn-primary btn-lg" onClick={() => navigate('/signup')}>
@@ -112,6 +117,43 @@ export default function HomePage() {
                 <span>access control</span>
               </div>
             </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Trusted by (only when CLIENTS has entries) */}
+      {CLIENTS.length > 0 && (
+        <section className="clients-strip">
+          <div className="container">
+            <p className="clients-title">Trusted by growing teams</p>
+            <div className="clients-row">
+              {CLIENTS.map((c) => (
+                <div className="client-item" key={c.name} title={c.sector || c.name}>
+                  {c.logo ? <img src={c.logo} alt={c.name} /> : <span>{c.name}</span>}
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+      )}
+
+      {/* What's new */}
+      <section className="features whats-new" id="whats-new">
+        <div className="container">
+          <div className="section-header">
+            <span className="eyebrow">New in CrewCore</span>
+            <h2>More than payroll — run the whole workday</h2>
+            <p>Tasks, AI, performance and hiring, built into the same HR system your team already uses</p>
+          </div>
+          <div className="features-grid">
+            {WHATS_NEW.map((f) => (
+              <div className="feature-card" key={f.title}>
+                {f.badge && <span className="feature-index new-badge">{f.badge}</span>}
+                <i className={`fas ${f.icon} feature-icon`}></i>
+                <h3>{f.title}</h3>
+                <p>{f.text}</p>
+              </div>
+            ))}
           </div>
         </div>
       </section>
@@ -239,6 +281,20 @@ export default function HomePage() {
         </div>
       </section>
 
+      {/* ERP teaser */}
+      <section className="erp-teaser">
+        <div className="container">
+          <div className="erp-teaser-card">
+            <div>
+              <span className="soon-pill">Coming soon</span>
+              <h2>CrewCore ERP</h2>
+              <p>Inventory, purchase, GST invoicing, accounts and CRM — connected to the HR and payroll you already run on CrewCore.</p>
+            </div>
+            <button className="btn-primary btn-lg" onClick={() => navigate('/erp')}>See what's coming</button>
+          </div>
+        </div>
+      </section>
+
       {/* Mobile App Section */}
       <section className="app-download">
         <div className="container">
@@ -311,13 +367,14 @@ export default function HomePage() {
           <div className="footer-content">
             <div className="footer-section">
               <h4>CrewCore</h4>
-              <p>Modern payroll management for the digital age</p>
+              <p>HR, payroll, tasks and performance for growing Indian businesses</p>
             </div>
             <div className="footer-section">
               <h4>Product</h4>
               <ul>
+                <li><a href="#whats-new">What's New</a></li>
                 <li><a href="#features">Features</a></li>
-                <li><a href="#pricing">Pricing</a></li>
+                <li><a href="/erp" onClick={(e) => { e.preventDefault(); navigate('/erp'); }}>ERP (coming soon)</a></li>
               </ul>
             </div>
             <div className="footer-section">

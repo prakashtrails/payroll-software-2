@@ -36,3 +36,7 @@ supabase/.temp/
 supabase.exe
 .vercel
 .env*
+
+# Playwright output
+test-results/
+playwright-report/

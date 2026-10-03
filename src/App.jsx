@@ -72,6 +72,7 @@ import TasksPage from './pages/dashboard/TasksPage';
 import HelpPage from './pages/dashboard/HelpPage';
 import MeetingsPage from './pages/dashboard/MeetingsPage';
 import CareersPage from './pages/CareersPage';
+import ErpPage from './pages/ErpPage';
 import ExpenseClaimsPage from './pages/dashboard/ExpenseClaimsPage';
 import TravelRequestsPage from './pages/dashboard/TravelRequestsPage';
 import ApprovalChainsPage from './pages/dashboard/ApprovalChainsPage';
@@ -150,6 +151,7 @@ export default function App() {
       <Route path="/" element={<HomePage />} />
       <Route path="/privacy" element={<PrivacyPolicyPage />} />
       <Route path="/careers/:slug" element={<CareersPage />} />
+      <Route path="/erp" element={<ErpPage />} />
 
       <Route element={<AuthLayout />}>
         <Route path="/login" element={<LoginPage />} />
