@@ -71,6 +71,7 @@ import MyProjectsPage from './pages/employee/MyProjectsPage';
 import TasksPage from './pages/dashboard/TasksPage';
 import HelpPage from './pages/dashboard/HelpPage';
 import MeetingsPage from './pages/dashboard/MeetingsPage';
+import CareersPage from './pages/CareersPage';
 import ExpenseClaimsPage from './pages/dashboard/ExpenseClaimsPage';
 import TravelRequestsPage from './pages/dashboard/TravelRequestsPage';
 import ApprovalChainsPage from './pages/dashboard/ApprovalChainsPage';
@@ -148,6 +149,7 @@ export default function App() {
     <Routes>
       <Route path="/" element={<HomePage />} />
       <Route path="/privacy" element={<PrivacyPolicyPage />} />
+      <Route path="/careers/:slug" element={<CareersPage />} />
 
       <Route element={<AuthLayout />}>
         <Route path="/login" element={<LoginPage />} />

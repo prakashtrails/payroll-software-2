@@ -389,3 +389,63 @@ export async function updateOfferLetterStatus(id, status) {
   const { error } = await supabase.from('offer_letters').update({ status }).eq('id', id);
   return { error };
 }
+
+// ── Candidate sources + public careers page (20261003_7) ────────────────────
+export const CANDIDATE_SOURCES = ['Referral', 'Direct', 'Careers Page', 'Job Portal', 'Agency', 'Walk-in'];
+/** Sources HR/managers can pick when adding a candidate themselves. */
+export const MANUAL_SOURCES = ['Direct', 'Job Portal', 'Agency', 'Walk-in', 'Referral'];
+
+/**
+ * HR/manager adds a candidate directly (not an employee referral). The row is
+ * stored with referred_by = the HR user (RLS requires it) and `source` tells
+ * them apart; the DB trigger only lets HR/managers use non-referral sources.
+ */
+export async function addCandidate(tenantId, addedBy, payload, resumeFile = null) {
+  let resumePath = null;
+  if (resumeFile) {
+    const { path, error } = await uploadResume(tenantId, addedBy, resumeFile);
+    if (error) return { data: null, error };
+    resumePath = path;
+  }
+  return createReferral({
+    tenant_id: tenantId,
+    referred_by: addedBy,
+    job_posting_id: payload.job_posting_id,
+    candidate_name: payload.candidate_name.trim(),
+    candidate_email: payload.candidate_email.trim().toLowerCase(),
+    candidate_phone: payload.candidate_phone.replace(/\D/g, ''),
+    notes: payload.notes?.trim() || '',
+    source: payload.source || 'Direct',
+    resume_file_path: resumePath,
+    stage: 'Applied',
+    status: 'Submitted',
+  });
+}
+
+export async function saveCareersSettings(tenantId, { careers_enabled, careers_slug, careers_intro }) {
+  const { error } = await supabase.from('tenants').update({
+    careers_enabled: !!careers_enabled,
+    careers_slug: careers_slug ? careers_slug.trim().toLowerCase() : null,
+    careers_intro: (careers_intro || '').slice(0, 1500),
+  }).eq('id', tenantId);
+  return { error };
+}
+
+/** Public (no login): company name, intro and open postings for /careers/:slug. */
+export async function getPublicOpenings(slug) {
+  const { data, error } = await supabase.rpc('careers_list_openings', { p_slug: slug });
+  return { data, error };
+}
+
+/** Public (no login): submits an application with the CV via the careers-apply function. */
+export async function submitPublicApplication(form) {
+  const body = new FormData();
+  Object.entries(form).forEach(([k, v]) => { if (v !== undefined && v !== null) body.append(k, v); });
+  const { data, error } = await supabase.functions.invoke('careers-apply', { body });
+  if (error) {
+    let msg = error.message;
+    try { msg = (await error.context?.json())?.error || msg; } catch { /* keep generic */ }
+    return { error: msg };
+  }
+  return { error: data?.error || null };
+}

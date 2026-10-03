@@ -1,23 +1,33 @@
 import { useEffect, useState, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import Header from '@/components/Header';
 import Modal from '@/components/Modal';
 import { showToast } from '@/components/Toast';
 import { useAuth } from '@/context/AuthContext';
 import {
   listHeadcountRequests, listJobPostings, listAllReferrals, listOfferLetters,
-  listInterviewsForReferral, getPiqFormUrl,
+  listInterviewsForReferral, getPiqFormUrl, getResumeUrl, addCandidate,
   advanceReferralStage, updateBgvStatus, updatePoliceVerificationStatus,
-  RECRUITMENT_STAGES, TERMINAL_STAGES, BGV_STATUSES, POLICE_VERIFICATION_STATUSES,
+  RECRUITMENT_STAGES, TERMINAL_STAGES, ALL_STAGES, BGV_STATUSES, POLICE_VERIFICATION_STATUSES,
+  CANDIDATE_SOURCES, MANUAL_SOURCES, RESUME_ACCEPT, RESUME_MAX_BYTES,
 } from '@/services/hiringService';
 import { fullName, fmt } from '@/lib/helpers';
 
 const STAGE_BADGE = (stage) => stage === 'Rejected' ? 'badge-danger' : stage === 'Withdrawn' ? 'badge-secondary' : 'badge-info';
 const HC_STATUS_BADGE = { Pending: 'badge-warning', Approved: 'badge-success', Rejected: 'badge-danger' };
+const SOURCE_BADGE = { Referral: 'badge-purple', Direct: 'badge-info', 'Careers Page': 'badge-success', 'Job Portal': 'badge-teal', Agency: 'badge-warning', 'Walk-in': 'badge-secondary' };
+const EMPTY_CANDIDATE = { job_posting_id: '', candidate_name: '', candidate_email: '', candidate_phone: '', source: 'Direct', notes: '' };
 
 export default function RecruitmentPipelinePage() {
-  const { tenant } = useAuth();
+  const { tenant, profile } = useAuth();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [tab, setTab] = useState(searchParams.get('candidate') ? 'candidates' : 'requisitions');
+  const [filters, setFilters] = useState({ q: '', stage: 'active', source: '', posting: '' });
+  const [showAdd, setShowAdd] = useState(false);
+  const [candidateForm, setCandidateForm] = useState(EMPTY_CANDIDATE);
+  const [candidateResume, setCandidateResume] = useState(null);
+  const [savingCandidate, setSavingCandidate] = useState(false);
 
   const [headcountRequests, setHeadcountRequests] = useState([]);
   const [jobPostings, setJobPostings] = useState([]);
@@ -51,6 +61,15 @@ export default function RecruitmentPipelinePage() {
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
+  // Notification deep link: /recruitment-pipeline?candidate=<id>
+  useEffect(() => {
+    const id = searchParams.get('candidate');
+    if (!id || drillInto || !referrals.length) return;
+    const r = referrals.find((x) => x.id === id);
+    if (r) openCandidate(r);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [referrals, searchParams]);
+
   // Re-sync open modals with fresh data after any mutation.
   useEffect(() => {
     if (pipelineFor) { const fresh = headcountRequests.find((h) => h.id === pipelineFor.id); if (fresh) setPipelineFor(fresh); }
@@ -72,8 +91,41 @@ export default function RecruitmentPipelinePage() {
     setCandidateInterviews(data);
   };
 
-  const closeModal = () => { setPipelineFor(null); setDrillInto(null); };
-  const backToCandidates = () => setDrillInto(null);
+  const closeModal = () => { setPipelineFor(null); setDrillInto(null); if (searchParams.get('candidate')) setSearchParams({}); };
+  const backToCandidates = () => (pipelineFor ? setDrillInto(null) : closeModal());
+
+  const filteredCandidates = referrals.filter((r) => {
+    if (filters.stage === 'active' && TERMINAL_STAGES.includes(r.stage)) return false;
+    if (filters.stage && filters.stage !== 'active' && r.stage !== filters.stage) return false;
+    if (filters.source && (r.source || 'Referral') !== filters.source) return false;
+    if (filters.posting && r.job_posting_id !== filters.posting) return false;
+    const q = filters.q.trim().toLowerCase();
+    return !q || `${r.candidate_name} ${r.candidate_email} ${r.candidate_phone} ${r.job_postings?.title || ''}`.toLowerCase().includes(q);
+  });
+
+  const handleAddCandidate = async () => {
+    const f = candidateForm;
+    if (!f.job_posting_id) return showToast('Choose the job posting', 'error');
+    if (f.candidate_name.trim().length < 2) return showToast('Enter the candidate name', 'error');
+    if (!f.candidate_email.trim() && !f.candidate_phone.trim()) return showToast('Enter an email or phone number', 'error');
+    if (candidateResume && candidateResume.size > RESUME_MAX_BYTES) return showToast('Resume must be 5 MB or smaller', 'error');
+    setSavingCandidate(true);
+    const { error } = await addCandidate(tenant.id, profile.id, f, candidateResume);
+    setSavingCandidate(false);
+    if (error) return showToast('Failed: ' + error.message, 'error');
+    showToast('Candidate added', 'success');
+    setShowAdd(false);
+    setCandidateForm(EMPTY_CANDIDATE);
+    setCandidateResume(null);
+    setTab('candidates');
+    fetchData();
+  };
+
+  const openResume = async (path) => {
+    const { url, error } = await getResumeUrl(path);
+    if (error || !url) return showToast('Could not open resume', 'error');
+    window.open(url, '_blank', 'noopener');
+  };
 
   const currentStageIndex = drillInto ? RECRUITMENT_STAGES.indexOf(drillInto.stage) : -1;
   const isTerminal = drillInto && TERMINAL_STAGES.includes(drillInto.stage);
@@ -142,9 +194,63 @@ export default function RecruitmentPipelinePage() {
 
   return (
     <>
-      <Header title="Recruitment Pipeline" breadcrumb="Requisition to onboarding hand-off, in one place — mapped to the recruitment SOP" />
+      <Header title="Recruitment Pipeline" breadcrumb="Requisition to onboarding hand-off, in one place — mapped to the recruitment SOP"
+        actions={<button className="btn btn-primary" onClick={() => { setCandidateForm(EMPTY_CANDIDATE); setCandidateResume(null); setShowAdd(true); }}><i className="fas fa-user-plus" style={{ marginRight: 6 }} />Add Candidate</button>}
+      />
+      <div className="tab-bar-wrap">
+        <div className="tabs">
+          <button className={`tab-btn ${tab === 'requisitions' ? 'active' : ''}`} onClick={() => setTab('requisitions')}>Requisitions</button>
+          <button className={`tab-btn ${tab === 'candidates' ? 'active' : ''}`} onClick={() => setTab('candidates')}>All Candidates ({referrals.filter((r) => !TERMINAL_STAGES.includes(r.stage)).length})</button>
+        </div>
+      </div>
       <div className="page-content">
-        {loading ? (
+        {!loading && tab === 'candidates' ? (
+          <>
+            <div className="filter-bar">
+              <input className="form-input" placeholder="Search name, email, phone, role…" value={filters.q} onChange={(e) => setFilters({ ...filters, q: e.target.value })} />
+              <select className="form-select" value={filters.stage} onChange={(e) => setFilters({ ...filters, stage: e.target.value })}>
+                <option value="active">Active candidates</option>
+                <option value="">All stages</option>
+                {ALL_STAGES.map((st) => <option key={st}>{st}</option>)}
+              </select>
+              <select className="form-select" value={filters.source} onChange={(e) => setFilters({ ...filters, source: e.target.value })}>
+                <option value="">All sources</option>
+                {CANDIDATE_SOURCES.map((src) => <option key={src}>{src}</option>)}
+              </select>
+              <select className="form-select" value={filters.posting} onChange={(e) => setFilters({ ...filters, posting: e.target.value })}>
+                <option value="">All job postings</option>
+                {jobPostings.map((jp) => <option key={jp.id} value={jp.id}>{jp.title}</option>)}
+              </select>
+            </div>
+            <div className="card">
+              <div className="table-wrap">
+                <table>
+                  <thead><tr><th>Candidate</th><th>Role</th><th>Source</th><th>Stage</th><th>Added</th><th></th></tr></thead>
+                  <tbody>
+                    {filteredCandidates.length === 0 ? (
+                      <tr><td colSpan={6} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 40 }}>No candidates match these filters.</td></tr>
+                    ) : filteredCandidates.map((r) => (
+                      <tr key={r.id}>
+                        <td>
+                          <div style={{ fontWeight: 600, fontSize: 13 }}>{r.candidate_name}</div>
+                          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{[r.candidate_email, r.candidate_phone].filter(Boolean).join(' · ')}</div>
+                        </td>
+                        <td style={{ fontSize: 12 }}>{r.job_postings?.title || '—'}</td>
+                        <td>
+                          <span className={`badge ${SOURCE_BADGE[r.source || 'Referral']}`}>{r.source || 'Referral'}</span>
+                          {(r.source || 'Referral') === 'Referral' && r.referred_by_profile && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>by {fullName(r.referred_by_profile)}</div>}
+                        </td>
+                        <td><span className={`badge ${STAGE_BADGE(r.stage)}`}>{r.stage}</span></td>
+                        <td style={{ fontSize: 12 }}>{fmt.date(r.created_at)}</td>
+                        <td><button className="btn btn-outline btn-sm" onClick={() => openCandidate(r)}>Manage</button></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </>
+        ) : loading ? (
           <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)' }}><div className="spinner" style={{ margin: '0 auto 16px' }} />Loading…</div>
         ) : (
           <div className="card">
@@ -173,7 +279,7 @@ export default function RecruitmentPipelinePage() {
       </div>
 
       <Modal
-        show={!!pipelineFor}
+        show={!!pipelineFor || !!drillInto}
         onClose={closeModal}
         title={drillInto ? `Candidate — ${drillInto.candidate_name}` : pipelineFor ? `Candidates — ${pipelineFor.designation}` : ''}
         width="640px"
@@ -202,7 +308,16 @@ export default function RecruitmentPipelinePage() {
 
         {drillInto && (
           <>
-            <button className="btn btn-outline btn-sm" style={{ marginBottom: 12 }} onClick={backToCandidates}>← Back to candidates</button>
+            <button className="btn btn-outline btn-sm" style={{ marginBottom: 12 }} onClick={backToCandidates}>{pipelineFor ? '← Back to candidates' : '← Close'}</button>
+
+            <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 12, display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+              <span className={`badge ${SOURCE_BADGE[drillInto.source || 'Referral']}`}>{drillInto.source || 'Referral'}</span>
+              {drillInto.job_postings?.title && <span><i className="fas fa-briefcase" style={{ marginRight: 4 }} />{drillInto.job_postings.title}</span>}
+              {drillInto.candidate_email && <a href={`mailto:${drillInto.candidate_email}`}>{drillInto.candidate_email}</a>}
+              {drillInto.candidate_phone && <a href={`tel:${drillInto.candidate_phone}`}>{drillInto.candidate_phone}</a>}
+              {drillInto.resume_file_path && <button className="btn btn-outline btn-sm" onClick={() => openResume(drillInto.resume_file_path)}><i className="fas fa-file-lines" style={{ marginRight: 4 }} />Resume</button>}
+            </div>
+            {drillInto.notes && <p style={{ fontSize: 12, whiteSpace: 'pre-wrap', background: 'var(--bg)', padding: 10, borderRadius: 8, margin: '0 0 12px' }}>{drillInto.notes}</p>}
 
             {isTerminal ? (
               <div style={{ marginBottom: 16 }}>
@@ -284,6 +399,40 @@ export default function RecruitmentPipelinePage() {
             </div>
           </>
         )}
+      </Modal>
+
+      <Modal show={showAdd} onClose={() => setShowAdd(false)} title="Add Candidate" width="560px"
+        footer={<>
+          <button className="btn btn-outline" onClick={() => setShowAdd(false)}>Cancel</button>
+          <button className="btn btn-primary" onClick={handleAddCandidate} disabled={savingCandidate}>{savingCandidate ? 'Saving…' : 'Add Candidate'}</button>
+        </>}
+      >
+        <div className="form-group">
+          <label className="form-label">Job posting *</label>
+          <select className="form-select" value={candidateForm.job_posting_id} onChange={(e) => setCandidateForm({ ...candidateForm, job_posting_id: e.target.value })}>
+            <option value="">Choose…</option>
+            {jobPostings.filter((jp) => jp.status !== 'Closed').map((jp) => <option key={jp.id} value={jp.id}>{jp.title}{jp.department ? ` · ${jp.department}` : ''}</option>)}
+          </select>
+          {jobPostings.length === 0 && <div className="form-hint">Create a job posting first (Recruitment → Job Postings).</div>}
+        </div>
+        <div className="form-row">
+          <div className="form-group"><label className="form-label">Full name *</label>
+            <input className="form-input" maxLength={100} value={candidateForm.candidate_name} onChange={(e) => setCandidateForm({ ...candidateForm, candidate_name: e.target.value })} /></div>
+          <div className="form-group"><label className="form-label">Source</label>
+            <select className="form-select" value={candidateForm.source} onChange={(e) => setCandidateForm({ ...candidateForm, source: e.target.value })}>
+              {MANUAL_SOURCES.map((src) => <option key={src}>{src}</option>)}
+            </select></div>
+        </div>
+        <div className="form-row">
+          <div className="form-group"><label className="form-label">Email</label>
+            <input className="form-input" type="email" value={candidateForm.candidate_email} onChange={(e) => setCandidateForm({ ...candidateForm, candidate_email: e.target.value })} /></div>
+          <div className="form-group"><label className="form-label">Phone</label>
+            <input className="form-input" type="tel" value={candidateForm.candidate_phone} onChange={(e) => setCandidateForm({ ...candidateForm, candidate_phone: e.target.value })} /></div>
+        </div>
+        <div className="form-group"><label className="form-label">Resume (PDF/Word, max 5 MB)</label>
+          <input className="form-input" type="file" accept={RESUME_ACCEPT} onChange={(e) => setCandidateResume(e.target.files?.[0] || null)} /></div>
+        <div className="form-group"><label className="form-label">Notes</label>
+          <textarea className="form-input" rows={3} value={candidateForm.notes} onChange={(e) => setCandidateForm({ ...candidateForm, notes: e.target.value })} placeholder="Current CTC, notice period, agency name…" /></div>
       </Modal>
     </>
   );

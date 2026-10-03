@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import Header from '@/components/Header';
+import CareersSettingsCard from '@/components/CareersSettingsCard';
 import Modal from '@/components/Modal';
 import { showToast } from '@/components/Toast';
 import { useAuth } from '@/context/AuthContext';
@@ -126,7 +127,7 @@ function PostingModal({ show, onClose, posting, onSaved }) {
 }
 
 export default function HiringPage() {
-  const { tenant, profile } = useAuth();
+  const { tenant, profile, refreshProfile } = useAuth();
   const canManage = profile?.role === 'admin';
 
   const [tab, setTab] = useState('open');
@@ -205,6 +206,7 @@ export default function HiringPage() {
       />
 
       <div className="page-content">
+        {canManage && <CareersSettingsCard tenant={tenant} onSaved={refreshProfile} />}
         {loading ? (
           <div style={{ padding: 48, textAlign: 'center', color: 'var(--text-muted)' }}>
             <div className="spinner" style={{ margin: '0 auto 16px' }} />Loading…

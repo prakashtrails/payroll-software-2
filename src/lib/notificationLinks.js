@@ -21,6 +21,7 @@ const LINKS = {
   verification_requests:   { admin: '/verification-requests', manager: '/manager-verification-requests' },
   // Same page for every role; `param` deep-links to the notification's related_id.
   tasks:                   { admin: '/tasks', manager: '/tasks', employee: '/tasks', param: 'task' },
+  recruitment:             { admin: '/recruitment-pipeline', manager: '/recruitment-pipeline', param: 'candidate' },
 };
 
 export function resolveNotificationLink(linkKey, role, relatedId = null) {
