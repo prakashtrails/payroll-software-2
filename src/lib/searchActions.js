@@ -21,6 +21,7 @@ const ACTIONS = [
   { label: 'View My Onboarding Checklist', icon: 'fa-clipboard-check', href: '/me?tab=onboarding', roles: ['employee', 'manager', 'admin', 'superadmin'], featureKey: 'onboarding' },
   { label: 'View My Offboarding Checklist', keywords: ['exit', 'resignation'], icon: 'fa-door-open', href: '/me?tab=offboarding', roles: ['employee', 'manager', 'admin', 'superadmin'], featureKey: 'offboarding' },
   { label: 'View My Assets', keywords: ['laptop', 'equipment'], icon: 'fa-boxes-stacked', href: '/me?tab=assets', roles: ['employee', 'manager', 'admin', 'superadmin'], featureKey: 'assets' },
+  { label: 'Help & FAQ', keywords: ['how to', 'guide', 'support', 'faq', 'help'], icon: 'fa-circle-question', href: '/help', roles: ['employee', 'manager', 'admin', 'superadmin'] },
   { label: 'View My Tasks', keywords: ['todo', 'assign task', 'to-do'], icon: 'fa-list-check', href: '/tasks', roles: ['employee', 'manager', 'admin'], featureKey: 'tasks' },
   { label: 'View My Project Tasks', icon: 'fa-diagram-project', href: '/me?tab=projects', roles: ['employee', 'manager', 'admin', 'superadmin'], featureKey: 'projects' },
   { label: 'View My Performance / KRAs', keywords: ['goals', 'review', 'feedback', 'pip'], icon: 'fa-trophy', href: '/me?tab=performance', roles: ['employee', 'manager', 'admin', 'superadmin'] },
