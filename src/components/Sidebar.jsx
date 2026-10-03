@@ -35,6 +35,7 @@ const ME_NAV_ITEM = {
 };
 
 const TASKS_NAV_ITEM = { label: 'Tasks', icon: 'fa-list-check', href: '/tasks', featureKey: 'tasks' };
+const MEETINGS_NAV_ITEM = { label: 'Meeting Notes', icon: 'fa-microphone-lines', href: '/meetings', featureKey: 'ai_meetings' };
 const HELP_NAV_ITEM = { label: 'Help & FAQ', icon: 'fa-circle-question', href: '/help' };
 
 // Personal finance-related self-service items — Payslips, Tax Declaration, and
@@ -89,7 +90,7 @@ const NAV_CONFIG = {
   admin: [
     {
       title: 'Overview',
-      items: [HOME_NAV_ITEM, ME_NAV_ITEM, TASKS_NAV_ITEM, HELP_NAV_ITEM],
+      items: [HOME_NAV_ITEM, ME_NAV_ITEM, TASKS_NAV_ITEM, MEETINGS_NAV_ITEM, HELP_NAV_ITEM],
     },
     MY_FINANCES_SECTION,
     {
@@ -197,7 +198,7 @@ const NAV_CONFIG = {
   manager: [
     {
       title: 'Overview',
-      items: [HOME_NAV_ITEM, ME_NAV_ITEM, TASKS_NAV_ITEM, HELP_NAV_ITEM],
+      items: [HOME_NAV_ITEM, ME_NAV_ITEM, TASKS_NAV_ITEM, MEETINGS_NAV_ITEM, HELP_NAV_ITEM],
     },
     MY_FINANCES_SECTION,
     {
@@ -269,7 +270,7 @@ const NAV_CONFIG = {
   raniwalaManager: [
     {
       title: 'Overview',
-      items: [HOME_NAV_ITEM, ME_NAV_ITEM, TASKS_NAV_ITEM, HELP_NAV_ITEM],
+      items: [HOME_NAV_ITEM, ME_NAV_ITEM, TASKS_NAV_ITEM, MEETINGS_NAV_ITEM, HELP_NAV_ITEM],
     },
     MY_FINANCES_SECTION,
     {
@@ -304,7 +305,7 @@ const NAV_CONFIG = {
   employee: [
     {
       title: 'Overview',
-      items: [HOME_NAV_ITEM, ME_NAV_ITEM, TASKS_NAV_ITEM, HELP_NAV_ITEM],
+      items: [HOME_NAV_ITEM, ME_NAV_ITEM, TASKS_NAV_ITEM, MEETINGS_NAV_ITEM, HELP_NAV_ITEM],
     },
     MY_FINANCES_SECTION,
     {

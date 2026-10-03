@@ -70,6 +70,7 @@ import ProjectsPage from './pages/dashboard/ProjectsPage';
 import MyProjectsPage from './pages/employee/MyProjectsPage';
 import TasksPage from './pages/dashboard/TasksPage';
 import HelpPage from './pages/dashboard/HelpPage';
+import MeetingsPage from './pages/dashboard/MeetingsPage';
 import ExpenseClaimsPage from './pages/dashboard/ExpenseClaimsPage';
 import TravelRequestsPage from './pages/dashboard/TravelRequestsPage';
 import ApprovalChainsPage from './pages/dashboard/ApprovalChainsPage';
@@ -256,6 +257,7 @@ export default function App() {
         <Route path="/projects" element={<PrivateRoute allowedRoles={['admin', 'manager', 'superadmin']} featureKey="projects"><ProjectsPage /></PrivateRoute>} />
         {/* Tasks: everyone; who sees/assigns/edits what is enforced in the DB (migration 20261003_1) */}
         <Route path="/help" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'hod', 'management', 'superadmin']}><HelpPage /></PrivateRoute>} />
+        <Route path="/meetings" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'hod', 'management']} featureKey="ai_meetings"><MeetingsPage /></PrivateRoute>} />
         <Route path="/tasks" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'hod', 'management']} featureKey="tasks"><TasksPage /></PrivateRoute>} />
         <Route path="/my-projects" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'hod', 'management', 'superadmin']} featureKey="projects"><MyProjectsPage /></PrivateRoute>} />
         <Route path="/expense-claims" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'hod', 'management', 'superadmin']} featureKey="expense_claims"><ExpenseClaimsPage /></PrivateRoute>} />

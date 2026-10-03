@@ -65,4 +65,6 @@ export const FEATURE_REGISTRY = [
   // for every tenant until a superadmin explicitly turns it on from Toggle
   // Services — see resolveFeatureState()'s defaultEnabled param.
   { key: 'live_tracking', name: 'Live Tracking', category: 'Premium', description: 'Real-time and historical field-employee location tracking, with standing/moving time and a route map. Opt in per employee.', sort_order: 700, is_premium: true },
+  { key: 'ai_assistant', name: 'AI Assistant', category: 'Premium', description: 'In-app AI chat assistant: answers how-to questions, finds pages, looks up your own leave, attendance, payslips and tasks, and creates tasks.', sort_order: 710, is_premium: true },
+  { key: 'ai_meetings', name: 'AI Meeting Notes', category: 'Premium', description: 'Paste or upload a meeting transcript; AI writes the summary and turns action items into assigned tasks.', sort_order: 720, is_premium: true },
 ];

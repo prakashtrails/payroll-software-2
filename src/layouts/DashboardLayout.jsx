@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import Sidebar from '../components/Sidebar';
+import AssistantWidget from '../components/AssistantWidget';
 import { ToastContainer, showToast } from '../components/Toast';
 import { useAuth } from '@/context/AuthContext';
 import { OutletViewProvider } from '@/context/OutletViewContext';
@@ -201,6 +202,7 @@ export default function DashboardLayout() {
               <Outlet />
             </main>
             <ToastContainer />
+            <AssistantWidget />
 
             {profile?.must_change_password && (
               <ForcePasswordChange onDone={handlePasswordSet} onSessionExpired={handleSessionExpired} />

@@ -145,6 +145,17 @@ export const HELP_TOPICS = [
     link: '/tasks',
   },
   {
+    id: 'meeting-notes', category: 'Tasks & projects', featureKey: 'ai_meetings', roles: EVERYONE_STAFF,
+    q: 'How do I turn a meeting into tasks with AI?',
+    a: '1. Open Meeting Notes and click New Meeting Notes.\n2. Enter the title and date, then paste the transcript or upload the .txt / .vtt / .srt file exported from Google Meet, Zoom or Teams.\n3. Click Extract with AI. Review the summary and the action items — fix titles, owners, due dates and priorities, and untick anything that should not become a task.\n4. Save. The notes are stored and each selected action item becomes a task for its owner (you can assign only to yourself and your team; HR can assign to anyone).\n\nThe transcript itself is not stored.',
+    link: '/meetings',
+  },
+  {
+    id: 'assistant', category: 'Getting started', featureKey: 'ai_assistant',
+    q: 'What can the CrewCore Assistant do?',
+    a: 'Click the round robot button at the bottom-right of any page. You can ask how to do something, ask it to open a page, check your own leave balance, attendance, payslips and tasks, or ask it to create a task ("remind me to send the invoice on Monday").\n\nIt only sees what you are allowed to see, cannot approve or change records, and has a daily message limit. AI can make mistakes, so check important details.',
+  },
+  {
     id: 'projects', category: 'Tasks & projects', featureKey: 'projects',
     q: 'What is the difference between Projects and Tasks?',
     a: 'A project groups people and tasks for a piece of work with a start and end date; HR and managers create projects and add members. Project tasks also appear on your Tasks page with the project name, so you can track everything in one place.',
