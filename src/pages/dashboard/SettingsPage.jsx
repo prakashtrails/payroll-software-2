@@ -3,6 +3,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Header from '@/components/Header';
 import Modal from '@/components/Modal';
+import NotificationChannelsCard from '@/components/NotificationChannelsCard';
 import { showToast } from '@/components/Toast';
 import { useAuth } from '@/context/AuthContext';
 import { useOutletView } from '@/context/OutletViewContext';
@@ -1265,6 +1266,9 @@ export default function SettingsPage() {
               </div>
             </div>
           )}
+
+          {/* ── Task notification channels (Slack / email / WhatsApp) ─────────── */}
+          {['admin', 'superadmin'].includes(profile?.role) && <NotificationChannelsCard tenantId={tenant?.id} />}
 
         </div>
       </div>
