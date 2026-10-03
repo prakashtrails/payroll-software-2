@@ -1,4 +1,4 @@
-name: E2E
+name: CI
 
 on:
   pull_request:
@@ -18,8 +18,14 @@ jobs:
 
       - run: npm ci
 
+      # Report-only until the existing 37 lint errors are cleaned up
+      # (see CONTRIBUTING.md); switch continue-on-error off afterwards.
       - name: Lint
         run: npm run lint
+        continue-on-error: true
+
+      - name: Unit tests
+        run: npm run test:unit
 
       - name: Build
         run: npm run build

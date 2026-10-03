@@ -40,3 +40,4 @@ supabase.exe
 # Playwright output
 test-results/
 playwright-report/
+!.env.example
