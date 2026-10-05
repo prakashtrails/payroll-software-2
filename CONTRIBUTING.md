@@ -4,7 +4,7 @@
 
 | Branch | Use |
 |---|---|
-| `main` | Production. Deployed. Only merged through pull requests. |
+| `main` | Source of truth for releases — build production (crewcore.in on Hostinger) from it. Only merged through pull requests. |
 | `<name>-changes` / `feature/<topic>` | Your work. One branch per person or per feature, branched from the latest `main`. |
 | `fix/<topic>` | Small urgent fixes. |
 
@@ -13,7 +13,11 @@ Rules:
 - Delete a branch after its PR is merged.
 - Never force-push `main`.
 
-Suggested clean-up of today's remote branches (needs the repo owner's OK): merge or close `Dangi-fixes`, `suraj-fixes`, `Suraj-Updates`, `Latest-CrewCore`, `payroll-latest-changes-(for-production)-` into `main` via PRs, then delete them, so `main` is the single source of truth.
+Old branches were cleaned up on 2026-10-05: the April snapshot that used to be `main` is kept as the tag `archive/main-2026-04`.
+
+## Secrets
+
+Never commit `.env` or any key. `.env*` is git-ignored; only `.env.example` (placeholders) is tracked. The Supabase **service-role** key, SMTP password, MSG91 and Anthropic keys belong only in Supabase function secrets or your local `.env`. If a secret is ever committed, rotate it immediately — deleting the file does not remove it from git history.
 
 ## Commits
 

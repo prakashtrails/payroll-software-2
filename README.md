@@ -10,7 +10,7 @@ The **CrewCore mobile app** (Expo / React Native) is a separate repository that 
 | Backend | Supabase: Postgres + RLS, RPCs, pg_cron, pg_net, Storage, Edge Functions (Deno) |
 | AI | Claude API (`claude-opus-5-5`) via edge functions |
 | Messaging | Gmail SMTP (email OTP + task email), MSG91 (SMS OTP, WhatsApp), Slack incoming webhooks, Expo push |
-| Hosting | Vercel (`vercel.json`), Cloudflare worker in `cloudflare/` |
+| Hosting | Production web app on Hostinger (crewcore.in); `vercel.json` for Vercel builds; Cloudflare worker in `cloudflare/` |
 
 ## Getting started
 
@@ -52,8 +52,12 @@ supabase/
   migrations/       SQL migrations, named YYYYMMDD_N_description.sql
   functions/        edge functions (Deno); _shared/ holds common code
   tests/            rollback-only SQL tests (safe on any database)
+  ops/              hand-run maintenance scripts — some are destructive, read ops/README.md
+  legacy/           pre-migrations SQL kept for history — do not run
 tests/unit, tests/e2e
 docs/               design notes, costing, client docs
+scripts/            essl-sync-agent (on-site ESSL biometric sync agent)
+cloudflare/         API worker
 ```
 
 ## Database & migrations
