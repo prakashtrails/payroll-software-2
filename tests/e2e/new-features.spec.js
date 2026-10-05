@@ -40,13 +40,19 @@ test.describe('New features smoke', () => {
 
     const row = page.locator('tr', { hasText: title });
     await expect(row).toBeVisible();
+    // Register rules: Done without a due date asks for one (and a note in case it goes to review).
     await row.locator('select').selectOption('Done');
-    await page.getByRole('button', { name: /^Open tasks$|Overdue|All statuses/ }).first().isVisible().catch(() => {});
+    await expect(page.getByRole('heading', { name: 'Mark as Done' })).toBeVisible();
+    await page.locator('.modal-overlay.show input[type="date"]').last().fill(new Date().toISOString().slice(0, 10));
+    await page.locator('.modal-overlay.show textarea').last().fill('E2E done, no document');
+    await page.getByRole('button', { name: 'Confirm' }).click();
 
     // Done tasks leave the default "Open tasks" filter — switch to all statuses.
     await page.locator('select').filter({ hasText: 'Open tasks' }).selectOption('');
     await page.locator('tr', { hasText: title }).click();
-    await expect(page.getByText(/changed status from/)).toBeVisible();
+    await page.getByRole('button', { name: 'Activity' }).click();
+    await expect(page.getByText(/moved it from/)).toBeVisible();
+    await page.getByRole('button', { name: /^Comments/ }).click();
     await page.getByPlaceholder(/add a comment/i).fill('E2E comment');
     await page.getByRole('button', { name: 'Post' }).click();
     await expect(page.getByText('E2E comment')).toBeVisible();
@@ -56,7 +62,7 @@ test.describe('New features smoke', () => {
     await expect(page.locator('tr', { hasText: title })).toHaveCount(0);
 
     await page.getByTitle('Board view').click();
-    await expect(page.getByText('In Progress').first()).toBeVisible();
+    await expect(page.getByText('In review').first()).toBeVisible();
   });
 
   test('help: search and open an answer', async ({ page }) => {

@@ -2,14 +2,17 @@ import { useEffect, useState, useCallback } from 'react';
 import Header from '@/components/Header';
 import { showToast } from '@/components/Toast';
 import { useAuth } from '@/context/AuthContext';
-import { listMyTasks, updateTaskStatus } from '@/services/projectService';
-import { TASK_STATUSES } from '@/services/taskService';
-import { fmt } from '@/lib/helpers';
+import { listMyTasks } from '@/services/projectService';
+import { TASK_STATUSES, updateTask } from '@/services/taskService';
+import { fmt, todayStr } from '@/lib/helpers';
+import StatusChangeModal from '@/components/tasks/StatusChangeModal';
+import { statusNeeds, needsInput } from '@/components/tasks/taskUi';
 
 export function MyProjectsContent() {
   const { profile } = useAuth();
   const [tasks, setTasks] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [statusReq, setStatusReq] = useState(null);
 
   const fetchData = useCallback(async () => {
     if (!profile) return;
@@ -24,10 +27,19 @@ export function MyProjectsContent() {
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
-  const handleStatus = async (id, status) => {
-    const { error } = await updateTaskStatus(id, status);
-    if (error) return showToast('Failed: ' + error.message, 'error');
+  const applyStatus = async (t, patch) => {
+    const { error } = await updateTask(t.id, patch);
+    if (error) showToast('Failed: ' + error.message, 'error');
+    else setStatusReq(null);
     fetchData();
+  };
+
+  // The task register rules (due date to start, reasons, proof for review) are asked for up front.
+  const handleStatus = (t, status) => {
+    if (status === t.status) return;
+    const needs = statusNeeds(t, status, profile, todayStr());
+    if (needsInput(needs)) setStatusReq({ task: t, status, needs });
+    else applyStatus(t, { status, status_note: null });
   };
 
   return (
@@ -51,7 +63,7 @@ export function MyProjectsContent() {
                       <td style={{ fontSize: 12, color: 'var(--text-muted)' }}>{t.project?.name}</td>
                       <td style={{ fontSize: 12 }}>{fmt.date(t.due_date)}</td>
                       <td>
-                        <select className="form-select" style={{ fontSize: 12, padding: '4px 8px' }} value={t.status} onChange={(e) => handleStatus(t.id, e.target.value)}>
+                        <select className="form-select" style={{ fontSize: 12, padding: '4px 8px' }} value={t.status} onChange={(e) => handleStatus(t, e.target.value)}>
                           {TASK_STATUSES.filter((s) => s !== 'Cancelled' || t.status === 'Cancelled').map((s) => <option key={s}>{s}</option>)}
                         </select>
                       </td>
@@ -62,6 +74,7 @@ export function MyProjectsContent() {
             </div>
           </div>
         )}
+        <StatusChangeModal request={statusReq} onClose={() => { setStatusReq(null); fetchData(); }} onConfirm={applyStatus} />
       </div>
   );
 }

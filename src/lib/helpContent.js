@@ -123,7 +123,7 @@ export const HELP_TOPICS = [
   {
     id: 'tasks-overview', category: 'Tasks & projects', featureKey: 'tasks', roles: EVERYONE_STAFF,
     q: 'How do tasks work?',
-    a: 'Open Tasks from the sidebar.\n\n• My Tasks — work assigned to you.\n• Assigned by Me — tasks you gave to others.\n• My Team — tasks of people who report to you (managers only).\n\nSwitch between the list and the board (columns per status) with the buttons above the list. Overdue tasks are highlighted in red.',
+    a: 'Open Tasks from the sidebar.\n\n• My Tasks — work assigned to you.\n• Assigned by Me — tasks you gave to others.\n• My Team — tasks of people who report to you (managers only).\n• To Review — finished tasks waiting for your approval.\n\nRules: a task needs a due date before work starts, and the due date is locked after that — a manager sets a revised due date if it slips. Marking a task Blocked, or Done after its due date, asks for a reason. When you mark your task Done it goes to review (your named reviewer, the person who assigned it, or your manager) — add the link to the finished work, or a note if there is no document. They approve it or send it back with what is missing.\n\nOpen a task for sub-tasks, "waiting on" tasks, deliverable links, the linked KPI, its activity and every field change. Use "Paste tasks" to add many at once from Excel. Switch between list and board, group the list, and save filters as a view.',
     link: '/tasks',
   },
   {

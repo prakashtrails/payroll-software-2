@@ -6,11 +6,13 @@ import { useAuth } from '@/context/AuthContext';
 import {
   listProjects, createProject, updateProject,
   listProjectMembers, addProjectMember, removeProjectMember,
-  listProjectTasks, createProjectTask, updateTaskStatus,
+  listProjectTasks, createProjectTask,
 } from '@/services/projectService';
 import { listActiveEmployees } from '@/services/employeeService';
-import { TASK_STATUSES } from '@/services/taskService';
-import { fullName, fmt } from '@/lib/helpers';
+import { TASK_STATUSES, updateTask } from '@/services/taskService';
+import { fullName, fmt, todayStr } from '@/lib/helpers';
+import StatusChangeModal from '@/components/tasks/StatusChangeModal';
+import { statusNeeds, needsInput } from '@/components/tasks/taskUi';
 
 const STATUS_BADGE = { Active: 'badge-success', 'On Hold': 'badge-warning', Completed: 'badge-info', Cancelled: 'badge-danger' };
 
@@ -28,6 +30,7 @@ export default function ProjectsPage() {
   const [tasks, setTasks] = useState([]);
   const [newMemberId, setNewMemberId] = useState('');
   const [taskForm, setTaskForm] = useState({ title: '', assigned_to: '', due_date: '' });
+  const [statusReq, setStatusReq] = useState(null);
 
   const fetchData = useCallback(async () => {
     if (!tenant) return;
@@ -94,12 +97,25 @@ export default function ProjectsPage() {
     fetchData();
   };
 
-  const handleTaskStatus = async (id, status) => {
-    const { error } = await updateTaskStatus(id, status);
-    if (error) showToast(error.message, 'error');
+  const refreshTasks = async () => {
     const { data } = await listProjectTasks(activeProject.id);
     setTasks(data);
     fetchData();
+  };
+
+  const applyTaskStatus = async (t, patch) => {
+    const { error } = await updateTask(t.id, patch);
+    if (error) showToast(error.message, 'error');
+    else setStatusReq(null);
+    await refreshTasks();
+  };
+
+  // The task register rules (due date to start, reasons, proof for review) are asked for up front.
+  const handleTaskStatus = (t, status) => {
+    if (status === t.status) return;
+    const needs = statusNeeds(t, status, profile, todayStr());
+    if (needsInput(needs)) setStatusReq({ task: t, status, needs });
+    else applyTaskStatus(t, { status, status_note: null });
   };
 
   return (
@@ -220,7 +236,7 @@ export default function ProjectsPage() {
                       <td style={{ fontSize: 12 }}>{t.assignee ? fullName(t.assignee) : '—'}</td>
                       <td style={{ fontSize: 12 }}>{fmt.date(t.due_date)}</td>
                       <td>
-                        <select className="form-select" style={{ fontSize: 12, padding: '4px 8px' }} value={t.status} onChange={(e) => handleTaskStatus(t.id, e.target.value)}>
+                        <select className="form-select" style={{ fontSize: 12, padding: '4px 8px' }} value={t.status} onChange={(e) => handleTaskStatus(t, e.target.value)}>
                           {TASK_STATUSES.map((s) => <option key={s}>{s}</option>)}
                         </select>
                       </td>
@@ -232,6 +248,7 @@ export default function ProjectsPage() {
           </>
         )}
       </Modal>
+      <StatusChangeModal request={statusReq} onClose={() => { setStatusReq(null); refreshTasks(); }} onConfirm={applyTaskStatus} />
     </>
   );
 }

@@ -6,23 +6,44 @@ import StatCard from '@/components/StatCard';
 import { showToast } from '@/components/Toast';
 import { useAuth } from '@/context/AuthContext';
 import {
-  TASK_STATUSES, OPEN_STATUSES, TASK_PRIORITIES,
-  listVisibleTasks, listAssignablePeople, createTask, updateTask, deleteTask,
-  listTaskActivity, addTaskComment, canManageTask, isOverdue,
+  TASK_STATUSES, OPEN_STATUSES, TASK_PRIORITIES, REPEAT_RULES,
+  listVisibleTasks, listAssignablePeople, listTenantPeople, listLinkableKpis,
+  createTask, updateTask, deleteTask, canManageTask, canReviewTask, isOverdue, effectiveDue,
 } from '@/services/taskService';
-import { fullName, fmt, timeAgo, todayStr } from '@/lib/helpers';
+import { fullName, todayStr } from '@/lib/helpers';
+import {
+  STATUS_BADGE, PRIORITY_BADGE, PRIORITY_RANK, ReviewBadge, DueCell, LateBadge,
+  statusNeeds, needsInput, dueBucket, DUE_BUCKETS,
+} from '@/components/tasks/taskUi';
+import StatusChangeModal from '@/components/tasks/StatusChangeModal';
+import PasteTasksModal from '@/components/tasks/PasteTasksModal';
+import TaskDrawer from '@/components/tasks/TaskDrawer';
 
-const STATUS_BADGE = { 'To Do': 'badge-secondary', 'In Progress': 'badge-info', Blocked: 'badge-warning', Done: 'badge-success', Cancelled: 'badge-danger' };
-const PRIORITY_BADGE = { Low: 'badge-secondary', Medium: 'badge-info', High: 'badge-warning', Urgent: 'badge-danger' };
-const PRIORITY_RANK = { Urgent: 0, High: 1, Medium: 2, Low: 3 };
-const BOARD_COLUMNS = ['To Do', 'In Progress', 'Blocked', 'Done'];
-const EMPTY_FORM = { title: '', description: '', assigned_to: '', priority: 'Medium', due_date: '' };
+// Board lanes: Done is split into "In review" (waiting on the approver) and "Done" (approved).
+const BOARD_COLUMNS = [
+  { key: 'To Do', label: 'To Do', match: (t) => t.status === 'To Do', drop: 'To Do' },
+  { key: 'In Progress', label: 'In Progress', match: (t) => t.status === 'In Progress', drop: 'In Progress' },
+  { key: 'Blocked', label: 'Blocked', match: (t) => t.status === 'Blocked', drop: 'Blocked' },
+  { key: 'review', label: 'In review', match: (t) => t.status === 'Done' && t.review_status === 'Pending', drop: 'Done' },
+  { key: 'Done', label: 'Done', match: (t) => t.status === 'Done' && t.review_status !== 'Pending', drop: 'Done' },
+];
+const GROUPS = [['', 'No grouping'], ['due', 'Due date'], ['status', 'Status'], ['project', 'Project'], ['owner', 'Owner']];
+const EMPTY_FORM = {
+  title: '', description: '', assigned_to: '', reviewer_id: '', priority: 'Medium', start_date: '',
+  due_date: '', revised_due_date: '', repeat_rule: 'none', kpi_id: '', waiting_on: [],
+};
+const DEFAULT_FILTERS = { tab: 'mine', view: 'list', statusFilter: 'open', priorityFilter: '', assigneeFilter: '', groupBy: '', search: '' };
 
 // Open first, then earliest due date (no due date last), then highest priority.
 const byUrgency = (a, b) =>
   (OPEN_STATUSES.includes(a.status) ? 0 : 1) - (OPEN_STATUSES.includes(b.status) ? 0 : 1)
-  || (a.due_date || '9999').localeCompare(b.due_date || '9999')
+  || (effectiveDue(a) || '9999').localeCompare(effectiveDue(b) || '9999')
   || PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority];
+
+// Saved views live in this browser only (per company + person) — no DB rows.
+const viewsKey = (tenantId, profileId) => `crewcore.taskViews.${tenantId}.${profileId}`;
+const readViews = (key) => { try { return JSON.parse(localStorage.getItem(key)) || []; } catch { return []; } };
+const writeViews = (key, views) => { try { localStorage.setItem(key, JSON.stringify(views)); } catch { /* storage blocked */ } };
 
 export default function TasksPage() {
   const { tenant, profile } = useAuth();
@@ -31,23 +52,25 @@ export default function TasksPage() {
 
   const [tasks, setTasks] = useState([]);
   const [people, setPeople] = useState([]);
+  const [tenantPeople, setTenantPeople] = useState([]);
+  const [kpis, setKpis] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showOldClosed, setShowOldClosed] = useState(false);
 
-  const [tab, setTab] = useState('mine');
-  const [view, setView] = useState('list');
-  const [search, setSearch] = useState('');
-  const [statusFilter, setStatusFilter] = useState('open');
-  const [priorityFilter, setPriorityFilter] = useState('');
-  const [assigneeFilter, setAssigneeFilter] = useState('');
+  const [filters, setFilters] = useState(DEFAULT_FILTERS);
+  const { tab, view, statusFilter, priorityFilter, assigneeFilter, groupBy, search } = filters;
+  const setFilter = (patch) => setFilters((f) => ({ ...f, ...patch }));
+
+  const storageKey = tenant && profile ? viewsKey(tenant.id, profile.id) : null;
+  const [savedViews, setSavedViews] = useState([]);
+  useEffect(() => { if (storageKey) setSavedViews(readViews(storageKey)); }, [storageKey]);
 
   const [showForm, setShowForm] = useState(false);
+  const [showPaste, setShowPaste] = useState(false);
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
-
-  const [activity, setActivity] = useState([]);
-  const [comment, setComment] = useState('');
+  const [statusReq, setStatusReq] = useState(null);
   const [dragId, setDragId] = useState(null);
 
   const activeId = searchParams.get('task');
@@ -55,7 +78,9 @@ export default function TasksPage() {
 
   const isAdmin = profile?.role === 'admin' || profile?.role === 'superadmin';
   const teamIds = useMemo(() => new Set(people.filter((p) => p.is_team).map((p) => p.id)), [people]);
-  const nameById = useMemo(() => new Map(people.map((p) => [p.id, fullName(p)])), [people]);
+  const nameById = useMemo(() => new Map([...tenantPeople, ...people].map((p) => [p.id, fullName(p)])), [people, tenantPeople]);
+  const nameOf = useCallback((id) => nameById.get(id) || 'someone', [nameById]);
+  const kpiById = useMemo(() => new Map(kpis.map((k) => [k.id, k])), [kpis]);
 
   const fetchTasks = useCallback(async () => {
     if (!tenant) return;
@@ -70,17 +95,12 @@ export default function TasksPage() {
   }, [tenant, showOldClosed]);
 
   useEffect(() => { fetchTasks(); }, [fetchTasks]);
-  useEffect(() => { listAssignablePeople().then(({ data }) => setPeople(data)); }, []);
-
-  const loadActivity = useCallback(async (taskId) => {
-    const { data } = await listTaskActivity(taskId);
-    setActivity(data);
-  }, []);
-
   useEffect(() => {
-    setComment('');
-    if (activeId) loadActivity(activeId); else setActivity([]);
-  }, [activeId, loadActivity]);
+    if (!tenant) return;
+    listAssignablePeople().then(({ data }) => setPeople(data));
+    listTenantPeople(tenant.id).then(({ data }) => setTenantPeople(data));
+    listLinkableKpis().then(({ data }) => setKpis(data));
+  }, [tenant]);
 
   const openTask = (id) => setSearchParams(id ? { task: id } : {});
 
@@ -88,18 +108,22 @@ export default function TasksPage() {
     { key: 'mine', label: 'My Tasks', match: (t) => t.assigned_to === profile.id },
     { key: 'assigned', label: 'Assigned by Me', match: (t) => t.created_by === profile.id && t.assigned_to !== profile.id },
     ...(teamIds.size > 0 ? [{ key: 'team', label: 'My Team', match: (t) => teamIds.has(t.assigned_to) }] : []),
+    { key: 'review', label: 'To Review', match: (t) => canReviewTask(t, profile, teamIds) },
     { key: 'all', label: isAdmin ? 'All Tasks' : 'All Visible', match: () => true },
   ];
   const currentTab = TABS.find((t) => t.key === tab) || TABS[0];
+  const toReviewCount = useMemo(() => tasks.filter((t) => canReviewTask(t, profile, teamIds)).length, [tasks, profile, teamIds]);
 
   const tabTasks = useMemo(() => tasks.filter(currentTab.match), [tasks, currentTab]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return tabTasks.filter((t) => {
-      if (view === 'list') {
+      if (view === 'list' && tab !== 'review') {
         if (statusFilter === 'open' && !OPEN_STATUSES.includes(t.status)) return false;
         if (statusFilter === 'overdue' && !isOverdue(t, today)) return false;
+        if (statusFilter === 'today' && !(effectiveDue(t) === today && OPEN_STATUSES.includes(t.status))) return false;
+        if (statusFilter === 'review' && !(t.status === 'Done' && t.review_status === 'Pending')) return false;
         if (TASK_STATUSES.includes(statusFilter) && t.status !== statusFilter) return false;
       }
       if (priorityFilter && t.priority !== priorityFilter) return false;
@@ -107,13 +131,28 @@ export default function TasksPage() {
       if (q && !`${t.title} ${t.description} ${t.project?.name || ''} ${fullName(t.assignee)}`.toLowerCase().includes(q)) return false;
       return true;
     }).sort(byUrgency);
-  }, [tabTasks, view, statusFilter, priorityFilter, assigneeFilter, search, today]);
+  }, [tabTasks, view, tab, statusFilter, priorityFilter, assigneeFilter, search, today]);
+
+  const groups = useMemo(() => {
+    if (!groupBy || view !== 'list') return [['', filtered]];
+    const keyOf = {
+      due: (t) => dueBucket(t, today),
+      status: (t) => (t.status === 'Done' && t.review_status === 'Pending' ? 'In review' : t.status),
+      project: (t) => t.project?.name || 'No project',
+      owner: (t) => (t.assignee ? fullName(t.assignee) : 'Unassigned'),
+    }[groupBy];
+    const map = new Map();
+    filtered.forEach((t) => { const k = keyOf(t); if (!map.has(k)) map.set(k, []); map.get(k).push(t); });
+    const order = groupBy === 'due' ? DUE_BUCKETS : groupBy === 'status' ? ['To Do', 'In Progress', 'Blocked', 'In review', 'Done', 'Cancelled'] : [...map.keys()].sort();
+    return order.filter((k) => map.has(k)).map((k) => [k, map.get(k)]);
+  }, [filtered, groupBy, view, today]);
 
   const stats = useMemo(() => ({
     open: tabTasks.filter((t) => OPEN_STATUSES.includes(t.status)).length,
-    inProgress: tabTasks.filter((t) => t.status === 'In Progress').length,
+    today: tabTasks.filter((t) => effectiveDue(t) === today && OPEN_STATUSES.includes(t.status)).length,
     overdue: tabTasks.filter((t) => isOverdue(t, today)).length,
-    done: tabTasks.filter((t) => t.status === 'Done').length,
+    blocked: tabTasks.filter((t) => t.status === 'Blocked').length,
+    inReview: tabTasks.filter((t) => t.status === 'Done' && t.review_status === 'Pending').length,
   }), [tabTasks, today]);
 
   const assigneeOptions = useMemo(() => {
@@ -122,10 +161,26 @@ export default function TasksPage() {
     return [...seen.entries()].sort((a, b) => a[1].localeCompare(b[1]));
   }, [tabTasks]);
 
-  const canChangeStatus = (t) => t.assigned_to === profile.id || canManageTask(t, profile, teamIds);
+  const canChangeStatus = (t) => (t.assigned_to === profile.id || canManageTask(t, profile, teamIds))
+    && !(t.status === 'Done' && t.review_status === 'Approved' && !canManageTask(t, profile, teamIds));
   const statusChoices = (t) => (canManageTask(t, profile, teamIds) || t.status === 'Cancelled'
     ? TASK_STATUSES
     : TASK_STATUSES.filter((s) => s !== 'Cancelled'));
+
+  // ── Saved views ──────────────────────────────────────────────────────────
+  const saveView = () => {
+    const name = window.prompt('Name this view (saved in this browser):');
+    if (!name?.trim()) return;
+    const next = [...savedViews.filter((v) => v.name !== name.trim()), { name: name.trim(), filters }].slice(-12);
+    setSavedViews(next);
+    writeViews(storageKey, next);
+    showToast('View saved', 'success');
+  };
+  const removeView = (name) => {
+    const next = savedViews.filter((v) => v.name !== name);
+    setSavedViews(next);
+    writeViews(storageKey, next);
+  };
 
   // ── Actions ──────────────────────────────────────────────────────────────
   const openCreate = () => {
@@ -136,107 +191,120 @@ export default function TasksPage() {
 
   const openEdit = (t) => {
     setEditing(t);
-    setForm({ title: t.title, description: t.description || '', assigned_to: t.assigned_to || '', priority: t.priority, due_date: t.due_date || '' });
+    setForm({
+      title: t.title, description: t.description || '', assigned_to: t.assigned_to || '', reviewer_id: t.reviewer_id || '',
+      priority: t.priority, start_date: t.start_date || '', due_date: t.due_date || '', revised_due_date: t.revised_due_date || '',
+      repeat_rule: t.repeat_rule || 'none', kpi_id: t.kpi_id || '', waiting_on: t.waiting_on || [],
+    });
     setShowForm(true);
   };
 
   const handleSave = async () => {
     if (!form.title.trim()) return showToast('Task title is required', 'error');
     if (form.title.trim().length > 200) return showToast('Keep the title under 200 characters', 'error');
+    const owner = editing?.project_id ? editing.assigned_to : (form.assigned_to || profile.id);
+    if (form.reviewer_id && form.reviewer_id === owner) return showToast('The reviewer must be someone other than the owner', 'error');
     setSaving(true);
     try {
       let error;
       if (editing) {
-        const patch = { title: form.title.trim(), description: form.description.trim(), priority: form.priority, due_date: form.due_date || null };
-        if (!editing.project_id) patch.assigned_to = form.assigned_to || profile.id;
+        const patch = {
+          title: form.title.trim(), description: form.description.trim(), priority: form.priority,
+          reviewer_id: form.reviewer_id || null, start_date: form.start_date || null,
+          repeat_rule: form.repeat_rule, kpi_id: form.kpi_id || null, waiting_on: form.waiting_on,
+        };
+        if (editing.started_at) patch.revised_due_date = form.revised_due_date || null;
+        else patch.due_date = form.due_date || null;
+        if (!editing.project_id) patch.assigned_to = owner;
         ({ error } = await updateTask(editing.id, patch));
       } else {
-        ({ error } = await createTask(tenant.id, form));
+        ({ error } = await createTask(tenant.id, { ...form, assigned_to: owner }));
       }
       if (error) return showToast(error.message, 'error');
       showToast(editing ? 'Task updated' : 'Task created', 'success');
       setShowForm(false);
       await fetchTasks();
-      if (editing) loadActivity(editing.id);
     } finally {
       setSaving(false);
     }
   };
 
-  const handleStatus = async (t, status) => {
-    if (status === t.status) return;
-    const { error } = await updateTask(t.id, { status });
+  const applyStatus = async (t, patch) => {
+    const { error } = await updateTask(t.id, patch);
     if (error) return showToast(error.message, 'error');
-    setTasks((prev) => prev.map((x) => (x.id === t.id ? { ...x, status, completed_at: status === 'Done' ? new Date().toISOString() : null } : x)));
-    if (t.id === activeId) loadActivity(t.id);
+    setStatusReq(null);
+    await fetchTasks();
+  };
+
+  // Ask for whatever the register rules need (due date, reason, proof) first.
+  const requestStatus = (t, status) => {
+    if (status === t.status) return;
+    const needs = statusNeeds(t, status, profile, today);
+    if (needsInput(needs) || status === 'Cancelled') setStatusReq({ task: t, status, needs });
+    else applyStatus(t, { status, status_note: null });
   };
 
   const handleDelete = async (t) => {
-    if (!window.confirm(`Delete "${t.title}"? This also removes its comments and history.`)) return;
+    if (!window.confirm(`Delete "${t.title}"? This also removes its sub-tasks, comments and history.`)) return;
     const { error } = await deleteTask(t.id);
     if (error) return showToast(error.message, 'error');
     showToast('Task deleted', 'success');
     openTask(null);
-    setTasks((prev) => prev.filter((x) => x.id !== t.id));
-  };
-
-  const handleComment = async () => {
-    if (!comment.trim() || !activeTask) return;
-    const { error } = await addTaskComment(tenant.id, activeTask.id, profile.id, comment);
-    if (error) return showToast(error.message, 'error');
-    setComment('');
-    loadActivity(activeTask.id);
+    setTasks((prev) => prev.filter((x) => x.id !== t.id && x.parent_task_id !== t.id));
   };
 
   const handleDrop = (status) => {
     const t = tasks.find((x) => x.id === dragId);
     setDragId(null);
-    if (t && canChangeStatus(t)) handleStatus(t, status);
+    if (t && canChangeStatus(t)) requestStatus(t, status);
   };
 
   // ── Rendering helpers ────────────────────────────────────────────────────
-  const dueCell = (t) => {
-    if (!t.due_date) return <span style={{ color: 'var(--text-muted)' }}>—</span>;
-    const overdue = isOverdue(t, today);
-    const dueToday = t.due_date === today && OPEN_STATUSES.includes(t.status);
-    return (
-      <span style={{ color: overdue ? 'var(--danger)' : dueToday ? 'var(--warning)' : undefined, fontWeight: overdue || dueToday ? 600 : 400 }}>
-        {overdue && <i className="fas fa-circle-exclamation" style={{ marginRight: 4 }} />}
-        {dueToday ? 'Today' : fmt.date(t.due_date)}
-      </span>
-    );
-  };
-
   const statusControl = (t) => (canChangeStatus(t) ? (
     <select className="form-select" style={{ fontSize: 12, padding: '4px 8px', width: 'auto' }} value={t.status}
-      onClick={(e) => e.stopPropagation()} onChange={(e) => handleStatus(t, e.target.value)}>
+      onClick={(e) => e.stopPropagation()} onChange={(e) => requestStatus(t, e.target.value)}>
       {statusChoices(t).map((s) => <option key={s}>{s}</option>)}
     </select>
   ) : <span className={`badge ${STATUS_BADGE[t.status]}`}>{t.status}</span>);
 
-  const activityLine = (a) => {
-    switch (a.kind) {
-      case 'created': return 'created this task';
-      case 'status': return <>changed status from <b>{a.from_value}</b> to <b>{a.to_value}</b></>;
-      case 'assigned': return <>reassigned it to <b>{nameById.get(a.to_value) || (a.to_value === activeTask?.assigned_to && fullName(activeTask.assignee)) || 'someone'}</b></>;
-      case 'due_date': return <>changed the due date to <b>{a.to_value ? fmt.date(a.to_value) : 'none'}</b></>;
-      default: return null;
-    }
-  };
+  const subCount = useMemo(() => {
+    const m = new Map();
+    tasks.forEach((t) => { if (t.parent_task_id) m.set(t.parent_task_id, (m.get(t.parent_task_id) || 0) + 1); });
+    return m;
+  }, [tasks]);
+  const titleById = useMemo(() => new Map(tasks.map((t) => [t.id, t.title])), [tasks]);
 
-  const emptyText = tab === 'mine' ? 'No tasks assigned to you.' : 'No tasks match these filters.';
+  const taskMeta = (t) => (
+    <div style={{ fontSize: 11, color: 'var(--text-muted)', display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 2 }}>
+      {t.parent_task_id && <span><i className="fas fa-turn-up fa-rotate-90" style={{ marginRight: 3 }} />{titleById.get(t.parent_task_id) || 'sub-task'}</span>}
+      {t.project && <span><i className="fas fa-diagram-project" style={{ marginRight: 3 }} />{t.project.name}</span>}
+      {t.kpi_id && <span title={kpiById.get(t.kpi_id)?.title || 'Linked KPI'}><i className="fas fa-bullseye" style={{ marginRight: 3 }} />KPI</span>}
+      {subCount.get(t.id) > 0 && <span><i className="fas fa-list-ul" style={{ marginRight: 3 }} />{subCount.get(t.id)} sub-task{subCount.get(t.id) > 1 ? 's' : ''}</span>}
+      {t.repeat_rule && t.repeat_rule !== 'none' && <span><i className="fas fa-repeat" style={{ marginRight: 3 }} />{t.repeat_rule}</span>}
+      {t.creator && t.created_by !== t.assigned_to && <span>by {fullName(t.creator)}</span>}
+      {t.status === 'Blocked' && t.status_note && <span style={{ color: 'var(--warning)' }}><i className="fas fa-ban" style={{ marginRight: 3 }} />{t.status_note.slice(0, 60)}</span>}
+    </div>
+  );
+
+  const emptyText = tab === 'mine' ? 'No tasks assigned to you.' : tab === 'review' ? 'Nothing is waiting for your review.' : 'No tasks match these filters.';
+  const startedEditing = !!editing?.started_at;
+  const waitingChoices = tasks.filter((t) => t.id !== editing?.id && t.parent_task_id !== editing?.id && OPEN_STATUSES.includes(t.status));
+  const tile = (key, patch) => ({ onClick: () => setFilter({ view: 'list', ...patch }), style: { cursor: 'pointer', outline: statusFilter === key && view === 'list' ? '2px solid var(--primary)' : undefined, borderRadius: 12 } });
 
   return (
     <>
-      <Header title="Tasks" breadcrumb="Create, assign and track work across your team"
-        actions={<button className="btn btn-primary" onClick={openCreate}><i className="fas fa-plus" style={{ marginRight: 6 }} />New Task</button>}
+      <Header title="Tasks" breadcrumb="Plan, assign, review and track work across your team"
+        actions={<>
+          <button className="btn btn-outline" onClick={() => setShowPaste(true)} style={{ marginRight: 8 }}><i className="fas fa-paste" style={{ marginRight: 6 }} />Paste tasks</button>
+          <button className="btn btn-primary" onClick={openCreate}><i className="fas fa-plus" style={{ marginRight: 6 }} />New Task</button>
+        </>}
       />
 
       <div className="tab-bar-wrap">
         <div className="tabs">
           {TABS.map((t) => (
-            <button key={t.key} className={`tab-btn ${tab === t.key ? 'active' : ''}`} onClick={() => { setTab(t.key); setAssigneeFilter(''); }}>
-              {t.label}
+            <button key={t.key} className={`tab-btn ${tab === t.key ? 'active' : ''}`} onClick={() => setFilter({ tab: t.key, assigneeFilter: '' })}>
+              {t.label}{t.key === 'review' && toReviewCount > 0 && <span className="badge badge-warning" style={{ marginLeft: 6 }}>{toReviewCount}</span>}
             </button>
           ))}
         </div>
@@ -244,35 +312,57 @@ export default function TasksPage() {
 
       <div className="page-content">
         <div className="stats-row">
-          <StatCard icon="fa-list-check" iconColor="blue" value={stats.open} label="Open" />
-          <StatCard icon="fa-spinner" iconColor="purple" value={stats.inProgress} label="In Progress" />
-          <StatCard icon="fa-circle-exclamation" iconColor="red" value={stats.overdue} label="Overdue" />
-          <StatCard icon="fa-circle-check" iconColor="green" value={stats.done} label={showOldClosed ? 'Completed' : 'Completed (30 days)'} />
+          <div {...tile('open', { statusFilter: 'open' })}><StatCard icon="fa-list-check" iconColor="blue" value={stats.open} label="Open" /></div>
+          <div {...tile('today', { statusFilter: 'today' })}><StatCard icon="fa-calendar-day" iconColor="purple" value={stats.today} label="Due today" /></div>
+          <div {...tile('overdue', { statusFilter: 'overdue' })}><StatCard icon="fa-circle-exclamation" iconColor="red" value={stats.overdue} label="Overdue" /></div>
+          <div {...tile('Blocked', { statusFilter: 'Blocked' })}><StatCard icon="fa-ban" iconColor="orange" value={stats.blocked} label="Blocked" /></div>
+          <div {...tile('review', { statusFilter: 'review' })}><StatCard icon="fa-clipboard-check" iconColor="green" value={stats.inReview} label="In review" /></div>
         </div>
 
         <div className="filter-bar">
           <div style={{ display: 'flex', gap: 4 }}>
-            <button className={`btn btn-sm ${view === 'list' ? 'btn-primary' : 'btn-outline'}`} onClick={() => setView('list')} title="List view"><i className="fas fa-list" /></button>
-            <button className={`btn btn-sm ${view === 'board' ? 'btn-primary' : 'btn-outline'}`} onClick={() => setView('board')} title="Board view"><i className="fas fa-table-columns" /></button>
+            <button className={`btn btn-sm ${view === 'list' ? 'btn-primary' : 'btn-outline'}`} onClick={() => setFilter({ view: 'list' })} title="List view"><i className="fas fa-list" /></button>
+            <button className={`btn btn-sm ${view === 'board' ? 'btn-primary' : 'btn-outline'}`} onClick={() => setFilter({ view: 'board' })} title="Board view"><i className="fas fa-table-columns" /></button>
           </div>
-          <input className="form-input" placeholder="Search tasks…" value={search} onChange={(e) => setSearch(e.target.value)} />
-          {view === 'list' && (
-            <select className="form-select" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
+          <input className="form-input" placeholder="Search tasks…" value={search} onChange={(e) => setFilter({ search: e.target.value })} />
+          {view === 'list' && tab !== 'review' && (
+            <select className="form-select" value={statusFilter} onChange={(e) => setFilter({ statusFilter: e.target.value })}>
               <option value="open">Open tasks</option>
+              <option value="today">Due today</option>
               <option value="overdue">Overdue</option>
+              <option value="review">In review</option>
               <option value="">All statuses</option>
               {TASK_STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
             </select>
           )}
-          <select className="form-select" value={priorityFilter} onChange={(e) => setPriorityFilter(e.target.value)}>
+          <select className="form-select" value={priorityFilter} onChange={(e) => setFilter({ priorityFilter: e.target.value })}>
             <option value="">All priorities</option>
             {TASK_PRIORITIES.map((p) => <option key={p}>{p}</option>)}
           </select>
           {tab !== 'mine' && assigneeOptions.length > 1 && (
-            <select className="form-select" value={assigneeFilter} onChange={(e) => setAssigneeFilter(e.target.value)}>
-              <option value="">All assignees</option>
+            <select className="form-select" value={assigneeFilter} onChange={(e) => setFilter({ assigneeFilter: e.target.value })}>
+              <option value="">All owners</option>
               {assigneeOptions.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
             </select>
+          )}
+          {view === 'list' && (
+            <select className="form-select" value={groupBy} onChange={(e) => setFilter({ groupBy: e.target.value })} title="Group rows">
+              {GROUPS.map(([v, l]) => <option key={v} value={v}>{v ? `Group: ${l}` : l}</option>)}
+            </select>
+          )}
+          <select className="form-select" value="" onChange={(e) => {
+            const v = savedViews.find((x) => x.name === e.target.value);
+            if (v) setFilters({ ...DEFAULT_FILTERS, ...v.filters });
+          }} title="Saved views">
+            <option value="">{savedViews.length ? 'Saved views…' : 'No saved views'}</option>
+            {savedViews.map((v) => <option key={v.name} value={v.name}>{v.name}</option>)}
+          </select>
+          <button className="btn btn-outline btn-sm" onClick={saveView} title="Save these filters as a view"><i className="fas fa-bookmark" /></button>
+          {savedViews.length > 0 && (
+            <button className="btn btn-outline btn-sm" title="Delete a saved view" onClick={() => {
+              const name = window.prompt(`Delete which view?\n${savedViews.map((v) => v.name).join('\n')}`);
+              if (name) removeView(name.trim());
+            }}><i className="fas fa-trash" /></button>
           )}
           <label style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 6, color: 'var(--text-secondary)' }}>
             <input type="checkbox" checked={showOldClosed} onChange={(e) => setShowOldClosed(e.target.checked)} />
@@ -286,25 +376,31 @@ export default function TasksPage() {
           <div className="card">
             <div className="table-wrap">
               <table>
-                <thead><tr><th>Task</th><th>Assignee</th><th>Priority</th><th>Due</th><th>Status</th></tr></thead>
+                <thead><tr><th>Task</th><th>Owner</th><th>Priority</th><th>Due</th><th>Status</th></tr></thead>
                 <tbody>
                   {filtered.length === 0 ? (
                     <tr><td colSpan={5} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 40 }}>{emptyText}</td></tr>
-                  ) : filtered.map((t) => (
-                    <tr key={t.id} onClick={() => openTask(t.id)} style={{ cursor: 'pointer' }}>
-                      <td style={{ maxWidth: 360 }}>
-                        <div style={{ fontSize: 13, fontWeight: 600 }}>{t.title}</div>
-                        <div style={{ fontSize: 11, color: 'var(--text-muted)', display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 2 }}>
-                          {t.project && <span><i className="fas fa-diagram-project" style={{ marginRight: 3 }} />{t.project.name}</span>}
-                          {t.creator && t.created_by !== t.assigned_to && <span>by {fullName(t.creator)}</span>}
-                        </div>
-                      </td>
-                      <td style={{ fontSize: 12 }}>{t.assignee ? fullName(t.assignee) : '—'}</td>
-                      <td><span className={`badge ${PRIORITY_BADGE[t.priority]}`}>{t.priority}</span></td>
-                      <td style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{dueCell(t)}</td>
-                      <td>{statusControl(t)}</td>
-                    </tr>
-                  ))}
+                  ) : groups.map(([label, rows]) => [
+                    label && (
+                      <tr key={`g-${label}`}><td colSpan={5} style={{ background: 'var(--bg)', fontSize: 12, fontWeight: 600, color: label === 'Overdue' ? 'var(--danger)' : undefined }}>{label} <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>· {rows.length}</span></td></tr>
+                    ),
+                    ...rows.map((t) => (
+                      <tr key={t.id} onClick={() => openTask(t.id)} style={{ cursor: 'pointer' }}>
+                        <td style={{ maxWidth: 380 }}>
+                          <div style={{ fontSize: 13, fontWeight: 600 }}>{t.title}</div>
+                          {taskMeta(t)}
+                        </td>
+                        <td style={{ fontSize: 12 }}>{t.assignee ? fullName(t.assignee) : '—'}</td>
+                        <td><span className={`badge ${PRIORITY_BADGE[t.priority]}`}>{t.priority}</span></td>
+                        <td style={{ fontSize: 12 }}><DueCell task={t} today={today} /></td>
+                        <td>
+                          <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                            {statusControl(t)}<ReviewBadge task={t} /><LateBadge task={t} today={today} />
+                          </div>
+                        </td>
+                      </tr>
+                    )),
+                  ])}
                 </tbody>
               </table>
             </div>
@@ -312,25 +408,28 @@ export default function TasksPage() {
         ) : (
           <div style={{ display: 'grid', gridTemplateColumns: `repeat(${BOARD_COLUMNS.length}, minmax(220px, 1fr))`, gap: 12, overflowX: 'auto', paddingBottom: 8 }}>
             {BOARD_COLUMNS.map((col) => {
-              const colTasks = filtered.filter((t) => t.status === col);
+              const colTasks = filtered.filter(col.match);
               return (
-                <div key={col} onDragOver={(e) => e.preventDefault()} onDrop={() => handleDrop(col)}
+                <div key={col.key} onDragOver={(e) => e.preventDefault()} onDrop={() => handleDrop(col.drop)}
                   style={{ background: 'var(--bg)', borderRadius: 10, padding: 10, minHeight: 200 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-                    <span className={`badge ${STATUS_BADGE[col]}`}>{col}</span>
+                    <span className={`badge ${col.key === 'review' ? 'badge-warning' : STATUS_BADGE[col.key]}`}>{col.label}</span>
                     <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{colTasks.length}</span>
                   </div>
                   {colTasks.map((t) => (
                     <div key={t.id} className="card" draggable={canChangeStatus(t)} onDragStart={() => setDragId(t.id)}
                       onClick={() => openTask(t.id)}
                       style={{ padding: 10, marginBottom: 8, cursor: 'pointer', borderLeft: `3px solid var(--${isOverdue(t, today) ? 'danger' : 'border'})` }}>
-                      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>{t.title}</div>
-                      {t.project && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6 }}><i className="fas fa-diagram-project" style={{ marginRight: 3 }} />{t.project.name}</div>}
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 11, gap: 6 }}>
+                      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>{t.title}</div>
+                      {taskMeta(t)}
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 11, gap: 6, marginTop: 6 }}>
                         <span className={`badge ${PRIORITY_BADGE[t.priority]}`}>{t.priority}</span>
-                        <span>{dueCell(t)}</span>
+                        <DueCell task={t} today={today} />
                       </div>
-                      {tab !== 'mine' && t.assignee && <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 6 }}><i className="fas fa-user" style={{ marginRight: 4 }} />{fullName(t.assignee)}</div>}
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 11, marginTop: 6 }}>
+                        <span style={{ color: 'var(--text-secondary)' }}>{tab !== 'mine' && t.assignee ? <><i className="fas fa-user" style={{ marginRight: 4 }} />{fullName(t.assignee)}</> : null}</span>
+                        <LateBadge task={t} today={today} />
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -340,8 +439,15 @@ export default function TasksPage() {
         )}
       </div>
 
+      {/* Detail first so the edit / status dialogs it opens stack on top. */}
+      {activeTask && (
+        <TaskDrawer task={activeTask} tasks={tasks} profile={profile} teamIds={teamIds} today={today} tenantId={tenant.id}
+          nameOf={nameOf} kpiById={kpiById}
+          onClose={() => openTask(null)} onRequestStatus={requestStatus} onEdit={openEdit} onDelete={handleDelete} onChanged={fetchTasks} />
+      )}
+
       {/* Create / edit */}
-      <Modal show={showForm} onClose={() => setShowForm(false)} title={editing ? 'Edit Task' : 'New Task'} width="520px"
+      <Modal show={showForm} onClose={() => setShowForm(false)} title={editing ? 'Edit Task' : 'New Task'} width="620px"
         footer={<>
           <button className="btn btn-outline" onClick={() => setShowForm(false)}>Cancel</button>
           <button className="btn btn-primary" onClick={handleSave} disabled={saving}>{saving ? 'Saving…' : editing ? 'Save' : 'Create Task'}</button>
@@ -352,28 +458,37 @@ export default function TasksPage() {
           <input className="form-input" maxLength={200} value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="What needs to be done?" />
         </div>
         <div className="form-group">
-          <label className="form-label">Description</label>
-          <textarea className="form-input" rows={3} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
+          <label className="form-label">Brief</label>
+          <textarea className="form-input" rows={3} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="What this task is for and what done looks like" />
         </div>
-        <div className="form-group">
-          <label className="form-label">Assign to</label>
-          {editing?.project_id ? (
-            <>
-              <input className="form-input" disabled value={editing.assignee ? fullName(editing.assignee) : 'Unassigned'} />
-              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>Project tasks are reassigned from the Projects page.</div>
-            </>
-          ) : (
-            <select className="form-select" value={form.assigned_to} onChange={(e) => setForm({ ...form, assigned_to: e.target.value })}>
-              {people.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.id === profile.id ? `Myself (${fullName(p)})` : fullName(p)}{p.department ? ` · ${p.department}` : ''}
-                </option>
-              ))}
-              {editing && form.assigned_to && !people.some((p) => p.id === form.assigned_to) && (
-                <option value={form.assigned_to}>{fullName(editing.assignee) || 'Current assignee'}</option>
-              )}
+        <div className="form-row">
+          <div className="form-group">
+            <label className="form-label">Owner</label>
+            {editing?.project_id ? (
+              <>
+                <input className="form-input" disabled value={editing.assignee ? fullName(editing.assignee) : 'Unassigned'} />
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>Project tasks are reassigned from the Projects page.</div>
+              </>
+            ) : (
+              <select className="form-select" value={form.assigned_to} onChange={(e) => setForm({ ...form, assigned_to: e.target.value })}>
+                {people.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.id === profile.id ? `Myself (${fullName(p)})` : fullName(p)}{p.department ? ` · ${p.department}` : ''}
+                  </option>
+                ))}
+                {editing && form.assigned_to && !people.some((p) => p.id === form.assigned_to) && (
+                  <option value={form.assigned_to}>{fullName(editing.assignee) || 'Current owner'}</option>
+                )}
+              </select>
+            )}
+          </div>
+          <div className="form-group">
+            <label className="form-label">Reviewer</label>
+            <select className="form-select" value={form.reviewer_id} onChange={(e) => setForm({ ...form, reviewer_id: e.target.value })}>
+              <option value="">Assigner / manager (default)</option>
+              {tenantPeople.map((p) => <option key={p.id} value={p.id}>{fullName(p)}{p.department ? ` · ${p.department}` : ''}</option>)}
             </select>
-          )}
+          </div>
         </div>
         <div className="form-row">
           <div className="form-group">
@@ -383,66 +498,57 @@ export default function TasksPage() {
             </select>
           </div>
           <div className="form-group">
-            <label className="form-label">Due Date</label>
-            <input className="form-input" type="date" value={form.due_date} onChange={(e) => setForm({ ...form, due_date: e.target.value })} />
+            <label className="form-label">Repeat</label>
+            <select className="form-select" value={form.repeat_rule} onChange={(e) => setForm({ ...form, repeat_rule: e.target.value })}>
+              {REPEAT_RULES.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
+            </select>
           </div>
+        </div>
+        <div className="form-row">
+          <div className="form-group">
+            <label className="form-label">Start date</label>
+            <input className="form-input" type="date" value={form.start_date} onChange={(e) => setForm({ ...form, start_date: e.target.value })} />
+          </div>
+          <div className="form-group">
+            <label className="form-label">Due date{startedEditing && <i className="fas fa-lock" style={{ marginLeft: 6, fontSize: 10 }} />}</label>
+            <input className="form-input" type="date" value={form.due_date} disabled={startedEditing} onChange={(e) => setForm({ ...form, due_date: e.target.value })} />
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+              {startedEditing ? 'Locked once work started — use the revised due date.' : 'Needed before work starts; locked after that.'}
+            </div>
+          </div>
+          {startedEditing && (
+            <div className="form-group">
+              <label className="form-label">Revised due</label>
+              <input className="form-input" type="date" value={form.revised_due_date} onChange={(e) => setForm({ ...form, revised_due_date: e.target.value })} />
+            </div>
+          )}
+        </div>
+        {kpis.length > 0 && (
+          <div className="form-group">
+            <label className="form-label">Linked KPI</label>
+            <select className="form-select" value={form.kpi_id} onChange={(e) => setForm({ ...form, kpi_id: e.target.value })}>
+              <option value="">Not linked</option>
+              {kpis.map((k) => <option key={k.id} value={k.id}>{k.title} · {k.owner_label} (FY {k.fy})</option>)}
+              {form.kpi_id && !kpiById.has(form.kpi_id) && <option value={form.kpi_id}>Current KPI</option>}
+            </select>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>The goal or KPI from Performance this work moves.</div>
+          </div>
+        )}
+        <div className="form-group">
+          <label className="form-label">Waiting on</label>
+          <select className="form-select" multiple size={Math.min(5, Math.max(2, waitingChoices.length))} value={form.waiting_on}
+            onChange={(e) => setForm({ ...form, waiting_on: [...e.target.selectedOptions].map((o) => o.value).slice(0, 20) })}>
+            {waitingChoices.map((t) => <option key={t.id} value={t.id}>{t.title}{t.assignee ? ` — ${fullName(t.assignee)}` : ''}</option>)}
+          </select>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>Tasks that must finish first (Ctrl/Cmd-click to pick several). This task can't be marked Done until they are.</div>
         </div>
       </Modal>
 
-      {/* Detail */}
-      <Modal show={!!activeTask} onClose={() => openTask(null)} title={activeTask?.title || ''} width="640px"
-        footer={activeTask && <>
-          {canManageTask(activeTask, profile, teamIds) && (
-            <>
-              <button className="btn btn-outline" style={{ color: 'var(--danger)', marginRight: 'auto' }} onClick={() => handleDelete(activeTask)}><i className="fas fa-trash" style={{ marginRight: 6 }} />Delete</button>
-              <button className="btn btn-outline" onClick={() => openEdit(activeTask)}><i className="fas fa-pen" style={{ marginRight: 6 }} />Edit</button>
-            </>
-          )}
-          <button className="btn btn-primary" onClick={() => openTask(null)}>Close</button>
-        </>}
-      >
-        {activeTask && (
-          <>
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 14 }}>
-              {statusControl(activeTask)}
-              <span className={`badge ${PRIORITY_BADGE[activeTask.priority]}`}>{activeTask.priority} priority</span>
-              {isOverdue(activeTask, today) && <span className="badge badge-danger">Overdue</span>}
-            </div>
+      <StatusChangeModal request={statusReq} onClose={() => setStatusReq(null)} onConfirm={applyStatus} />
 
-            {activeTask.description && (
-              <p style={{ fontSize: 13, whiteSpace: 'pre-wrap', margin: '0 0 14px', color: 'var(--text-secondary)' }}>{activeTask.description}</p>
-            )}
+      <PasteTasksModal show={showPaste} onClose={() => setShowPaste(false)} tenantId={tenant?.id} profile={profile} people={people}
+        onCreated={() => { setShowPaste(false); fetchTasks(); }} />
 
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 10, fontSize: 12, marginBottom: 18 }}>
-              <div><div style={{ color: 'var(--text-muted)' }}>Assignee</div><b>{activeTask.assignee ? fullName(activeTask.assignee) : 'Unassigned'}</b></div>
-              <div><div style={{ color: 'var(--text-muted)' }}>Assigned by</div><b>{activeTask.creator ? fullName(activeTask.creator) : '—'}</b></div>
-              <div><div style={{ color: 'var(--text-muted)' }}>Due</div><b>{dueCell(activeTask)}</b></div>
-              {activeTask.project && <div><div style={{ color: 'var(--text-muted)' }}>Project</div><b>{activeTask.project.name}</b></div>}
-              <div><div style={{ color: 'var(--text-muted)' }}>Created</div><b>{fmt.date(activeTask.created_at)}</b></div>
-              {activeTask.completed_at && <div><div style={{ color: 'var(--text-muted)' }}>Completed</div><b>{fmt.date(activeTask.completed_at)}</b></div>}
-            </div>
-
-            <h4 style={{ fontSize: 13, margin: '0 0 10px' }}>Activity</h4>
-            <div style={{ maxHeight: 260, overflowY: 'auto', marginBottom: 12 }}>
-              {activity.length === 0 && <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>No activity yet.</p>}
-              {activity.map((a) => (
-                <div key={a.id} style={{ fontSize: 12, padding: '6px 0', borderBottom: '1px solid var(--border-light)' }}>
-                  <b>{a.actor ? fullName(a.actor) : 'System'}</b>{' '}
-                  {a.kind === 'comment' ? null : <span style={{ color: 'var(--text-secondary)' }}>{activityLine(a)}</span>}
-                  <span style={{ color: 'var(--text-muted)', marginLeft: 6 }}>{timeAgo(a.created_at)}</span>
-                  {a.kind === 'comment' && <div style={{ whiteSpace: 'pre-wrap', marginTop: 3 }}>{a.body}</div>}
-                </div>
-              ))}
-            </div>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <textarea className="form-input" rows={2} maxLength={2000} placeholder="Add a comment or update…" value={comment}
-                onChange={(e) => setComment(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) handleComment(); }} />
-              <button className="btn btn-primary btn-sm" style={{ alignSelf: 'flex-end' }} onClick={handleComment} disabled={!comment.trim()}>Post</button>
-            </div>
-          </>
-        )}
-      </Modal>
     </>
   );
 }

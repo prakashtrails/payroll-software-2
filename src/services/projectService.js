@@ -70,7 +70,4 @@ export async function createProjectTask(tenantId, projectId, payload) {
   return { error };
 }
 
-export async function updateTaskStatus(id, status) {
-  const { error } = await supabase.from('project_tasks').update({ status }).eq('id', id);
-  return { error };
-}
+// Status changes go through taskService.updateTask (StatusChangeModal collects what the rules need).
